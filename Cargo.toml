@@ -1,0 +1,59 @@
+[package]
+name = "datumesh-http"
+version = "0.1.0"
+description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/datumesh-com/datumesh-http"
+homepage = "https://datumesh.com"
+documentation = "https://docs.rs/datumesh-http"
+readme = "README.md"
+keywords = ["datumesh", "receipt", "provenance", "http", "mesh"]
+categories = ["web-programming::http-server"]
+include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+
+[lib]
+name = "datumesh_http"
+
+[[bin]]
+name = "datumesh-mesh"
+path = "src/bin/datumesh-mesh.rs"
+
+[dependencies]
+# Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
+# `sign` for the keys the binary generates.
+datumesh-core = { version = "0.3.5", features = ["sign"] }
+datumesh-store = "0.3.2"
+datumesh-engine = "0.3.1"
+# The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
+datumesh-formula = "0.1.0"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query", "matched-path", "original-uri"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["compression-gzip"] }
+utoipa = "5.5.0"
+# Outgoing requests of cross-mesh resolution (sync: they run on the blocking pool, inside an
+# evaluation): rustls with the Mozilla roots, no redirects.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+arrow-array = "59.3.0"
+arrow-schema = "59.3.0"
+arrow-ipc = "59.3.0"
+getrandom = "0.3.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+[dev-dependencies]
+reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
+jsonschema = { version = "0.33.0", default-features = false }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
+
+# The engine signs and the store verifies many receipts in the tests: curve25519 and sha2
+# are optimised even in test builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+[package.metadata.docs.rs]
+all-features = true
