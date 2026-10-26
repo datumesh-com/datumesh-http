@@ -11,7 +11,7 @@ documentation = "https://docs.rs/datumesh-http"
 readme = "README.md"
 keywords = ["datumesh", "receipt", "provenance", "http", "mesh"]
 categories = ["web-programming::http-server"]
-include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md"]
 
 [lib]
 name = "datumesh_http"
