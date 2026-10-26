@@ -159,7 +159,7 @@ async fn every_endpoint_and_outcome() {
     let cases: Vec<(&str, String)> = vec![
         ("E_PARSE_URI", format!("{A}/rate?")),
         ("E_PARSE_URI", format!("{A}/rate?ccy")),
-        ("E_CANON_NAME", format!("Mesh-A.example/rate?ccy=USD&date=2026-03-01")),
+        ("E_CANON_NAME", "Mesh-A.example/rate?ccy=USD&date=2026-03-01".to_string()),
         ("E_CANON_NAME", format!("{A}/Rate?ccy=USD&date=2026-03-01")),
         ("E_CANON_ARG_NAME", format!("{A}/rate?Ccy=USD&date=2026-03-01")),
         ("E_CANON_ARG_DUPLICATE", format!("{A}/rate?ccy=USD&ccy=USD&date=2026-03-01")),

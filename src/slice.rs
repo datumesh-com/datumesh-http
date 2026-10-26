@@ -58,7 +58,7 @@ fn cursor(key: &[Scalar]) -> String {
 }
 
 fn parse_cursor(s: &str) -> Option<Vec<Scalar>> {
-    if s.len() % 2 != 0 || s.len() > 1 << 16 {
+    if !s.len().is_multiple_of(2) || s.len() > 1 << 16 {
         return None;
     }
     let bytes: Option<Vec<u8>> =

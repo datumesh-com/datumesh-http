@@ -196,6 +196,9 @@ pub struct Config {
     pub trust_proxy: bool,
     /// Resolve names under hosts this mesh does not own (default true).
     pub cross_mesh: bool,
+    /// When set, the only other hosts whose names are resolved across meshes; names under
+    /// any other host are not served (`not_covered`). Default: every host.
+    pub cross_mesh_hosts: Option<Vec<String>>,
     /// Origins to use instead of `https://<host>` for some hosts, e.g. `mesh-b.example` ->
     /// `http://127.0.0.1:8081` (tests and private networks only; the default is none).
     pub peers: BTreeMap<String, String>,
@@ -229,6 +232,7 @@ impl Config {
             ttl: Ttls::default(),
             trust_proxy: false,
             cross_mesh: true,
+            cross_mesh_hosts: None,
             peers: BTreeMap::new(),
             peer_timeout: Duration::from_secs(10),
             aliases: BTreeMap::new(),
@@ -299,6 +303,9 @@ impl Config {
         c.ttl.latest_max_age = secs("DATUMESH_LATEST_MAX_AGE", c.ttl.latest_max_age)?;
         c.ttl.job = secs("DATUMESH_JOB_TTL", c.ttl.job)?;
         c.peer_timeout = ms("DATUMESH_PEER_TIMEOUT_MS", c.peer_timeout)?;
+        if let Some(v) = get("DATUMESH_CROSS_MESH_HOSTS") {
+            c.cross_mesh_hosts = Some(v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+        }
         if let Some(v) = get("DATUMESH_PEERS") {
             for pair in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 let (h, o) =

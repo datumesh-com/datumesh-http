@@ -336,8 +336,7 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
     let items = Arc::new(items);
     // Each chunk's answers so far; once the budget has passed (`late`), its answers go to
     // the channel instead, to complete their jobs.
-    let shared: Arc<Vec<Mutex<(bool, Vec<(usize, Reply)>)>>> =
-        Arc::new((0..chunks).map(|_| Mutex::new((false, Vec::new()))).collect());
+    let shared: Slots = Arc::new((0..chunks).map(|_| Mutex::new((false, Vec::new()))).collect());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Reply)>();
     let seen = Arc::new(crate::mesh::Seen::default());
     let mut tasks = Vec::new();
@@ -443,6 +442,9 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
     done.into_iter().map(|d| d.unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable))).collect()
 }
 
+/// Each batch chunk's answers so far, and whether the budget has passed.
+type Slots = Arc<Vec<Mutex<(bool, Vec<(usize, Reply)>)>>>;
+
 /// Waits for every task until `deadline`: whether all finished.
 async fn futures_join(tasks: &mut [tokio::task::JoinHandle<Option<()>>], deadline: tokio::time::Instant) -> bool {
     for t in tasks.iter_mut() {
@@ -543,16 +545,20 @@ async fn object(
     }
 }
 
-fn ip_admit(inner: &Inner, headers: &HeaderMap, req: &Request) -> Result<(), Response> {
-    let (client, _) = who(inner, headers, peer_of(req)).map_err(to_response)?;
-    admit(inner, &client, 1).map_err(to_response)
+/// The refusal of a request by its client's rate limit (or key), if it is refused.
+fn ip_admit(inner: &Inner, headers: &HeaderMap, req: &Request) -> Option<Response> {
+    let client = match who(inner, headers, peer_of(req)) {
+        Ok((c, _)) => c,
+        Err(r) => return Some(to_response(r)),
+    };
+    admit(inner, &client, 1).err().map(to_response)
 }
 
 /// A receipt by its hash (canonical bytes; gzip when asked).
 #[utoipa::path(get, path = "/receipt/{hash}", params(("hash" = String, Path, description = "The receipt hash (SPEC 8.3).")),
     responses((status = 200, description = "The receipt's canonical JSON; immutable", content_type = "application/json"), (status = 404, description = "Not held")))]
 async fn receipt(State(mesh): State<Mesh>, Path(hash): Path<String>, headers: HeaderMap, req: Request) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     if lexical::check_hex(&hash, 64, "$").is_err() {
@@ -565,7 +571,7 @@ async fn receipt(State(mesh): State<Mesh>, Path(hash): Path<String>, headers: He
 #[utoipa::path(get, path = "/descriptor/{hash}", params(("hash" = String, Path, description = "The function hash.")),
     responses((status = 200, description = "The descriptor's canonical JSON; immutable", content_type = "application/json"), (status = 404, description = "Not held")))]
 async fn descriptor(State(mesh): State<Mesh>, Path(hash): Path<String>, headers: HeaderMap, req: Request) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     if lexical::check_hex(&hash, 64, "$").is_err() {
@@ -588,7 +594,7 @@ async fn manifest(
     headers: HeaderMap,
     req: Request,
 ) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     if lexical::check_hex(&slice_id, 64, "$").is_err() || lexical::check_hex(&members, 64, "$").is_err() {
@@ -601,7 +607,7 @@ async fn manifest(
 #[utoipa::path(get, path = "/blob/{sha256}", params(("sha256" = String, Path, description = "The content's SHA-256.")),
     responses((status = 200, description = "The bytes; immutable", content_type = "application/octet-stream"), (status = 404, description = "Not held")))]
 async fn blob(State(mesh): State<Mesh>, Path(sha): Path<String>, headers: HeaderMap, req: Request) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     if lexical::check_hex(&sha, 64, "$").is_err() {
@@ -723,7 +729,7 @@ struct FindQuery {
     params(("q" = String, Query, description = "Keywords, all of which must appear (case-insensitive) in the function's name or catalog description."), ("limit" = Option<usize>, Query, description = "At most this many results (default 20, at most 100).")),
     responses((status = 200, description = "`{\"query\", \"results\": [{\"name\", \"fn_hash\", \"since\", \"description\", \"descriptor\"}]}`", content_type = "application/json")))]
 async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: HeaderMap, req: Request) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     let inner = mesh.inner.clone();
@@ -825,7 +831,7 @@ async fn verify_receipt(
 }
 
 fn hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
@@ -886,7 +892,7 @@ async fn mesh_document(State(mesh): State<Mesh>) -> Response {
     params(("name" = String, Query, description = "A function name, percent-encoded as in SPEC 5.1; repeat for several."), ("asof" = Option<String>, Query, description = "An instant (default: now).")),
     responses((status = 200, description = "`{\"asof\", \"bindings\": {name: {\"fn_hash\", \"since\"}}}`", content_type = "application/json"), (status = 400, description = "A malformed name or asof", content_type = "application/json")))]
 async fn bindings(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
-    if let Err(r) = ip_admit(&mesh.inner, &headers, &req) {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
     let inner = mesh.inner.clone();

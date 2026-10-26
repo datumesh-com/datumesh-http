@@ -190,6 +190,7 @@ pub struct Foreign {
     agent: ureq::Agent,
     owned: Vec<String>,
     enabled: bool,
+    allowed: Option<Vec<String>>,
     peers: BTreeMap<String, String>,
     ttl_key: Duration,
     ttl_refetch: Duration,
@@ -218,7 +219,7 @@ impl std::fmt::Debug for Foreign {
 }
 
 enum Fetched {
-    Receipt(Vec<u8>, Receipt),
+    Receipt(Vec<u8>, Box<Receipt>),
     NotCovered,
 }
 
@@ -243,6 +244,7 @@ impl Foreign {
             agent,
             owned: config.namespaces.clone(),
             enabled: config.cross_mesh,
+            allowed: config.cross_mesh_hosts.clone(),
             peers: config.peers.clone(),
             ttl_key: config.ttl.key_doc,
             ttl_refetch: config.ttl.key_refetch,
@@ -265,7 +267,10 @@ impl Foreign {
     /// Whether `name` (a function name) is under a host this mesh does not own, and
     /// cross-mesh resolution is on.
     pub fn is_foreign(&self, name: &str) -> bool {
-        self.enabled && !self.owned.iter().any(|h| h == host_of(name))
+        let host = host_of(name);
+        self.enabled
+            && !self.owned.iter().any(|h| h == host)
+            && self.allowed.as_ref().is_none_or(|a| a.iter().any(|h| h == host))
     }
 
     /// Whether any foreign cell was ever imported (lineage checks are skipped otherwise).
@@ -491,10 +496,7 @@ impl Foreign {
         loop {
             let mut keys = Keys::new();
             if let Some(h) = &signer {
-                match self.keys_for(h, refreshed) {
-                    Ok(doc) => keys.insert(doc),
-                    Err(e) => return Err(e),
-                }
+                keys.insert(self.keys_for(h, refreshed)?);
             }
             match check_envelope_any(status, &body, &keys, &request) {
                 Ok(AnyEnvelope::Envelope(env, _)) => {
@@ -505,7 +507,7 @@ impl Foreign {
                                 .ok()
                                 .and_then(|v| v.get("receipt").map(Value::to_jcs))
                                 .ok_or_else(|| ForeignError::unavailable("receipt"))?;
-                            Ok(Fetched::Receipt(bytes, r))
+                            Ok(Fetched::Receipt(bytes, Box::new(r)))
                         }
                         ("not_covered", _) => Ok(Fetched::NotCovered),
                         (o, _) => Err(ForeignError::unavailable(format!("{url}: {o}"))),
@@ -553,7 +555,7 @@ impl Foreign {
         }
         let mesh = self.mesh(host_of(&name))?;
         let local = self.store.latest(&id).map_err(|e| ForeignError::unavailable(format!("store: {e}")))?;
-        let mut chain: Vec<(Vec<u8>, Receipt)> = Vec::new();
+        let mut chain: Vec<(Vec<u8>, Box<Receipt>)> = Vec::new();
         let mut at: Option<String> = None;
         loop {
             match self.fetch_cell(&mesh, cell, at.as_deref())? {

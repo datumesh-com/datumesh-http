@@ -309,12 +309,15 @@ impl Bindings for Inner {
     }
 }
 
+/// Latest answers by key: the receipt, the cell id and the asof answered at.
+type LatestShard = RwLock<HashMap<String, (Arc<ReceiptInfo>, String, String)>>;
+
 /// The latest answers of local stored cells, as of when they were answered: such an answer
 /// stands for every later asof until a version of the cell is added, which the mesh is told
 /// of ([`Mesh::stored_version_added`]), as the engine's memo is. It saves the engine's work
 /// (the cell id, the memo) on the hottest path: warm gets of stored cells.
 struct Latest {
-    shards: Vec<RwLock<HashMap<String, (Arc<ReceiptInfo>, String, String)>>>,
+    shards: Vec<LatestShard>,
     by_cell: Mutex<HashMap<String, Vec<String>>>,
 }
 
@@ -323,7 +326,7 @@ impl Latest {
         Latest { shards: (0..32).map(|_| RwLock::new(HashMap::new())).collect(), by_cell: Mutex::new(HashMap::new()) }
     }
 
-    fn shard(&self, key: &str) -> &RwLock<HashMap<String, (Arc<ReceiptInfo>, String, String)>> {
+    fn shard(&self, key: &str) -> &LatestShard {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut h);

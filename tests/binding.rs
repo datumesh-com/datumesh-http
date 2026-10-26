@@ -170,10 +170,10 @@ async fn adversarial_request_binding() {
         ];
         let (label, req_asof) = rng.pick(&near).clone();
         let key = (answered, k);
-        if !cache.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(key) {
             let r = a.get(&format!("/cell/{}&asof={z}", uri_of(&sibs[answered]))).await;
             assert_eq!(r.outcome(), "ok", "{}", r.text());
-            cache.insert(key, r);
+            e.insert(r);
         }
         let r = &cache[&key];
         let valid = requested == answered && req_asof.as_ref().is_none_or(|t| z.as_str() <= t.as_str());
@@ -221,7 +221,12 @@ async fn adversarial_request_binding() {
 
     let path = out_dir().join("binding-cases.jsonl");
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-    let summary = format!("request binding: {} cases ({matched} matching, {refused} mismatching: E_ENVELOPE), Rust core 0.3.5 agrees; {}\n", lines.len(), path.display());
+    let summary = format!(
+        "request binding: {} cases: {n_cases} of the generator ({matched} matching, {refused} mismatching: E_ENVELOPE) and {} job cases; Rust core 0.3.5 gives every expected result; {}\n",
+        lines.len(),
+        lines.len() - n_cases,
+        path.display()
+    );
     std::fs::write(out_dir().join("binding.txt"), &summary).unwrap();
     eprint!("{summary}");
     assert!(refused > 100 && matched > 100);
