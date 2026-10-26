@@ -178,7 +178,14 @@ impl Inner {
                 None => total,
             };
             return match arrow_stream(&members[start..end], &open, &slice, &a, &target.fn_name()) {
-                Ok(body) => Reply { status: 200, body, content_type: ARROW, cache, canonical: None, retry_after: None },
+                Ok(body) => Reply {
+                    status: 200,
+                    body: body.into(),
+                    content_type: ARROW,
+                    cache,
+                    canonical: None,
+                    retry_after: None,
+                },
                 Err(e) => {
                     tracing::warn!(target: "datumesh_http", error = %e, "arrow");
                     envelope::error_reply(ErrorCode::EvalUnavailable)

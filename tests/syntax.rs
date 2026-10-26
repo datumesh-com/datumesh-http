@@ -157,8 +157,8 @@ fn percent_decode(s: &str) -> String {
 struct One(Option<Arc<FunctionDescriptor>>);
 
 impl Bindings for One {
-    fn binding(&self, _: &str, _: &str) -> Result<Option<Bound>, ErrorCode> {
-        Ok(self.0.clone().map(|d| Bound { fn_hash: d.hash(), since: BIND_TX.into(), descriptor: d }))
+    fn binding(&self, _: &str, _: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        Ok(self.0.clone().map(|d| Arc::new(Bound::new(d.hash(), BIND_TX, d))))
     }
 }
 

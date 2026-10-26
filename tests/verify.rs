@@ -35,7 +35,7 @@ async fn receipt_vectors_and_engine_receipts() {
         }
     }
     files.sort();
-    let (mut valid, mut invalid, mut skipped) = (0, 0, Vec::new());
+    let (mut valid, mut invalid, skipped): (usize, usize, Vec<String>) = (0, 0, Vec::new());
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     for p in files {
         let v = json::parse(&std::fs::read(&p).unwrap()).unwrap();
@@ -60,34 +60,42 @@ async fn receipt_vectors_and_engine_receipts() {
                 hosts.insert(host.clone());
             }
         }
-        let input = v.get("input").and_then(Value::as_str).map(|s| s.as_bytes().to_vec()).unwrap_or_else(|| {
+        let input = v.get("input").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| {
             let h = v.get("input_hex").and_then(Value::as_str).unwrap();
-            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
+            let raw: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect();
+            String::from_utf8_lossy(&raw).into_owned()
         });
-        let mut url = "/verify?level=signed".to_string();
-        if let Some(b) = v.get("blob_hex").and_then(Value::as_str) {
-            url.push_str(&format!("&blob={b}"));
+        let raw_input = v.get("input_hex").is_some();
+        // The offered form: the vector's recompute object for step 7.
+        let mut body = vec![("receipt".to_string(), Value::String(input.clone()))];
+        if let Some(rc) = v.get("recompute") {
+            body.push(("recompute".into(), rc.clone()));
         }
-        let r = a.post(&url, input).await;
-        assert_eq!(r.status, 200, "{id}");
+        if let Some(b) = v.get("blob_hex") {
+            body.push(("blob_hex".into(), b.clone()));
+        }
+        let r = if raw_input {
+            // Bytes that are not UTF-8 text go as they are, at level signed.
+            let h = v.get("input_hex").and_then(Value::as_str).unwrap();
+            let raw: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect();
+            a.post("/verify?level=signed", raw).await
+        } else {
+            a.post("/verify?form=offered", Value::Object(body).to_jcs()).await
+        };
+        assert_eq!(r.status, 200, "{id}: {}", r.text());
         let (ok, level, code, hash) = result(&r);
         if v.get("valid") == Some(&Value::Bool(true)) {
             assert!(ok, "{id}: {}", r.text());
-            assert_eq!(level.as_deref(), Some("signed"), "{id}");
+            assert_eq!(level.as_deref(), v.get("level").and_then(Value::as_str), "{id}");
             assert_eq!(hash.as_deref(), v.get("sha256").and_then(Value::as_str), "{id}");
+            assert_eq!(code.as_deref(), v.get("code").and_then(Value::as_str), "{id}");
             if v.get("blob_hex").is_some() {
                 assert_eq!(r.json().get("blob_checked"), Some(&Value::Bool(true)), "{id}");
             }
             valid += 1;
         } else {
             let want = v.get("error").and_then(Value::as_str).unwrap();
-            if ok && v.get("recompute").is_some() {
-                // A failure of step 7 with the vector's own recompute material, which only
-                // the vector holds: signature-valid, as it is.
-                skipped.push(format!("{id} ({want}, step 7)"));
-                continue;
-            }
-            assert!(!ok, "{id} verified, want {want}");
+            assert!(!ok, "{id} verified, want {want}: {}", r.text());
             assert_eq!(code.as_deref(), Some(want), "{id}: {}", r.text());
             invalid += 1;
         }
@@ -188,7 +196,7 @@ async fn receipt_vectors_and_engine_receipts() {
     );
     std::fs::write(out_dir().join("verify.txt"), &out).unwrap();
     eprint!("{out}");
-    assert!(valid > 30 && invalid > 40);
+    assert!(valid > 30 && invalid > 60 && skipped.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

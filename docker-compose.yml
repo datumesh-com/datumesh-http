@@ -1,0 +1,45 @@
+# The mesh and PostgreSQL 16. Set POSTGRES_PASSWORD and DATUMESH_HOST (e.g. in .env, never
+# committed), and put the signing key (datumesh-mesh keygen) and the API keys file in
+# ./secrets, owned by uid 10001 with mode 0600. The mesh listens on 127.0.0.1:8080 only:
+# Caddy (TLS) is in front of it.
+#
+#   docker compose up -d --build
+#   docker compose run --rm mesh keygen --out /run/secrets/mesh.key --publish
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: datumesh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  mesh:
+    build: .
+    image: ghcr.io/datumesh-com/datumesh-mesh:${DATUMESH_MESH_TAG:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/datumesh?sslmode=disable
+      DATUMESH_HOST: ${DATUMESH_HOST:?set DATUMESH_HOST}
+      DATUMESH_KEY_FILE: /run/secrets/mesh.key
+      DATUMESH_API_KEYS_FILE: ${DATUMESH_API_KEYS_FILE:-}
+      DATUMESH_TRUST_PROXY: "1"
+      DATUMESH_MIGRATE: "1"
+      DATUMESH_LISTEN: 0.0.0.0:8080
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ./secrets:/run/secrets:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

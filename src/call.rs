@@ -49,6 +49,16 @@ pub struct Bound {
     pub since: String,
     /// The descriptor.
     pub descriptor: Arc<FunctionDescriptor>,
+    /// The descriptor's signature as JSON (what `parse_uri` reads).
+    pub signature: Arc<Value>,
+}
+
+impl Bound {
+    /// A binding of `fn_hash` since `since` to `descriptor`.
+    pub fn new(fn_hash: impl Into<String>, since: impl Into<String>, descriptor: Arc<FunctionDescriptor>) -> Bound {
+        let signature = Arc::new(descriptor.signature.to_value());
+        Bound { fn_hash: fn_hash.into(), since: since.into(), descriptor, signature }
+    }
 }
 
 /// Where names are looked up: the mesh's store (and, for names under other hosts, the
@@ -56,7 +66,19 @@ pub struct Bound {
 pub trait Bindings {
     /// The binding of `fn_name` as of `asof`; `Ok(None)` when it has none. An `Err` is the
     /// code of an `error` envelope (the store or another mesh failed).
-    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Bound>, ErrorCode>;
+    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Arc<Bound>>, ErrorCode>;
+
+    /// A target resolved before for the cell URI rest `rest` under function hash `fn_hash`
+    /// (parsing depends on nothing else). Provided: none.
+    fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
+        let _ = (fn_hash, rest);
+        None
+    }
+
+    /// Remembers a resolved target for [`Bindings::cached`]. Provided: nothing.
+    fn remember(&self, rest: &str, target: &Arc<Target>) {
+        let _ = (rest, target);
+    }
 }
 
 /// A request resolved to its cell (or slice, at `/slice`).
@@ -68,14 +90,33 @@ pub struct Target {
     pub reference: CellRef,
     /// The cell, with the function hash the name is bound to as of the asof.
     pub cell: Cell,
+    id: std::sync::OnceLock<String>,
+    key: std::sync::OnceLock<String>,
     /// The binding.
-    pub bound: Bound,
+    pub bound: Arc<Bound>,
 }
 
 impl Target {
     /// The function's fully qualified name.
     pub fn fn_name(&self) -> String {
         format!("{}/{}", self.reference.ns, self.reference.fn_name)
+    }
+
+    /// The cell's id (SPEC 4.4), computed once.
+    pub fn cell_id(&self) -> &str {
+        self.id.get_or_init(|| self.cell.id())
+    }
+
+    /// The cell's key: its function hash and its URI without `asof` (computed once).
+    pub fn cell_key(&self) -> &str {
+        self.key.get_or_init(|| {
+            let rest = self.rest();
+            let base = match self.asof() {
+                Some(a) => &rest[..rest.len() - a.len() - "asof=".len() - 1],
+                None => rest,
+            };
+            format!("{} {}", self.bound.fn_hash, base)
+        })
     }
 
     /// The requested asof, if any.
@@ -90,9 +131,14 @@ impl Target {
 
     /// The rest with `asof` set to `asof` (replacing one there).
     pub fn rest_asof(&self, asof: &str) -> String {
-        let mut r = self.reference.clone();
-        r.asof = Some(asof.to_string());
-        format_uri(&r)["cell://".len()..].to_string()
+        let rest = self.rest();
+        let base = match self.reference.asof.as_deref() {
+            // `asof` is the last parameter of a canonical URI.
+            Some(a) => &rest[..rest.len() - a.len() - "asof=".len() - 1],
+            None => rest,
+        };
+        let sep = if base.contains('?') { '&' } else { '?' };
+        format!("{base}{sep}asof={asof}")
     }
 }
 
@@ -123,7 +169,7 @@ pub fn resolve(
     aliases: &BTreeMap<String, String>,
     bindings: &dyn Bindings,
     slice: bool,
-) -> Result<Target, Rejection> {
+) -> Result<Arc<Target>, Rejection> {
     if is_call(rest) {
         resolve_call(rest, now, aliases, bindings, slice)
     } else {
@@ -141,23 +187,31 @@ fn params(query: &str) -> Vec<(&str, &str)> {
 }
 
 /// Resolves a cell URI's rest.
-pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) -> Result<Target, Rejection> {
-    let uri = format!("cell://{rest}");
+pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) -> Result<Arc<Target>, Rejection> {
     let (path, query) = match rest.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (rest, None),
     };
-    let ps = params(query.unwrap_or(""));
     // The asof the name is looked up at: the last parameter's, when it is an instant.
-    let asof = match ps.last() {
-        Some(("asof", v)) if lexical::check_instant(v, "$").is_ok() => v.to_string(),
-        _ => now.to_string(),
+    let last = query.map(|q| q.rsplit('&').next().unwrap_or(q));
+    let asof = match last.and_then(|p| p.strip_prefix("asof=")) {
+        Some(v) if lexical::check_instant(v, "$").is_ok() => v,
+        _ => now,
     };
     let bound = if lexical::check_function_name(path, "$").is_ok() && !path.contains('#') {
-        bindings.binding(path, &asof).map_err(Rejection::Error)?
+        bindings.binding(path, asof).map_err(Rejection::Error)?
     } else {
         None
     };
+    if let Some(b) = &bound {
+        if let Some(t) = bindings.cached(&b.fn_hash, rest) {
+            if t.reference.args.values().any(|a| matches!(a, Arg::Slice)) == slice {
+                return Ok(t);
+            }
+        }
+    }
+    let uri = format!("cell://{rest}");
+    let ps = params(query.unwrap_or(""));
     let Some(bound) = bound else {
         // No function to parse against: report what the URI's form alone shows (every
         // argument read as a string), else not_covered.
@@ -186,8 +240,7 @@ pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) 
             _ => Err(Rejection::NotCovered),
         };
     };
-    let signature = bound.descriptor.signature.to_value();
-    let reference = parse_uri(&uri, &signature).map_err(|e| {
+    let reference = parse_uri(&uri, &bound.signature).map_err(|e| {
         if crate::envelope::is_request_code(e.code()) {
             Rejection::BadRequest(e.code())
         } else {
@@ -201,17 +254,23 @@ pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) 
         // a cell URI of this endpoint.
         return Err(Rejection::BadRequest(ErrorCode::ParseUri));
     }
-    if reference.asof.is_none() && asof != now {
-        // Unreachable: an asof was found only in the URI.
-        return Err(Rejection::BadRequest(ErrorCode::ParseUri));
-    }
     let cell = Cell {
         ns: reference.ns.clone(),
         fn_name: reference.fn_name.clone(),
         fn_hash: bound.fn_hash.clone(),
         args: reference.args.clone(),
     };
-    Ok(Target { uri: format_uri(&reference), reference, cell, bound })
+    // format(parse(uri)) = uri (SPEC 5.4): the accepted URI is the canonical one.
+    let t = Arc::new(Target {
+        uri,
+        reference,
+        cell,
+        id: std::sync::OnceLock::new(),
+        key: std::sync::OnceLock::new(),
+        bound,
+    });
+    bindings.remember(rest, &t);
+    Ok(t)
 }
 
 /// Percent-decodes a URL path (any `%XX`, either case; the result must be UTF-8).
@@ -272,7 +331,7 @@ pub fn resolve_call(
     aliases: &BTreeMap<String, String>,
     bindings: &dyn Bindings,
     slice: bool,
-) -> Result<Target, Rejection> {
+) -> Result<Arc<Target>, Rejection> {
     let bad = Rejection::BadRequest(ErrorCode::ParseUri);
     let (path, query) = match rest.split_once('?') {
         Some((p, q)) => (p, Some(q)),

@@ -41,6 +41,15 @@ impl Metrics {
         h.n += 1;
     }
 
+    pub(crate) fn outcomes(&self, route: &str, outcome: &str, n: u64) {
+        *self
+            .outcomes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry((route.to_string(), outcome.to_string()))
+            .or_default() += n;
+    }
+
     pub(crate) fn outcome(&self, route: &str, outcome: &str) {
         *self
             .outcomes

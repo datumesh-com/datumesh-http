@@ -3,12 +3,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    keys_from_response, verify, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt, Request, SigningKey, Trust,
+    keys_from_response, verify, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt, SigningKey, Trust,
 };
 use datumesh_engine::{Answer, Clock, Engine, EngineError, Runtime, SystemClock};
 use datumesh_formula::runtime::FormulaRuntime;
@@ -162,6 +162,9 @@ impl MeshBuilder {
             foreign,
             descriptors: Mutex::new(HashMap::new()),
             last_good: Mutex::new(HashMap::new()),
+            infos: (0..32).map(|_| Mutex::new(HashMap::new())).collect(),
+            latest: Latest::new(),
+            targets: Targets::new(),
             slices: Mutex::new(Vec::new()),
             started: Instant::now(),
             config,
@@ -172,9 +175,18 @@ impl MeshBuilder {
 
 /// The last `ok` receipt served for a cell, for `stale` answers.
 struct LastGood {
-    receipt: Vec<u8>,
-    trust: Trust,
+    info: Arc<ReceiptInfo>,
     at: Instant,
+}
+
+/// What the mesh needs of a receipt it serves, kept by its bytes (content-addressed: never
+/// stale): its hash, `asof`, trust and its `ok` envelope.
+pub(crate) struct ReceiptInfo {
+    pub(crate) hash: String,
+    pub(crate) asof: String,
+    pub(crate) receipt: Vec<u8>,
+    pub(crate) trust: Trust,
+    pub(crate) ok: crate::envelope::Bytes,
 }
 
 pub(crate) struct Inner {
@@ -190,6 +202,9 @@ pub(crate) struct Inner {
     pub(crate) foreign: Arc<Foreign>,
     descriptors: Mutex<HashMap<String, Arc<FunctionDescriptor>>>,
     last_good: Mutex<HashMap<String, LastGood>>,
+    infos: Vec<Mutex<HashMap<u64, Arc<ReceiptInfo>>>>,
+    latest: Latest,
+    targets: Targets,
     #[allow(clippy::type_complexity)]
     pub(crate) slices: Mutex<Vec<(String, String, Arc<Vec<datumesh_store::SliceValue>>)>>,
     pub(crate) started: Instant,
@@ -210,29 +225,64 @@ impl std::fmt::Debug for Mesh {
 /// Bindings looked up once per name and asof within one batch.
 pub(crate) struct Memo<'a> {
     inner: &'a Inner,
-    seen: Mutex<HashMap<(String, String), Option<Bound>>>,
+    seen: std::borrow::Cow<'a, Seen>,
+}
+
+/// The bindings a batch has looked up (shared by its chunks).
+#[derive(Default)]
+pub(crate) struct Seen(#[allow(clippy::type_complexity)] RwLock<HashMap<String, Vec<(String, Option<Arc<Bound>>)>>>);
+
+impl Clone for Seen {
+    fn clone(&self) -> Seen {
+        Seen(RwLock::new(self.0.read().unwrap_or_else(|p| p.into_inner()).clone()))
+    }
 }
 
 impl<'a> Memo<'a> {
     pub(crate) fn new(inner: &'a Inner) -> Memo<'a> {
-        Memo { inner, seen: Mutex::new(HashMap::new()) }
+        Memo { inner, seen: std::borrow::Cow::Owned(Seen::default()) }
+    }
+
+    pub(crate) fn shared(inner: &'a Inner, seen: &'a Seen) -> Memo<'a> {
+        Memo { inner, seen: std::borrow::Cow::Borrowed(seen) }
     }
 }
 
 impl Bindings for Memo<'_> {
-    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Bound>, ErrorCode> {
-        let k = (fn_name.to_string(), asof.to_string());
-        if let Some(b) = self.seen.lock().unwrap_or_else(|p| p.into_inner()).get(&k) {
-            return Ok(b.clone());
+    fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
+        self.inner.targets.get(fn_hash, rest)
+    }
+
+    fn remember(&self, rest: &str, target: &Arc<Target>) {
+        self.inner.targets.put(rest, target);
+    }
+
+    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        if let Some(v) = self.seen.0.read().unwrap_or_else(|p| p.into_inner()).get(fn_name) {
+            if let Some((_, b)) = v.iter().find(|(a, _)| a == asof) {
+                return Ok(b.clone());
+            }
         }
-        let b = self.inner.binding(fn_name, asof)?;
-        self.seen.lock().unwrap_or_else(|p| p.into_inner()).insert(k, b.clone());
+        let b = Bindings::binding(self.inner, fn_name, asof)?;
+        let mut m = self.seen.0.write().unwrap_or_else(|p| p.into_inner());
+        let v = m.entry(fn_name.to_string()).or_default();
+        if v.len() < 64 {
+            v.push((asof.to_string(), b.clone()));
+        }
         Ok(b)
     }
 }
 
 impl Bindings for Inner {
-    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Bound>, ErrorCode> {
+    fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
+        self.targets.get(fn_hash, rest)
+    }
+
+    fn remember(&self, rest: &str, target: &Arc<Target>) {
+        self.targets.put(rest, target);
+    }
+
+    fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
         let mut failed = None;
         if self.foreign.is_foreign(fn_name) {
             if let Err(e) = self.foreign.ensure_name(fn_name) {
@@ -253,10 +303,110 @@ impl Bindings for Inner {
             None => Ok(None),
             Some(b) => {
                 let d = self.descriptor(&b.fn_hash)?;
-                Ok(Some(Bound { fn_hash: b.fn_hash, since: b.tx, descriptor: d }))
+                Ok(Some(Arc::new(Bound::new(b.fn_hash, b.tx, d))))
             }
         }
     }
+}
+
+/// The latest answers of local stored cells, as of when they were answered: such an answer
+/// stands for every later asof until a version of the cell is added, which the mesh is told
+/// of ([`Mesh::stored_version_added`]), as the engine's memo is. It saves the engine's work
+/// (the cell id, the memo) on the hottest path: warm gets of stored cells.
+struct Latest {
+    shards: Vec<RwLock<HashMap<String, (Arc<ReceiptInfo>, String, String)>>>,
+    by_cell: Mutex<HashMap<String, Vec<String>>>,
+}
+
+impl Latest {
+    fn new() -> Latest {
+        Latest { shards: (0..32).map(|_| RwLock::new(HashMap::new())).collect(), by_cell: Mutex::new(HashMap::new()) }
+    }
+
+    fn shard(&self, key: &str) -> &RwLock<HashMap<String, (Arc<ReceiptInfo>, String, String)>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        &self.shards[(h.finish() % self.shards.len() as u64) as usize]
+    }
+
+    /// The answer for `key` as of `a`, if one answered as of `a` or earlier is held.
+    fn get(&self, key: &str, a: &str) -> Option<Arc<ReceiptInfo>> {
+        let m = self.shard(key).read().unwrap_or_else(|p| p.into_inner());
+        let (info, _, at) = m.get(key)?;
+        (a >= at.as_str()).then(|| info.clone())
+    }
+
+    fn put(&self, key: String, cell_id: String, info: Arc<ReceiptInfo>, at: String) {
+        {
+            let mut b = self.by_cell.lock().unwrap_or_else(|p| p.into_inner());
+            if b.len() > 200_000 {
+                b.clear();
+                for s in &self.shards {
+                    s.write().unwrap_or_else(|p| p.into_inner()).clear();
+                }
+            }
+            b.entry(cell_id.clone()).or_default().push(key.clone());
+        }
+        self.shard(&key).write().unwrap_or_else(|p| p.into_inner()).insert(key, (info, cell_id, at));
+    }
+
+    fn forget(&self, cell_id: &str) {
+        let keys = self.by_cell.lock().unwrap_or_else(|p| p.into_inner()).remove(cell_id).unwrap_or_default();
+        for k in keys {
+            self.shard(&k).write().unwrap_or_else(|p| p.into_inner()).remove(&k);
+        }
+    }
+
+    fn clear(&self) {
+        self.by_cell.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        for s in &self.shards {
+            s.write().unwrap_or_else(|p| p.into_inner()).clear();
+        }
+    }
+}
+
+/// Cell URI rests already parsed, by function hash (parsing depends on the signature
+/// alone): resolving a hot cell costs a binding lookup and no parse.
+struct Targets {
+    #[allow(clippy::type_complexity)]
+    shards: Vec<RwLock<HashMap<String, HashMap<String, Arc<Target>>>>>,
+}
+
+impl Targets {
+    fn new() -> Targets {
+        Targets { shards: (0..32).map(|_| RwLock::new(HashMap::new())).collect() }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn shard(&self, rest: &str) -> &RwLock<HashMap<String, HashMap<String, Arc<Target>>>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        rest.hash(&mut h);
+        &self.shards[(h.finish() % self.shards.len() as u64) as usize]
+    }
+
+    fn get(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
+        self.shard(rest).read().unwrap_or_else(|p| p.into_inner()).get(rest)?.get(fn_hash).cloned()
+    }
+
+    fn put(&self, rest: &str, t: &Arc<Target>) {
+        let mut m = self.shard(rest).write().unwrap_or_else(|p| p.into_inner());
+        if m.len() >= 4_096 {
+            m.clear();
+        }
+        let v = m.entry(rest.to_string()).or_default();
+        if v.len() >= 8 {
+            v.clear();
+        }
+        v.insert(t.bound.fn_hash.clone(), t.clone());
+    }
+}
+
+/// The key of a cell's last good answer: the function hash and the URI (without asof: the
+/// last good answer is kept for requests about now only).
+fn last_good_key(t: &Target) -> String {
+    t.cell_key().to_string()
 }
 
 /// The engine's error as an envelope code (the engine's table, "For the HTTP layer").
@@ -292,6 +442,81 @@ impl Inner {
         Ok(d)
     }
 
+    /// The `ok` reply with a receipt, remembered for `stale` answers.
+    fn ok_reply(
+        &self,
+        target: &Target,
+        info: Arc<ReceiptInfo>,
+        a: &str,
+        now: &str,
+        private: bool,
+        link: bool,
+    ) -> Reply {
+        let mut reply = Reply::json(200, info.ok.clone(), Cache::Immutable);
+        if target.asof().is_none() {
+            let mut lg = self.last_good.lock().unwrap_or_else(|p| p.into_inner());
+            if lg.len() > 100_000 {
+                lg.clear();
+            }
+            lg.insert(last_good_key(target), LastGood { info, at: Instant::now() });
+        }
+        self.cache_rules(&mut reply, target, a, now, private, link);
+        reply
+    }
+
+    /// Remembers the answer as of now `a` for a local stored cell, when it is the cell's
+    /// latest version (a version with a later `tx` would answer later asofs).
+    fn remember_latest(&self, target: &Target, info: &Arc<ReceiptInfo>, a: &str) {
+        match self.store.latest(target.cell_id()) {
+            Ok(Some(v)) if v.receipt_hash == info.hash => {
+                self.latest.put(
+                    target.cell_key().to_string(),
+                    target.cell_id().to_string(),
+                    info.clone(),
+                    a.to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// A stored version was added for `cell_id`: the engine's memo, the latest answers and
+    /// the slice cache forget what rests on it.
+    pub(crate) fn version_added(&self, cell_id: &str) {
+        self.engine.stored_version_added(cell_id);
+        self.latest.forget(cell_id);
+        self.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    /// The receipt's hash, asof, trust and `ok` envelope (cached by its bytes).
+    fn receipt_info(&self, bytes: &[u8]) -> Option<Arc<ReceiptInfo>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        let key = h.finish();
+        let shard = &self.infos[(key % self.infos.len() as u64) as usize];
+        if let Some(i) = shard.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+            if i.receipt == bytes {
+                return Some(i.clone());
+            }
+        }
+        let r = Receipt::from_json(bytes).ok()?;
+        let trust = envelope::trust_of(&r, &self.config.host);
+        let info = Arc::new(ReceiptInfo {
+            hash: r.hash().to_string(),
+            asof: r.asof().to_string(),
+            receipt: bytes.to_vec(),
+            trust,
+            ok: envelope::ok(bytes, trust).into(),
+        });
+        let mut m = shard.lock().unwrap_or_else(|p| p.into_inner());
+        if m.len() >= 4_096 {
+            m.clear();
+        }
+        m.insert(key, info.clone());
+        Some(info)
+    }
+
     /// The reply to a request the call parser rejected.
     pub(crate) fn rejection(&self, r: Rejection, asof: Option<&str>) -> Reply {
         match r {
@@ -307,6 +532,9 @@ impl Inner {
     /// The licence and payment rules for a target and principal: a refusal, and whether the
     /// answer depends on who asks.
     fn policy(&self, target: &Target, principal: Option<&Principal>) -> (Option<Reply>, bool) {
+        if self.config.policy.rules.is_empty() {
+            return (None, false);
+        }
         match self.config.policy.rule(&target.fn_name()) {
             None => (None, false),
             Some(Rule::Principals(ps)) => {
@@ -317,7 +545,7 @@ impl Inner {
                 }
             }
             Some(Rule::Price { amount, currency }) => {
-                let authorise = format!("{}/pay/{}", self.config.origin(), target.cell.id());
+                let authorise = format!("{}/pay/{}", self.config.origin(), target.cell_id());
                 (Some(Reply::json(402, envelope::payment_required(amount, currency, &authorise), Cache::Private)), true)
             }
         }
@@ -331,35 +559,55 @@ impl Inner {
         principal: Option<&Principal>,
         bindings: &dyn Bindings,
         now: &str,
-        on_target: &mut dyn FnMut(&Request),
+        on_target: &mut dyn FnMut(&Target),
+    ) -> Reply {
+        self.answer_with(rest, principal, bindings, now, on_target, true)
+    }
+
+    /// As [`Inner::answer`]; without the canonical link when `link` is false (a batch's
+    /// envelopes have no headers).
+    pub(crate) fn answer_with(
+        &self,
+        rest: &str,
+        principal: Option<&Principal>,
+        bindings: &dyn Bindings,
+        now: &str,
+        on_target: &mut dyn FnMut(&Target),
+        link: bool,
     ) -> Reply {
         let target = match call::resolve(rest, now, &self.config.aliases, bindings, false) {
             Ok(t) => t,
             Err(r) => return self.rejection(r, None),
         };
-        if let Ok(req) = Request::new(&target.cell.id(), target.asof()) {
-            on_target(&req);
-        }
+        on_target(&target);
         let (refused, private) = self.policy(&target, principal);
         if let Some(r) = refused {
             return r;
         }
-        self.answer_target(&target, now, private)
+        self.answer_target(&target, now, private, link)
     }
 
     /// Answers a resolved target as of its asof (or `now`).
-    pub(crate) fn answer_target(&self, target: &Target, now: &str, private: bool) -> Reply {
-        let a = target.asof().unwrap_or(now).to_string();
+    pub(crate) fn answer_target(&self, target: &Target, now: &str, private: bool, link: bool) -> Reply {
+        let a = target.asof().unwrap_or(now);
         let stored = target.bound.descriptor.lang == "stored";
+        let local = stored && !self.foreign.is_foreign(&target.cell.ns);
+        if local {
+            if let Some(info) = self.latest.get(target.cell_key(), a) {
+                let mut reply = Reply::json(200, info.ok.clone(), Cache::Immutable);
+                self.cache_rules(&mut reply, target, a, now, private, link);
+                return reply;
+            }
+        }
         if let Err(e) = self.foreign.prepare(&target.cell, stored, target.asof()) {
             return self.unavailable(target, e);
         }
         let mut attempt = 0;
         loop {
-            let r = self.engine.get_cell(&target.cell, Some(&a));
+            let r = self.engine.get_cell(&target.cell, Some(a));
             let inval = self.foreign.take_invalidated();
             for id in &inval {
-                self.engine.stored_version_added(id);
+                self.version_added(id);
             }
             if !inval.is_empty() && attempt < 2 {
                 attempt += 1;
@@ -367,14 +615,14 @@ impl Inner {
             }
             return match r {
                 Ok(Answer::Receipt(bytes)) => {
-                    let Ok(receipt) = Receipt::from_json(&bytes) else {
+                    let Some(info) = self.receipt_info(&bytes) else {
                         return envelope::error_reply(ErrorCode::EvalUnavailable);
                     };
                     if attempt < 2 {
-                        match self.foreign.refresh_deps(receipt.hash(), &a) {
+                        match self.foreign.refresh_deps(&info.hash, a) {
                             Ok(true) => {
                                 for id in self.foreign.take_invalidated() {
-                                    self.engine.stored_version_added(&id);
+                                    self.version_added(&id);
                                 }
                                 attempt += 1;
                                 continue;
@@ -383,21 +631,14 @@ impl Inner {
                             Err(e) => return self.unavailable(target, e),
                         }
                     }
-                    let trust = envelope::trust_of(&receipt, &self.config.host);
-                    if target.asof().is_none() {
-                        let mut lg = self.last_good.lock().unwrap_or_else(|p| p.into_inner());
-                        if lg.len() > 100_000 {
-                            lg.clear();
-                        }
-                        lg.insert(target.cell.id(), LastGood { receipt: bytes.clone(), trust, at: Instant::now() });
+                    if local && target.asof().is_none() {
+                        self.remember_latest(target, &info, a);
                     }
-                    let mut reply = Reply::json(200, envelope::ok(&bytes, trust), Cache::Immutable);
-                    self.cache_rules(&mut reply, target, &a, now, private);
-                    reply
+                    self.ok_reply(target, info, a, now, private, link)
                 }
                 Ok(Answer::NotCovered { fault }) => {
                     let mut reply = Reply::json(404, envelope::not_covered(fault), Cache::Public(0));
-                    self.cache_rules(&mut reply, target, &a, now, private);
+                    self.cache_rules(&mut reply, target, a, now, private, link);
                     if target.asof().is_some() {
                         reply.cache = if private {
                             Cache::Private
@@ -423,7 +664,7 @@ impl Inner {
         }
     }
 
-    fn cache_rules(&self, reply: &mut Reply, target: &Target, a: &str, now: &str, private: bool) {
+    fn cache_rules(&self, reply: &mut Reply, target: &Target, a: &str, now: &str, private: bool, link: bool) {
         let latest = self.config.ttl.latest_max_age.as_secs();
         reply.cache = if private {
             Cache::Private
@@ -434,7 +675,7 @@ impl Inner {
                 None => Cache::Public(latest),
             }
         };
-        if target.asof().is_none() {
+        if link && target.asof().is_none() {
             reply.canonical = Some(format!("{}/cell/{}", self.config.origin(), target.rest_asof(a)));
         }
     }
@@ -444,15 +685,10 @@ impl Inner {
     fn unavailable(&self, target: &Target, e: ForeignError) -> Reply {
         tracing::info!(target: "datumesh_http", code = e.code.as_str(), detail = %e.detail, "unavailable");
         let lg = self.last_good.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(g) = lg.get(&target.cell.id()) {
-            let answers = match (target.asof(), Receipt::from_json(&g.receipt)) {
-                (None, Ok(_)) => true,
-                (Some(a), Ok(r)) => r.asof() <= a,
-                _ => false,
-            };
-            if answers {
+        if let Some(g) = lg.get(&last_good_key(target)) {
+            if target.asof().is_none_or(|a| g.info.asof.as_str() <= a) {
                 let age = g.at.elapsed().as_secs();
-                return Reply::json(200, envelope::stale(&g.receipt, g.trust, age), Cache::NoStore);
+                return Reply::json(200, envelope::stale(&g.info.receipt, g.info.trust, age), Cache::NoStore);
             }
         }
         envelope::error_reply(e.code)
@@ -508,6 +744,21 @@ impl Inner {
     }
 }
 
+fn verified(r: datumesh_core::VerifyResult) -> Verified {
+    let s = |v: Option<&str>| v.map(|x| Value::String(x.to_string())).unwrap_or(Value::Null);
+    let body = Value::Object(vec![
+        ("blob_checked".into(), Value::Bool(r.blob_checked)),
+        ("code".into(), s(r.code.map(|c| c.as_str()))),
+        ("computed_by".into(), s(r.computed_by.as_deref())),
+        ("detail".into(), Value::String(r.detail.clone())),
+        ("hash".into(), s(r.hash.as_deref())),
+        ("level".into(), s(r.level.map(|l| l.as_str()))),
+        ("ok".into(), Value::Bool(r.ok)),
+        ("path".into(), Value::String(r.path.clone())),
+    ]);
+    Verified { body: body.to_jcs() }
+}
+
 /// What `POST /verify` reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified {
@@ -542,6 +793,14 @@ impl Mesh {
         &self.inner.engine
     }
 
+    /// Forgets every memoised answer (the engine's memo and the mesh's), for a process that
+    /// wrote versions without telling the mesh.
+    pub fn clear_memo(&self) {
+        self.inner.engine.clear_memo();
+        self.inner.latest.clear();
+        self.inner.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
     /// The cross-mesh resolver.
     pub fn foreign(&self) -> &Foreign {
         &self.inner.foreign
@@ -560,8 +819,7 @@ impl Mesh {
 
     /// Tells the engine that a stored version was added for `cell_id` outside the mesh.
     pub fn stored_version_added(&self, cell_id: &str) {
-        self.inner.engine.stored_version_added(cell_id);
-        self.inner.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.inner.version_added(cell_id);
     }
 
     /// The envelope for `rest` (a call or a cell URI's rest, query included, as received at
@@ -580,7 +838,7 @@ impl Mesh {
     }
 
     /// Resolves a request to its cell, as `/cell` does (or to its slice, with `slice`).
-    pub fn resolve(&self, rest: &str, slice: bool) -> Result<Target, Rejection> {
+    pub fn resolve(&self, rest: &str, slice: bool) -> Result<Arc<Target>, Rejection> {
         let now = self.inner.now();
         call::resolve(rest, &now, &self.inner.config.aliases, &*self.inner, slice)
     }
@@ -591,19 +849,56 @@ impl Mesh {
         let keys = self.inner.keys_for_receipt(receipt);
         let resolver: Option<&dyn datumesh_core::Resolver> =
             if signed_only { None } else { Some(&*self.inner.engine as &dyn datumesh_core::Resolver) };
-        let r = verify(receipt, &keys, resolver, blob);
-        let s = |v: Option<&str>| v.map(|x| Value::String(x.to_string())).unwrap_or(Value::Null);
-        let body = Value::Object(vec![
-            ("blob_checked".into(), Value::Bool(r.blob_checked)),
-            ("code".into(), s(r.code.map(|c| c.as_str()))),
-            ("computed_by".into(), s(r.computed_by.as_deref())),
-            ("detail".into(), Value::String(r.detail.clone())),
-            ("hash".into(), s(r.hash.as_deref())),
-            ("level".into(), s(r.level.map(|l| l.as_str()))),
-            ("ok".into(), Value::Bool(r.ok)),
-            ("path".into(), Value::String(r.path.clone())),
-        ]);
-        Verified { body: body.to_jcs() }
+        verified(verify(receipt, &keys, resolver, blob))
+    }
+
+    /// Verifies a receipt with the mesh's keys and what the caller offers for step 7: a
+    /// `recompute` object as SPEC 11 describes it (`descriptor`, `inputs`, `manifests`,
+    /// `lineage`, `value`), the core's `MapResolver` over it. Without one, steps 1-6 only.
+    pub fn verify_offered(&self, receipt: &[u8], recompute: Option<&Value>, blob: Option<&[u8]>) -> Verified {
+        let mut keys = self.inner.keys_for_receipt(receipt);
+        // The signers of the receipts offered for step 7 too.
+        let mut hosts = std::collections::BTreeSet::new();
+        for (_, r) in recompute.and_then(|rc| rc.get("inputs")).and_then(Value::as_object).unwrap_or(&[]) {
+            if let Some(h) = r
+                .as_str()
+                .and_then(|t| json::parse(t.as_bytes()).ok())
+                .and_then(|v| v.get("computed_by").and_then(Value::as_str).map(str::to_string))
+            {
+                hosts.insert(h.split('#').next().unwrap_or("").to_string());
+            }
+        }
+        for h in hosts {
+            if let Some(r) = self.inner.keys.result(&h) {
+                keys.insert_result(&h, r);
+            } else if let Some(doc) = self.inner.key_doc(&h) {
+                keys.insert(doc);
+            }
+        }
+        let Some(rc) = recompute else {
+            return verified(verify(receipt, &keys, None, blob));
+        };
+        let mut m = datumesh_core::MapResolver::new();
+        let cell = json::parse(receipt).ok().and_then(|r| r.get("cell").cloned());
+        if let (Some(d), Some(h)) =
+            (rc.get("descriptor"), cell.as_ref().and_then(|c| c.get("fn_hash")).and_then(Value::as_str))
+        {
+            m.insert_descriptor(h, d.to_jcs());
+        }
+        for (h, r) in rc.get("inputs").and_then(Value::as_object).unwrap_or(&[]) {
+            m.insert_receipt(h.as_str(), r.as_str().unwrap_or("").as_bytes());
+        }
+        for (e, t) in rc.get("manifests").and_then(Value::as_object).unwrap_or(&[]) {
+            m.insert_manifest(e.as_str(), t.as_str().unwrap_or("").as_bytes());
+        }
+        let value = rc.get("value").and_then(|v| datumesh_core::Scalar::from_json(&v.to_jcs()).ok());
+        if let (Some(value), Some(c)) = (value, cell.as_ref().and_then(|c| datumesh_core::Cell::from_value(c).ok())) {
+            m.insert_value(c.id(), value);
+            if let Some(Value::Array(l)) = rc.get("lineage") {
+                m.insert_lineage(c.id(), l.iter().filter_map(Value::as_str));
+            }
+        }
+        verified(verify(receipt, &keys, Some(&m), blob))
     }
 
     /// The mesh document (SPEC 9.6) this mesh serves.

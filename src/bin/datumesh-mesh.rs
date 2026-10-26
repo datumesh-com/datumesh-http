@@ -11,6 +11,8 @@
 //!                                a new API key: its hash appended to the keys file, the key
 //!                                itself written to --out (mode 0600), never printed
 //! datumesh-mesh openapi          print the OpenAPI document
+//! datumesh-mesh health [url]     exit 0 when GET <url> (default http://127.0.0.1:8080/health,
+//!                                or DATUMESH_LISTEN's) answers 200: a container health check
 //! ```
 
 use std::io::Write;
@@ -62,10 +64,27 @@ fn main() {
                 .unwrap_or_else(|e| fail(e));
             println!("key for {principal} written to {out}; its hash appended to {keys}");
         }
+        Some("health") => {
+            let url = args.get(1).cloned().unwrap_or_else(|| {
+                let l = std::env::var("DATUMESH_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".into());
+                let port = l.rsplit(':').next().unwrap_or("8080").to_string();
+                format!("http://127.0.0.1:{port}/health")
+            });
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_global(Some(std::time::Duration::from_secs(5)))
+                .build()
+                .into();
+            match agent.get(&url).call() {
+                Ok(r) if r.status().as_u16() == 200 => println!("healthy"),
+                Ok(r) => fail(format!("{url}: status {}", r.status().as_u16())),
+                Err(e) => fail(format!("{url}: {e}")),
+            }
+        }
         Some("openapi") => {
             println!("{}", datumesh_http::openapi().to_pretty_json().unwrap_or_default());
         }
-        Some(other) => fail(format!("unknown command {other} (serve, migrate, keygen, apikey, openapi)")),
+        Some(other) => fail(format!("unknown command {other} (serve, migrate, keygen, apikey, openapi, health)")),
     }
 }
 

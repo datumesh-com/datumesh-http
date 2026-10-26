@@ -16,7 +16,7 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn headers() {
-    let a = Node::start(A, |_| {}).await;
+    let a = Node::start(A, |c| policy(c, ALICE)).await;
     seed(&a, 10);
     let r = a.get(&format!("/cell/{A}/rate?ccy=USD&date=2026-03-01&asof={T2}")).await;
     assert_eq!(r.header("cache-control").as_deref(), Some(IMMUTABLE));
@@ -58,7 +58,7 @@ async fn cache_in_front() {
         eprintln!("cache_in_front: skipped (run tools/cache_test.sh)");
         return;
     };
-    let a = Node::start_with(Setup { listen, ..Setup::new(A) }, |_| {}, |b| b).await;
+    let a = Node::start_with(Setup { listen, ..Setup::new(A) }, |c| policy(c, ALICE), |b| b).await;
     seed(&a, 10);
     let http = client();
     let get = |path: String| {

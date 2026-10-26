@@ -1,7 +1,7 @@
 //! The endpoints: an axum router over a [`Mesh`].
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -105,7 +105,7 @@ fn rest_of(uri: &Uri, prefix: &str) -> String {
 /// description as soon as it knows it.
 async fn within_budget(
     inner: Arc<Inner>,
-    f: impl FnOnce(&Inner, &mut dyn FnMut(&CoreRequest)) -> Reply + Send + 'static,
+    f: impl FnOnce(&Inner, &mut dyn FnMut(&crate::call::Target)) -> Reply + Send + 'static,
 ) -> Reply {
     let deadline = tokio::time::Instant::now() + inner.config.budget;
     let (tx, mut rx) = tokio::sync::watch::channel::<Option<CoreRequest>>(None);
@@ -113,8 +113,10 @@ async fn within_budget(
     let i2 = inner.clone();
     let mut task = tokio::spawn(async move {
         pool.run(move || {
-            let mut on = |r: &CoreRequest| {
-                let _ = tx.send(Some(r.clone()));
+            let mut on = |t: &crate::call::Target| {
+                if let Ok(r) = CoreRequest::new(t.cell_id(), t.asof()) {
+                    let _ = tx.send(Some(r));
+                }
             };
             f(&i2, &mut on)
         })
@@ -266,10 +268,14 @@ async fn cells(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Re
         return to_response(r);
     }
     let replies = batch(inner.clone(), items, principal.clone()).await;
+    let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for r in &replies {
         if let Some(o) = r.outcome() {
-            inner.metrics.outcome("/cells", &o);
+            *counts.entry(o).or_default() += 1;
         }
+    }
+    for (o, k) in counts {
+        inner.metrics.outcomes("/cells", &o, k);
     }
     let mut out = Vec::with_capacity(replies.iter().map(|r| r.body.len() + 1).sum::<usize>() + 2);
     out.push(b'[');
@@ -291,97 +297,119 @@ fn batch_error(e: &str) -> Response {
 }
 
 fn parse_batch(body: &[u8], max: usize) -> Result<Vec<String>, String> {
-    let v = json::parse(body).map_err(|e| format!("not strict JSON: {e}"))?;
-    let Value::Array(items) = v else { return Err("not a JSON array".into()) };
+    // The body is a list of requests, not a protocol object: plain JSON.
+    let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
+    let serde_json::Value::Array(items) = v else { return Err("not a JSON array".into()) };
     if items.len() > max {
         return Err(format!("{} requests: at most {max}", items.len()));
     }
     items
-        .iter()
+        .into_iter()
         .map(|i| {
             let s = match i {
-                Value::String(s) => s.as_str(),
-                Value::Object(_) => i.get("cell").and_then(Value::as_str).ok_or("an object without a string cell")?,
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Object(mut o) => match o.remove("cell") {
+                    Some(serde_json::Value::String(s)) => s,
+                    _ => return Err("an object without a string cell".to_string()),
+                },
                 _ => return Err("an item that is neither a string nor an object".to_string()),
             };
-            Ok(s.strip_prefix("cell://").unwrap_or(s).to_string())
+            Ok(match s.strip_prefix("cell://") {
+                Some(r) => r.to_string(),
+                None => s,
+            })
         })
         .collect()
 }
 
-/// Answers a batch within the budget: the requests are resolved together (bindings looked
-/// up once per name), then answered in chunks across the pool; those not answered within the
-/// budget become jobs.
+/// Answers a batch within the budget: the requests are answered in chunks across the pool
+/// (one chunk per core; bindings looked up once per name and asof within a chunk). Those not
+/// answered within the budget become jobs: each is resolved again to the request it
+/// describes (a store read), and its chunk's answer completes the job.
 async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principal>) -> Vec<Reply> {
     let n = items.len();
     let deadline = tokio::time::Instant::now() + inner.config.budget;
-    let chunks = n.div_ceil(64).clamp(1, inner.config.pool_size);
+    let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(4);
+    let chunks = n.div_ceil(64).clamp(1, inner.config.pool_size.min(cores));
     let per = n.div_ceil(chunks).max(1);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Result<CoreRequest, Reply>)>();
     let now = inner.now();
     let items = Arc::new(items);
+    // Each chunk's answers so far; once the budget has passed (`late`), its answers go to
+    // the channel instead, to complete their jobs.
+    let shared: Arc<Vec<Mutex<(bool, Vec<(usize, Reply)>)>>> =
+        Arc::new((0..chunks).map(|_| Mutex::new((false, Vec::new()))).collect());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Reply)>();
+    let seen = Arc::new(crate::mesh::Seen::default());
     let mut tasks = Vec::new();
     for c in 0..chunks {
         let (lo, hi) = (c * per, ((c + 1) * per).min(n));
         if lo >= hi {
             break;
         }
-        let (i2, items, tx, p, now) = (inner.clone(), items.clone(), tx.clone(), principal.clone(), now.clone());
+        let (i2, items, tx, p, now, shared) =
+            (inner.clone(), items.clone(), tx.clone(), principal.clone(), now.clone(), shared.clone());
+        let seen = seen.clone();
         let pool = inner.pool.clone();
         tasks.push(tokio::spawn(async move {
             pool.run(move || {
-                let memo = Memo::new(&i2);
+                let memo = Memo::shared(&i2, &seen);
                 for k in lo..hi {
-                    let mut known = false;
-                    let mut on = |r: &CoreRequest| {
-                        known = true;
-                        let _ = tx.send((k, Ok(r.clone())));
-                    };
-                    let reply = i2.answer(&items[k], p.as_ref(), &memo, &now, &mut on);
-                    let _ = known;
-                    let _ = tx.send((k, Err(reply)));
+                    let reply = i2.answer_with(&items[k], p.as_ref(), &memo, &now, &mut |_| {}, false);
+                    let mut slot = shared[c].lock().unwrap_or_else(|p| p.into_inner());
+                    if slot.0 {
+                        let _ = tx.send((k, reply));
+                    } else {
+                        slot.1.push((k, reply));
+                    }
                 }
             })
             .await
         }));
     }
     drop(tx);
+    let all = futures_join(&mut tasks, deadline).await;
     let mut done: Vec<Option<Reply>> = vec![None; n];
-    let mut requests: Vec<Option<CoreRequest>> = vec![None; n];
-    let mut remaining = n;
-    while remaining > 0 {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Some((k, Ok(r)))) => requests[k] = Some(r),
-            Ok(Some((k, Err(reply)))) => {
-                if done[k].is_none() {
-                    remaining -= 1;
-                }
-                done[k] = Some(reply);
-            }
-            Ok(None) => break,
-            Err(_) => break,
+    for slot in shared.iter() {
+        let mut s = slot.lock().unwrap_or_else(|p| p.into_inner());
+        s.0 = true;
+        for (k, r) in s.1.drain(..) {
+            done[k] = Some(r);
         }
     }
-    if remaining == 0 {
+    if all {
         return done
             .into_iter()
             .map(|d| d.unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable)))
             .collect();
     }
-    // Past the budget: a job for every request not answered yet; the rest of the channel
-    // completes them.
-    let mut jobs: Vec<Option<String>> = vec![None; n];
+    // Past the budget: every request not answered yet becomes a job, resolved again to the
+    // request it describes.
+    let open: Vec<usize> = (0..n).filter(|k| done[*k].is_none()).collect();
+    let (i2, items2, open2, now2) = (inner.clone(), items.clone(), open.clone(), now.clone());
+    let requests: Vec<Option<CoreRequest>> = inner
+        .pool
+        .run(move || {
+            let memo = Memo::new(&i2);
+            open2
+                .iter()
+                .map(|k| {
+                    crate::call::resolve(&items2[*k], &now2, &i2.config.aliases, &memo, false)
+                        .ok()
+                        .and_then(|t| CoreRequest::new(t.cell_id(), t.asof()).ok())
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
     let poll_base = format!("{}/jobs/", inner.config.origin());
     let est = inner.jobs.estimate(inner.config.budget.as_secs());
-    for k in 0..n {
-        if done[k].is_some() {
-            continue;
-        }
-        let reply = match requests[k].clone() {
+    let mut jobs: Vec<Option<String>> = vec![None; n];
+    for (i, k) in open.iter().enumerate() {
+        let reply = match requests.get(i).cloned().flatten() {
             Some(req) => match inner.jobs.create(req.clone()) {
                 Some(id) => {
                     let p = Pending::new(&id, est, &format!("{poll_base}{id}"), req);
-                    jobs[k] = Some(id);
+                    jobs[*k] = Some(id);
                     match p {
                         Ok(p) => Reply::json(202, envelope::pending(&p), Cache::NoStore),
                         Err(_) => envelope::error_reply(ErrorCode::EvalUnavailable),
@@ -389,68 +417,43 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
                 }
                 None => envelope::error_reply(ErrorCode::EvalUnavailable),
             },
-            None => {
-                // Not yet resolved: a job needs the request it answers, so the request is
-                // resolved first (quickly: the store), then pending.
-                Reply::json(202, Vec::new(), Cache::NoStore)
-            }
+            None => envelope::error_reply(ErrorCode::EvalUnavailable),
         };
-        done[k] = Some(reply);
+        done[*k] = Some(reply);
     }
-    let i2 = inner.clone();
-    let mut jobs2 = jobs.clone();
-    let mut unresolved: Vec<usize> = (0..n).filter(|k| done[*k].as_ref().is_some_and(|r| r.body.is_empty())).collect();
-    // Requests not resolved at the deadline wait for their resolution (a store read) only.
-    while !unresolved.is_empty() {
-        match rx.recv().await {
-            Some((k, Ok(req))) => {
-                if let Some(pos) = unresolved.iter().position(|u| *u == k) {
-                    unresolved.remove(pos);
-                    done[k] = Some(match inner.jobs.create(req.clone()) {
-                        Some(id) => {
-                            jobs2[k] = Some(id.clone());
-                            match Pending::new(&id, est, &format!("{poll_base}{id}"), req) {
-                                Ok(p) => Reply::json(202, envelope::pending(&p), Cache::NoStore),
-                                Err(_) => envelope::error_reply(ErrorCode::EvalUnavailable),
-                            }
-                        }
-                        None => envelope::error_reply(ErrorCode::EvalUnavailable),
-                    });
-                }
-            }
-            Some((k, Err(reply))) => {
-                if let Some(pos) = unresolved.iter().position(|u| *u == k) {
-                    unresolved.remove(pos);
-                    done[k] = Some(reply);
-                } else if let Some(id) = &jobs2[k] {
-                    let mut r = reply;
-                    r.cache = Cache::NoStore;
-                    r.canonical = None;
-                    inner.jobs.complete(id, r);
-                }
-            }
-            None => break,
-        }
-    }
+    let i3 = inner.clone();
     tokio::spawn(async move {
-        while let Some((k, msg)) = rx.recv().await {
-            if let (Err(mut reply), Some(id)) = (msg, &jobs2[k]) {
+        while let Some((k, mut reply)) = rx.recv().await {
+            if let Some(id) = &jobs[k] {
                 reply.cache = Cache::NoStore;
                 reply.canonical = None;
-                i2.jobs.complete(id, reply);
+                i3.jobs.complete(id, reply);
             }
         }
         for t in tasks {
             let _ = t.await;
         }
-        // Jobs whose task ended without a reply (a panic) are given up.
-        for id in jobs2.into_iter().flatten() {
-            if let Poll::Running(..) = i2.jobs.poll_peek(&id) {
-                i2.jobs.complete(&id, envelope::error_reply(ErrorCode::EvalUnavailable));
+        // Jobs whose task ended without an answer (a panic) are given up.
+        for id in jobs.into_iter().flatten() {
+            if let Poll::Running(..) = i3.jobs.poll_peek(&id) {
+                i3.jobs.complete(&id, envelope::error_reply(ErrorCode::EvalUnavailable));
             }
         }
     });
     done.into_iter().map(|d| d.unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable))).collect()
+}
+
+/// Waits for every task until `deadline`: whether all finished.
+async fn futures_join(tasks: &mut [tokio::task::JoinHandle<Option<()>>], deadline: tokio::time::Instant) -> bool {
+    for t in tasks.iter_mut() {
+        if t.is_finished() {
+            continue;
+        }
+        if tokio::time::timeout_at(deadline, t).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// The members of a slice.
@@ -529,7 +532,7 @@ async fn object(
             let ct = if what == "blob" { "application/octet-stream" } else { JSON };
             to_response(Reply {
                 status: 200,
-                body: bytes,
+                body: bytes.into(),
                 content_type: ct,
                 cache: Cache::Immutable,
                 canonical: None,
@@ -762,13 +765,14 @@ async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: Hea
 struct VerifyQuery {
     level: Option<String>,
     blob: Option<String>,
+    form: Option<String>,
 }
 
 /// Verification as a service: the core verifier on a submitted receipt, with this mesh's
 /// keys; free, unauthenticated, rate-limited per IP.
 #[utoipa::path(post, path = "/verify",
-    params(("level" = Option<String>, Query, description = "`recomputed` (default: recompute with the engine as the resolver) or `signed` (steps 1-6)."), ("blob" = Option<String>, Query, description = "Blob content for step 7.7, as hex (at most 1 MiB).")),
-    request_body(content = String, description = "The receipt's JSON text, exactly as received.", content_type = "application/json"),
+    params(("level" = Option<String>, Query, description = "`recomputed` (default: recompute with the engine as the resolver) or `signed` (steps 1-6)."), ("blob" = Option<String>, Query, description = "Blob content for step 7.7, as hex (at most 1 MiB)."), ("form" = Option<String>, Query, description = "`offered`: the body is `{\"receipt\": <its JSON text>, \"recompute\"?: <SPEC 11's recompute object>, \"blob_hex\"?}` and step 7 uses what is offered instead of this mesh's engine.")),
+    request_body(content = String, description = "The receipt's JSON text, exactly as received (or the offered form).", content_type = "application/json"),
     responses(
         (status = 200, description = "`{\"ok\", \"level\", \"code\", \"hash\", \"computed_by\", \"path\", \"detail\", \"blob_checked\"}`", content_type = "application/json"),
         (status = 429, description = "`rate_limited`", content_type = "application/json"),
@@ -788,6 +792,24 @@ async fn verify_receipt(
         Ok(b) => b,
         Err(_) => return batch_error("body too large"),
     };
+    if q.form.as_deref() == Some("offered") {
+        let Ok(v) = json::parse(&body) else { return batch_error("form=offered: not strict JSON") };
+        let Some(receipt) = v.get("receipt").and_then(Value::as_str).map(|s| s.as_bytes().to_vec()) else {
+            return batch_error("form=offered: no receipt text");
+        };
+        let blob = match v.get("blob_hex").and_then(Value::as_str).map(hex) {
+            None => None,
+            Some(Some(b)) if b.len() <= 1 << 20 => Some(b),
+            Some(_) => return batch_error("blob_hex: hex of at most 1 MiB"),
+        };
+        let m = mesh.clone();
+        let rc = v.get("recompute").cloned();
+        let r = inner.pool.run(move || m.verify_offered(&receipt, rc.as_ref(), blob.as_deref())).await;
+        return match r {
+            Some(v) => to_response(Reply::json(200, v.body, Cache::NoStore)),
+            None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+        };
+    }
     let signed = q.level.as_deref() == Some("signed");
     let blob = match q.blob.as_deref().map(hex) {
         None => None,
@@ -1092,6 +1114,9 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         resp.headers_mut().insert("x-request-id", v);
     }
     resp.headers_mut().insert(header::VARY, HeaderValue::from_static("Accept, Accept-Encoding, Authorization"));
+    if let Ok(v) = HeaderValue::from_str(&format!("app;dur={:.3}", elapsed.as_secs_f64() * 1000.0)) {
+        resp.headers_mut().insert("server-timing", v);
+    }
     resp
 }
 

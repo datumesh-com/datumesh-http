@@ -200,6 +200,10 @@ pub struct Foreign {
     names: Mutex<HashMap<String, Confirmed>>,
     cells: Mutex<HashMap<String, Confirmed>>,
     invalidated: Mutex<Vec<String>>,
+    /// Whether `invalidated` may be non-empty, and whether any cell was imported (checked
+    /// without a lock on every answer).
+    dirty: std::sync::atomic::AtomicBool,
+    any: std::sync::atomic::AtomicBool,
     deps: Mutex<HashMap<String, Arc<Vec<Cell>>>>,
     /// Counters for /metrics.
     pub(crate) fetches: std::sync::atomic::AtomicU64,
@@ -249,6 +253,8 @@ impl Foreign {
             names: Mutex::new(HashMap::new()),
             cells: Mutex::new(HashMap::new()),
             invalidated: Mutex::new(Vec::new()),
+            dirty: Default::default(),
+            any: Default::default(),
             deps: Mutex::new(HashMap::new()),
             fetches: Default::default(),
             failures: Default::default(),
@@ -264,12 +270,15 @@ impl Foreign {
 
     /// Whether any foreign cell was ever imported (lineage checks are skipped otherwise).
     pub fn any_cells(&self) -> bool {
-        !self.cells.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+        self.any.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The cells whose versions grew since the last call: the caller reports each to the
     /// engine (`stored_version_added`).
     pub fn take_invalidated(&self) -> Vec<String> {
+        if !self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Vec::new();
+        }
         std::mem::take(&mut *self.invalidated.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
@@ -585,8 +594,10 @@ impl Foreign {
         }
         if added {
             self.invalidated.lock().unwrap_or_else(|p| p.into_inner()).push(id.clone());
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
         }
         self.cells.lock().unwrap_or_else(|p| p.into_inner()).insert(id, Confirmed { at: Instant::now(), instant: now });
+        self.any.store(true, std::sync::atomic::Ordering::Release);
         Ok(added)
     }
 

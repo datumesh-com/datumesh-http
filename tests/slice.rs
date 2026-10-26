@@ -62,7 +62,10 @@ async fn hundred_thousand_members() {
     }
     assert_eq!(rows, N);
     let warm_p50 = pct(&warm, 0.5);
-    assert!(warm[warm.len() - 1] < Duration::from_secs(2), "warm Arrow stream took {:?}", warm);
+    // Timings hold for an optimised build (`cargo test --release`).
+    if !cfg!(debug_assertions) {
+        assert!(warm[warm.len() - 1] < Duration::from_secs(2), "warm Arrow stream took {:?}", warm);
+    }
 
     // JSON: pages of 1,000 by key, every member once, in order, the asof fixed by the first.
     let t = Instant::now();

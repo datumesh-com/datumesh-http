@@ -5,6 +5,7 @@
 //! same bytes (a call and a cell URI for one cell give byte-identical bodies). The embedded
 //! receipt is the stored receipt, unchanged.
 
+pub use axum::body::Bytes;
 use datumesh_core::json::{self, Value};
 use datumesh_core::{ErrorCode, Fault, Pending, Receipt, Trust};
 
@@ -40,7 +41,7 @@ pub struct Reply {
     /// The HTTP status.
     pub status: u16,
     /// The body.
-    pub body: Vec<u8>,
+    pub body: Bytes,
     /// The media type.
     pub content_type: &'static str,
     /// Caching.
@@ -56,13 +57,21 @@ pub const JSON: &str = "application/json";
 
 impl Reply {
     /// A JSON reply.
-    pub fn json(status: u16, body: Vec<u8>, cache: Cache) -> Reply {
-        Reply { status, body, content_type: JSON, cache, canonical: None, retry_after: None }
+    pub fn json(status: u16, body: impl Into<Bytes>, cache: Cache) -> Reply {
+        Reply { status, body: body.into(), content_type: JSON, cache, canonical: None, retry_after: None }
     }
 
-    /// The envelope's `outcome`, when the body is an envelope.
+    /// The envelope's `outcome`, when the body is an envelope the mesh wrote. (Its members
+    /// are in JCS order and none before `outcome` holds text, so the first `"outcome":` is
+    /// the envelope's own.)
     pub fn outcome(&self) -> Option<String> {
-        json::parse(&self.body).ok()?.get("outcome")?.as_str().map(str::to_string)
+        if self.content_type != JSON {
+            return None;
+        }
+        const KEY: &[u8] = b"\"outcome\":\"";
+        let at = self.body.windows(KEY.len()).position(|w| w == KEY)? + KEY.len();
+        let end = self.body[at..].iter().position(|b| *b == b'"')?;
+        std::str::from_utf8(&self.body[at..at + end]).ok().map(str::to_string)
     }
 }
 
