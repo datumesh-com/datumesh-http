@@ -1,0 +1,101 @@
+# The test mesh at https://mesh-test.datumesh.com: compose project datumesh-mesh-test.
+#
+#   docker compose -p datumesh-mesh-test -f deploy/compose.yml up -d
+#
+# Secrets and state live outside the repository, in $DATUMESH_DIR
+# (default /root/datumesh-mesh-test, made by deploy/setup.sh):
+#   secrets/db.env          POSTGRES_PASSWORD and DATABASE_URL (mode 0600, read by compose)
+#   secrets/mesh.key        the signing key (uid 10001, mode 0600)
+#   secrets/api-keys        the API keys' hashes (uid 10001, mode 0600)
+#   catalog.json            the /find catalog (the imported vectors' names)
+#   backups/                nightly pg_dump (mode 0700)
+# Postgres and the mesh are on an internal network: only Caddy publishes ports (80, 443).
+name: datumesh-mesh-test
+
+
+services:
+  postgres:
+    image: postgres:16
+    env_file: ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets/db.env
+    environment:
+      POSTGRES_DB: datumesh
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "datumesh"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    shm_size: 256m
+    deploy:
+      resources:
+        limits: {cpus: "3", memory: 4g}
+
+  mesh:
+    image: ${DATUMESH_MESH_IMAGE:-datumesh-mesh:0.1.0-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets/db.env
+    environment:
+      DATUMESH_HOST: mesh-test.datumesh.com
+      # The spec vectors' hosts are served as this mesh's own (it mirrors their cells); no
+      # other host is fetched across meshes (an empty allowlist).
+      DATUMESH_NAMESPACES: mesh-test.datumesh.com,calc.example.net,calendars.example.org,curve.example.net,data.example.org,math.example.net,rates.example.org,sheet.example.org,shop.example.net,weather.example.org
+      DATUMESH_CROSS_MESH_HOSTS: ""
+      DATUMESH_KEY_FILE: /run/secrets/mesh.key
+      DATUMESH_API_KEYS_FILE: /run/secrets/api-keys
+      DATUMESH_CATALOG_FILE: /etc/datumesh/catalog.json
+      DATUMESH_TRUST_PROXY: "1"
+      DATUMESH_LISTEN: 0.0.0.0:8080
+      DATUMESH_POOL_SIZE: "32"
+      DATUMESH_BUDGET_MS: "1000"
+      DATUMESH_RATE_PER_IP: "60"
+      DATUMESH_RATE_IP_BURST: "120"
+      DATUMESH_RATE_PER_KEY: "600"
+      DATUMESH_RATE_VERIFY_PER_IP: "60"
+      DATUMESH_LICENCE: CC-BY-4.0
+      DATUMESH_MIGRATE: "1"
+      RUST_LOG: info
+    volumes:
+      - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets:/run/secrets:ro
+      - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/catalog.json:/etc/datumesh/catalog.json:ro
+    networks: [backend]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "4", memory: 4g}
+
+  caddy:
+    # caddy:2.10.2-alpine, pinned by digest.
+    image: caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    depends_on: [mesh]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./${CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [backend, frontend]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 512m}
+
+networks:
+  backend:
+    internal: true
+  frontend: {}
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

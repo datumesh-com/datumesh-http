@@ -117,7 +117,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_MIGRATE` | off | apply the store's schema at start |
 | `RUST_LOG`, `DATUMESH_LOG_FORMAT` | `info`, `json` | logs (`text` for plain lines) |
 
-The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh openapi`; `datumesh-mesh health`.
+The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh import-vectors <dir>` (the spec vectors' cells into the store: `deploy/README.md`); `datumesh-mesh openapi`; `datumesh-mesh health`. The test deployment (compose with Caddy, backups, the restore drill, the resource check, the smoke suite) is in `deploy/`.
 
 ## Docker
 

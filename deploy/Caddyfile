@@ -1,0 +1,33 @@
+# TLS front of the test mesh: automatic HTTPS (Let's Encrypt, HTTP-01; no e-mail given),
+# HSTS, the mesh behind it. Access log: JSON, without query strings, headers or job ids.
+{
+	admin 127.0.0.1:2019
+	# HTTP/1.1 and HTTP/2 only: 443/udp is not published.
+	servers {
+		protocols h1 h2
+	}
+}
+
+(mesh) {
+	header Strict-Transport-Security "max-age=31536000"
+	encode gzip
+	reverse_proxy mesh:8080 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				# One filter per field: a job URL loses its id (a capability), any URL its query.
+				request>uri regexp "^(/jobs/)[0-9a-f]+.*$|\?.*$" "${1}"
+				request>headers delete
+				resp_headers delete
+			}
+		}
+	}
+}
+
+mesh-test.datumesh.com {
+	import mesh
+}
