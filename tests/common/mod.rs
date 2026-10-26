@@ -457,6 +457,7 @@ pub fn schemas() -> Schemas {
 
 impl Schemas {
     /// Asserts that `body` is an envelope by the spec's schema.
+    #[track_caller]
     pub fn assert_envelope(&self, body: &[u8]) {
         let v: serde_json::Value = serde_json::from_slice(body).unwrap();
         let errors: Vec<String> =

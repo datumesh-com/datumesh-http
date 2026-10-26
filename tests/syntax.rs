@@ -76,7 +76,9 @@ async fn call_and_uri_are_one_request() {
             let r = a.get(&format!("/cell/{c}")).await;
             assert_eq!(r.status, base.status, "{c}: {}", r.text());
             assert_eq!(r.body, base.body, "{c} and {uri} differ:\n{}\n{}", r.text(), base.text());
-            assert_eq!(r.header("link"), base.header("link"));
+            // The canonical link names the asof answered for (now, at each request).
+            let strip = |l: Option<String>| l.map(|l| l.split("&asof=").next().unwrap_or("").to_string());
+            assert_eq!(strip(r.header("link")), strip(base.header("link")));
             assert_eq!(r.header("cache-control"), base.header("cache-control"));
             let text = r.text();
             assert!(

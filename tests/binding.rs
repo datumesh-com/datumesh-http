@@ -82,7 +82,7 @@ async fn adversarial_request_binding() {
     ];
     for sib in &sibs {
         for (i, t) in ASOFS.iter().enumerate() {
-            a.put_value(&sib.name, &sib.args, n(&format!("1.08{i}")), t);
+            a.put_value(&sib.name, &sib.args, n(&format!("1.08{}", i + 1)), t);
         }
     }
     // The same cell under another function hash: fx_rate bound again after the asofs.
@@ -97,7 +97,7 @@ async fn adversarial_request_binding() {
     sibs.push(Sibling { label: "other-fn-hash", name: fx.clone(), args: cell("EUR", "USD"), after_rebind: true });
     let shifted = |t: &str| t.replacen("2026-03-16", "2026-07-16", 1).replacen("2026-06-30", "2026-08-30", 1);
     for (i, t) in ASOFS.iter().enumerate() {
-        a.put_value(&fx, &sibs[5].args, n(&format!("2.08{i}")), &shifted(t));
+        a.put_value(&fx, &sibs[5].args, n(&format!("2.08{}", i + 1)), &shifted(t));
     }
     // Each sibling's cell id, under the binding it was answered with.
     let id_of = |sib: &Sibling| {

@@ -24,6 +24,7 @@ struct Seen {
 impl Seen {
     /// Asserts the response is a schema-valid envelope with `outcome`, which the core's
     /// check accepts for the request; records the outcome.
+    #[track_caller]
     fn envelope(&mut self, r: &Resp, outcome: &str, keys: &Keys, cell_id: &str, asof: Option<&str>, job: Option<&str>) {
         self.schemas.assert_envelope(&r.body);
         assert_eq!(r.outcome(), outcome, "{}", r.text());
@@ -301,14 +302,8 @@ async fn every_endpoint_and_outcome() {
     seen.schemas.assert_envelope(&x.get("envelope").unwrap().to_jcs());
     let Some(Value::Array(ins)) = x.get("inputs") else { panic!("inputs") };
     assert_eq!(ins.len(), 1);
-    let child: Vec<(String, Value)> = ins[0]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(k, _)| k == "outcome" || k == "receipt" || k == "trust")
-        .cloned()
-        .collect();
-    seen.schemas.assert_envelope(&Value::Object(child).to_jcs());
+    assert!(ins[0].get("entry").and_then(Value::as_str).is_some());
+    seen.schemas.assert_envelope(&ins[0].get("envelope").unwrap().to_jcs());
     let r = a.get(&format!("/explain/{A}/total?date=2026-03-01")).await;
     let x = r.json();
     let slice_node =

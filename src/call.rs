@@ -24,8 +24,10 @@
 //!   `E_PARSE_URI`, as is any other text that is not such a call.
 //!
 //! A call that does not parse is `E_PARSE_URI`; an unknown label `E_ARG_UNKNOWN`, a missing
-//! argument `E_ARG_MISSING`; a literal of the wrong kind for its argument `E_CANON_TYPE`; a
-//! literal that is not canonical for its type that type's code (`E_CANON_NUMBER`, ...). A
+//! argument `E_ARG_MISSING`, a label given twice `E_CANON_ARG_DUPLICATE`; a literal the
+//! dialect's lexer refuses, or that is not canonical for its argument's type, that type's
+//! code (`E_CANON_NUMBER`, `E_CANON_STRING`, `E_CANON_DATE`, `E_CANON_INSTANT`,
+//! `E_CANON_BLOB`); a literal of the wrong kind for its argument `E_CANON_TYPE`. A
 //! name, or an alias, that is not bound as of the asof is `not_covered`: the mesh does not
 //! serve that function.
 
@@ -234,6 +236,11 @@ fn formula_code(c: Code) -> ErrorCode {
     match c {
         Code::ArgUnknown => ErrorCode::ArgUnknown,
         Code::ArgMissing => ErrorCode::ArgMissing,
+        Code::ArgDuplicate => ErrorCode::CanonArgDuplicate,
+        Code::Number => ErrorCode::CanonNumber,
+        Code::String => ErrorCode::CanonString,
+        Code::Date => ErrorCode::CanonDate,
+        Code::Instant => ErrorCode::CanonInstant,
         _ => ErrorCode::ParseUri,
     }
 }
