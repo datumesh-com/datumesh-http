@@ -7,7 +7,7 @@
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${DATUMESH_DIR:-/root/datumesh-mesh-test}"
-image="${DATUMESH_MESH_IMAGE:-datumesh-mesh:0.1.0-local}"
+image="${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:7b295a2c94b458d7d7a088859b91a3863fcd6fa32b90c292f9d19389642f5441}"
 net=datumesh-mesh-test-drill
 dump="$(ls -1t "$dir"/backups/datumesh-*.dump | head -n 1)"
 [ -n "$dump" ] || { echo "no dump in $dir/backups" >&2; exit 1; }
