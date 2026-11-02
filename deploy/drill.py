@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -26,12 +27,17 @@ KEY = open(os.environ["DATUMESH_DRILL_KEY_FILE"]).read().strip() if os.environ.g
 
 
 def get(base, path):
+    """The status and body; a rate-limit refusal is waited out (Retry-After) and asked again."""
     h = {"Authorization": "Bearer " + KEY} if KEY else {}
-    try:
-        with urllib.request.urlopen(urllib.request.Request(base + path, headers=h), timeout=30) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    for _ in range(30):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(base + path, headers=h), timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                return e.code, e.read()
+            time.sleep(int(e.headers.get("Retry-After", "1")) + 0.2)
+    return 429, b""
 
 
 paths, names = ["/.well-known/datumesh.json", "/.well-known/datumesh-mesh.json"], set()
@@ -71,13 +77,14 @@ if len(sys.argv) > 4:
     paths.extend(blobs)
 for n in sorted(names):
     paths.append("/bindings?name=" + n.replace("/", "%2F") + "&asof=2026-06-01T00:00:00.000000Z")
-same, differ, ok = 0, [], 0
+same, differ, ok, statuses = 0, [], 0, {}
 for path in paths:
     a, b = get(live, path), get(restored, path)
+    statuses[a[0]] = statuses.get(a[0], 0) + 1
     if a == b:
         same += 1
         ok += a[0] == 200
     else:
         differ.append(path)
-print(json.dumps({"requests": len(paths), "identical": same, "identical_200": ok, "different": differ}, indent=1))
+print(json.dumps({"requests": len(paths), "identical": same, "identical_200": ok, "statuses (live)": statuses, "different": differ}, indent=1))
 sys.exit(1 if differ else 0)

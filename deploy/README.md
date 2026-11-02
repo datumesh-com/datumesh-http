@@ -44,24 +44,31 @@ no job ids.
 
 ## The vectors' cells (`import.sh`, `datumesh-mesh import-vectors`)
 
-The store holds only what the spec-0.4.1 vectors define: the key documents of their hosts
-(those of the receipt vectors and the formula vectors' test keys, merged per host), every
-valid descriptor, every valid receipt (797, all accepted: each verified against its signer's
-document on the way in), the slice manifests (18), the name bindings (32) and the stored
-cells' versions (94). What answers (`check_vectors.py`, recorded in `status/vectors.json`):
+Besides the seed data (below), the store holds what the spec-0.4.2 vectors define: the key
+documents of their hosts (those of the receipt vectors and the formula vectors' test keys,
+merged per host), every descriptor the vectors give (235: every formula-eval and excel
+vector's function, valid or not, so that each answers by pinned hash), every receipt (886, all
+accepted: each verified against its signer's document on the way in), the world blobs, the
+slice manifests (18), the name bindings and the stored cells' versions. What answers
+(`check_vectors.py`, recorded in `status/vectors.json`):
 
-- the stored cells of the formula and excel vectors' worlds: 73 of 80 receipts answer by name
-  as of their own asof with exactly that receipt; the other 7 are of `rates.example.org/fx_rate`,
-  which the vectors bind to two functions;
+- **by pinned hash** (`&fn_hash=`, spec-0.4.2): all 243 formula-eval and excel vectors (those
+  in `vectors/invalid/` included) answer with the pin echoed; 222 as the vector says. Of the
+  other 21, 19 read names or cells that other vectors bind or fill differently (one name means
+  one function at a time; each answers as it says on a mesh holding its world alone, as
+  `tests/vectors.rs` shows), one gives its value where the reference evaluator's depth limit
+  stops (the mesh evaluates cell by cell), and one depends on the vector's own fuel;
+- the stored cells of the formula and excel vectors' worlds: 73 of 87 receipts answer by name
+  as of their own asof with exactly that receipt; the other 14 are of names the vectors bind
+  to several functions;
 - receipt vectors: the 2 stored cells whose descriptor the vector gives and whose name is bound
   to it answer with the vector's receipt; 5 computed ones are evaluated by the mesh (its own
   receipt) and 4 give the vector's value; 6 are `error` `E_EVAL_UNAVAILABLE` (the `expr`
   language has no runtime here, or inputs whose functions the vectors do not describe);
   11 have no descriptor in the vector (their receipts are at `/receipt/<hash>`, not by name);
-- formula-eval and excel vectors: every one is a cell of `calc.example.net/e` (or
-  `sheet.example.net/case`), which the vectors bind to 108 (78) different functions; one name
-  means one function at a time, so the first is bound (`abs(a)`) and its vector answers with its
-  value; the others are not answerable by name.
+- by name, the formula-eval and excel vectors are cells of `calc.example.net/e` (or
+  `sheet.example.net/case`), which the vectors bind to 108 (78) different functions: the first
+  is bound and its vector answers by name; the others answer by pinned hash.
 
 ## The seed data (`seed.sh`, `seed/`)
 
