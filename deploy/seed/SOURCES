@@ -1,0 +1,6 @@
+# The scripture sources: <sha256> <file> <URL>, checked by download.sh. The checksums are those
+# of the fact-finding downloads of 2026-10-26 (the UXLC one is also on tanach.us's Technical page).
+423469bdcc4bfe36d7666f8e76fbd02c1674d77469093c06cee9779c0fba83e3 Tanach.xml.zip https://tanach.us/Books/Tanach.xml.zip
+3db73c0966021a84376b274a15243c463bfc29cd4641530923d759d61173e872 sblgnt-d7f35adca9ec410e1d1499c63b4dd989d76c8d4d.tar.gz https://codeload.github.com/Faithlife/SBLGNT/tar.gz/d7f35adca9ec410e1d1499c63b4dd989d76c8d4d
+8c5aeae20363a98f6963720d29fce040ca8b56a8e75f8b564c257fce7f6d0417 quran-uthmani.xml https://tanzil.net/pub/download/index.php?marks=true&sajdah=true&alef=true&tatweel=true&quranType=uthmani&outType=xml&agree=true
+099da765683fdfe2079e39a4950a1e8763cf44eac432a24a354cda89d1f67549 quran-simple.xml https://tanzil.net/pub/download/index.php?marks=true&sajdah=true&alef=true&tatweel=true&quranType=simple&outType=xml&agree=true

@@ -3,8 +3,9 @@
 repeats the per-corpus verification with @datumesh/verify 0.4.2):
 
 * every verse_text cell of the seed answers by name (POST /cells, 1,000 a batch, checked with
-  check_batch against its cell id and the host asked): ok, primary, the value the blob of the
-  source's bytes;
+  check_batch against its cell id and the host asked; an item `pending` past the mesh's budget
+  is polled to its envelope, checked against the same request with its job): ok, primary, the
+  value the blob of the source's bytes;
 * verse_count and chapter_count agree with the loaded verse_text cells for every book and
   chapter;
 * the slice scripture/verse_text(corpus: "quran", book: *, chapter: *, verse: *, edition:
@@ -23,6 +24,7 @@ The seed dir is what the generators wrote (ecb.jsonl, scripture.jsonl, blobs/). 
 to stdout, the verses for the JavaScript part to <out dir>/verses.json; exit 1 on a failure.
 """
 import json
+import os
 import pathlib
 import ssl
 import sys
@@ -37,7 +39,9 @@ import datumesh
 
 base, seed, keyfile, out = sys.argv[1].rstrip("/"), pathlib.Path(sys.argv[2]), sys.argv[3], pathlib.Path(sys.argv[4])
 cafile = sys.argv[5] if len(sys.argv) > 5 else None
-host = base.split("//", 1)[1].split("/")[0]
+# The mesh's host (its key document's): the base URL's, unless DATUMESH_HOST names it (a mesh
+# reached by another name, e.g. over plain HTTP inside a Docker network).
+host = os.environ.get("DATUMESH_HOST") or base.split("//", 1)[1].split("/")[0]
 ctx = ssl.create_default_context(cafile=cafile)
 KEY = open(keyfile).read().strip()
 results = []
@@ -104,9 +108,25 @@ def batch(cells, hashes):
             got.extend([None] * len(part))
             continue
         items = json.loads(b)
-        for item, res in zip(items, r.items):
-            got.append(item["envelope"] if res.ok else {"failed": res.code, "detail": res.detail})
+        for item, res, rq in zip(items, r.items, requests):
+            e = item["envelope"]
+            if res.ok and e.get("outcome") == "pending":
+                # Past the mesh's budget (a batch answers within it, 5.7): the job, polled to
+                # its envelope, which is bound to the original request.
+                job = e["job"]
+                for _ in range(600):
+                    s2, _, b2 = req(f"/jobs/{job}")
+                    if s2 != 202:
+                        break
+                    time.sleep(0.5)
+                res = datumesh.check_envelope(s2, b2, [keys], dict(rq, job=job))
+                e = json.loads(b2)
+                pending[0] += 1
+            got.append(e if res.ok else {"failed": res.code, "detail": res.detail})
     return got
+
+
+pending = [0]
 
 
 def blob_value(cell_line):
@@ -133,7 +153,7 @@ for v, e in zip(verses, envs):
     if not ok and len(bad) < 5:
         bad.append({"cell": v["cell"]["args"], "envelope": e})
 check("every verse_text cell answers by name (ok, primary, the source's blob)", not bad and len(envs) == len(verses),
-      json.dumps({"by corpus/edition [answered, otherwise]": by_edition, "seconds": round(time.time() - t0, 1), "first failures": bad}, ensure_ascii=False)[:2000])
+      json.dumps({"by corpus/edition [answered, otherwise]": by_edition, "pending, then polled": pending[0], "seconds": round(time.time() - t0, 1), "first failures": bad}, ensure_ascii=False)[:2000])
 
 # verse_count and chapter_count against the loaded verse_text cells.
 chapters, versen = {}, {}
@@ -186,7 +206,7 @@ while url:
         last = page["members"][-1]["receipt"]["cell"]["args"]
         after = {k: last[k] for k in ("book", "chapter", "verse")}
     nxt = page.get("next")
-    url = nxt[len(base):] if nxt else None
+    url = (lambda u: u.path + ("?" + u.query if u.query else ""))(urllib.parse.urlsplit(nxt)) if nxt else None
     if pages > 100:
         page_fail.append("more than 100 pages")
         break

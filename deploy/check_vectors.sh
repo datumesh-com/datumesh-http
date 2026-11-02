@@ -11,6 +11,6 @@ fi
 # shellcheck disable=SC2086
 docker run --rm --name datumesh-mesh-test-vectors $extra -v "$here/../spec/vectors:/v:ro" -v "$here:/s:ro" \
   -v "$dir/secrets/tests.api-key:/k:ro" python:3.13-slim sh -c \
-  "pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.1 && python -I /s/check_vectors.py /v https://mesh-test.datumesh.com $ca /k" \
+  "pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.2 && python -I /s/check_vectors.py /v https://mesh-test.datumesh.com $ca /k" \
   > "$dir/status/vectors.json"
 python3 -c "import json; print(json.load(open('$dir/status/vectors.json'))['summary'])"

@@ -69,8 +69,9 @@
 //! `pending` (202) with a job id of 256 bits from the operating system's CSPRNG,
 //! `estimate_seconds`, `poll` (`https://<host>/jobs/<id>`) and the original request, and the
 //! work goes on. `GET /jobs/<id>` answers `pending` again while it runs, then the envelope the
-//! `/cell` request would have had, with its status, bound to the original request. Results are
-//! kept 300 s after they are first served (and 300 s after completion if never served); an
+//! `/cell` request would have had, with its status, bound to the original request. Jobs and
+//! their results are kept while the mesh runs (SPEC 5.5, spec-0.4.2): 300 s after a result is
+//! first served (and 300 s after completion if never served); an
 //! unknown or expired id is `bad_request` `E_JOB_UNKNOWN`. Jobs are held in memory: a
 //! restart forgets them, and the client's remedy for `E_JOB_UNKNOWN` (send the original
 //! request again) is then answered from the store, where the evaluation's receipt was kept.

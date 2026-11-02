@@ -77,10 +77,19 @@ async fn every_formula_vector_by_pinned_hash() {
     let dir = spec_dir().join("vectors");
     let report = bl(|| datumesh_http::vectors::import(&*a.store, &dir, &now()));
     eprintln!("import: {}", String::from_utf8_lossy(&report.to_jcs()));
+    // Every vector of kind formula-eval or excel, wherever it is (vectors/invalid/ holds some).
     let mut files = Vec::new();
-    for g in ["formula-eval", "excel"] {
-        for e in std::fs::read_dir(dir.join(g)).unwrap() {
-            files.push(e.unwrap().path());
+    for g in std::fs::read_dir(&dir).unwrap() {
+        let g = g.unwrap().path();
+        if !g.is_dir() {
+            continue;
+        }
+        for e in std::fs::read_dir(&g).unwrap() {
+            let p = e.unwrap().path();
+            let Ok(v) = json::parse(&std::fs::read(&p).unwrap()) else { continue };
+            if matches!(v.get("kind").and_then(Value::as_str), Some("formula-eval" | "excel")) {
+                files.push(p);
+            }
         }
     }
     files.sort();
@@ -104,6 +113,13 @@ async fn every_formula_vector_by_pinned_hash() {
             *counts.entry("as the vector says".into()).or_default() += 1;
         } else if v.get("fuel").is_some() {
             *counts.entry("otherwise: the vector's own fuel (a request has none)".into()).or_default() += 1;
+        } else if v.get("error").and_then(Value::as_str) == Some("E_FORMULA_DEPTH") {
+            // The evaluator's depth limit (15.11, a mesh failure, not a property of the value):
+            // the mesh evaluates each callee cell on its own, memoised, so no single
+            // evaluation is that deep.
+            *counts
+                .entry("otherwise: the reference evaluator's depth limit (the mesh evaluates cell by cell)".into())
+                .or_default() += 1;
         } else {
             alone.push((p.clone(), id, o, String::from_utf8_lossy(&resp.body).chars().take(160).collect::<String>()));
         }

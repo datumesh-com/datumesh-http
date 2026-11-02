@@ -20,14 +20,19 @@ State and secrets are outside the repository, in `/root/datumesh-mesh-test` (`DA
 ## Setting up and running
 
 ```sh
-docker build -t datumesh-mesh:0.1.0-local .      # or DATUMESH_MESH_IMAGE=ghcr.io/datumesh-com/datumesh-mesh:0.1.0
+docker build -t datumesh-mesh:0.1.1-local .      # until GHCR has 0.1.1: DATUMESH_MESH_IMAGE=datumesh-mesh:0.1.1-local
 deploy/setup.sh                                   # directories, password, key (keygen --publish), API keys, import
+deploy/seed.sh                                    # the seed data (below): download, generate, publish-stored, checks
 CADDYFILE=Caddyfile.internal docker compose -p datumesh-mesh-test -f deploy/compose.yml up -d   # before DNS
 deploy/go_live.sh                                 # once the A record resolves: Let's Encrypt
 deploy/install_cron.sh                            # nightly backup 03:15 UTC, resource check every 15 minutes
 deploy/smoke.sh [--local]                         # the HTTPS smoke suite (--local: before DNS, internal CA)
 deploy/restore_drill.sh                           # restore the newest dump next to the live mesh and compare
 ```
+
+`compose.yml` names the published image by digest; `DATUMESH_MESH_IMAGE` overrides it (0.1.1
+runs as `datumesh-mesh:0.1.1-local` until its image is on GHCR, then by digest). The other
+scripts use the image of the running mesh container unless `DATUMESH_MESH_IMAGE` says otherwise.
 
 Configuration (in `compose.yml`): host `mesh-test.datumesh.com`; the vectors' hosts served as
 the mesh's own namespaces; cross-mesh resolution fetching from no host
@@ -58,14 +63,40 @@ cells' versions (94). What answers (`check_vectors.py`, recorded in `status/vect
   means one function at a time, so the first is bound (`abs(a)`) and its vector answers with its
   value; the others are not answerable by name.
 
+## The seed data (`seed.sh`, `seed/`)
+
+The first live cells, all under `mesh-test.datumesh.com`, loaded with `datumesh-mesh
+publish-stored` (signed with the mesh's key; idempotent) from JSON lines that `seed/ecb.py` and
+`seed/scripture.py` write into `$DATUMESH_DIR/seed/out` (blobs in `seed/out/blobs/`):
+
+- `ecb/fx_rate(base, quote, date)` (EUR in USD, GBP, JPY, CHF, 30 weekdays to 2026-10-30,
+  CC-BY-4.0, and one EUR/NOK cell under `https://mesh-test.datumesh.com/licences/restricted-test`,
+  a page Caddy serves), `ecb/holiday(calendar, date)` (TARGET 2026, CC0-1.0) and the formula
+  `ecb/fx_cross(base, quote, date)`: synthetic, every summary says test data.
+- `scripture/verse_text(corpus, book, chapter, verse, edition)`: a `text/plain` blob of the
+  source's bytes: `tanakh`/`uxlc` (UXLC 2.6, build 27.7, OSIS book keys), `nt`/`sblgnt` (SBLGNT
+  v1.2, Faithlife/SBLGNT d7f35ad), `quran`/`uthmani` and `quran`/`simple` (Tanzil 1.1, XML;
+  book the surah number, chapter 1); `chapter_count(corpus, book)` and `verse_count(corpus,
+  book, chapter)` (unit `count`); the formula `strip_niqqud(book, chapter, verse)`, the derived
+  edition `uxlc-consonantal`, evaluated on demand (trust `computed`). `seed/scripture.py`'s
+  documentation says exactly how each verse's bytes are taken from its source.
+
+`seed/download.sh` fetches the sources into `$DATUMESH_DIR/seed/dl` and checks them against
+`seed/SOURCES`; the downloads stay out of the repository and are only read (never run).
+`seed.sh` then regenerates the `/find` catalog with the seed's functions, restarts the mesh, and
+runs `seed/check_seed.py` (Python datumesh 0.4.2) and `seed/check_seed.mjs` (@datumesh/verify
+0.4.2) over HTTPS: `status/seed-load.json` (rows, bytes, non-NFC counts, timings) and
+`status/seed-check.json`. `seed.sh --checks` runs the checks only.
+
 ## Backups and the drill
 
 `backup.sh` (cron, 03:15 UTC) dumps the database with `pg_dump -Fc` from the Postgres container
 into `backups/`, keeping 14. `restore_drill.sh` restores the newest dump into a fresh
 `postgres:16` container, starts a second mesh on it (same image, key and configuration, on a
 network of its own, no port), and `drill.py` sends the same requests to both meshes (every
-stored cell of the vectors as of its receipt's asof, the documents, the bindings): every
-answer must be identical byte for byte. The containers and the network are removed after.
+stored cell of the vectors as of its receipt's asof, the documents, the bindings, and, once the
+seed is loaded, every ECB cell, every tenth scripture cell and a hundred blobs): every answer
+must be identical byte for byte. The containers and the network are removed after.
 
 ## The resource check
 

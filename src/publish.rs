@@ -6,6 +6,11 @@
 //! * a function: `{"function": "<ns>/<name>", "signature": {...}, "bound": "<instant>"}`: the
 //!   descriptor `{"code": {"body": "", "lang": "stored"}, "inputs": [], "signature": ...}`
 //!   is put and the name bound to it from `bound` (unless it already is);
+//! * a formula function: `{"formula": "<ns>/<name>", "source": "<formula>", "signature":
+//!   {...}, "bound": "<instant>"}`: defined with `datumesh_formula::definition::define_function`
+//!   (its callees as bound at `bound`) and published (`put_descriptor`, `bind_name` from
+//!   `bound`) unless the name is already bound to that function; its cells are evaluated on
+//!   demand by the mesh;
 //! * a cell: `{"cell": {"fn": "<ns>/<name>", "args": {<name>: <typed scalar>}}, "value": <typed
 //!   scalar> or {"blob": "<file>", "media_type": "<type>"}, "tx", "asof", "issued"?, "licence",
 //!   "summary"}`: a blob's file (relative to the JSON lines file) is put with `put_blob` and the
@@ -30,7 +35,7 @@ use datumesh_store::Store;
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Published {
-    /// Functions newly bound.
+    /// Functions newly bound (stored and formula).
     pub functions: usize,
     /// Cell lines read.
     pub cells: usize,
@@ -63,6 +68,19 @@ impl std::error::Error for PublishError {}
 
 fn s(v: &str) -> Value {
     Value::String(v.to_string())
+}
+
+/// A store as the callees of a definition: a name's binding as of an instant, with its
+/// descriptor.
+struct StoreCallees<'a, S: Store + ?Sized>(&'a S);
+
+impl<S: Store + ?Sized> datumesh_formula::definition::Callees for StoreCallees<'_, S> {
+    fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
+        let Some(b) = self.0.resolve_binding(name, at).map_err(|e| e.to_string())? else { return Ok(None) };
+        let bytes = self.0.descriptor(&b.fn_hash).ok_or_else(|| format!("descriptor {} is not stored", b.fn_hash))?;
+        let descriptor = json::parse(&bytes).map_err(|e| e.to_string())?;
+        Ok(Some(datumesh_formula::definition::Callee { fn_hash: b.fn_hash, start: b.tx, descriptor }))
+    }
 }
 
 /// The receipt JSON of a signed receipt: its payload's members and `sig`.
@@ -121,6 +139,30 @@ pub fn publish_stored<S: Store + ?Sized>(
             ]);
             let fd = FunctionDescriptor::from_value(&d).map_err(|e| err(e.to_string()))?;
             let h = store.put_descriptor(&fd.canonical()).map_err(|e| err(e.to_string()))?;
+            match store.resolve_binding(name, "9999-12-31T23:59:59.999999Z").map_err(|e| err(e.to_string()))? {
+                Some(b) if b.fn_hash == h => {}
+                _ => {
+                    store.bind_name(name, &h, bound).map_err(|e| err(format!("bind {name}: {e}")))?;
+                    out.functions += 1;
+                }
+            }
+            continue;
+        }
+        if let Some(name) = v.get("formula").and_then(Value::as_str) {
+            let source =
+                v.get("source").and_then(Value::as_str).ok_or_else(|| err("a formula without source".into()))?;
+            let sig = v.get("signature").ok_or_else(|| err("a formula without a signature".into()))?;
+            let bound = v.get("bound").and_then(Value::as_str).ok_or_else(|| err("a formula without bound".into()))?;
+            let def = datumesh_formula::definition::define_function(
+                name,
+                source,
+                sig,
+                &Default::default(),
+                &StoreCallees(store),
+                bound,
+            )
+            .map_err(|e| err(format!("define {name}: {e}")))?;
+            let h = store.put_descriptor(&def.bytes).map_err(|e| err(e.to_string()))?;
             match store.resolve_binding(name, "9999-12-31T23:59:59.999999Z").map_err(|e| err(e.to_string()))? {
                 Some(b) if b.fn_hash == h => {}
                 _ => {

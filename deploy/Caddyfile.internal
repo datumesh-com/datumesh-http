@@ -11,6 +11,9 @@
 (mesh) {
 	header Strict-Transport-Security "max-age=31536000"
 	encode gzip
+	# The licence of the seed's one restricted cell (deploy/seed/ecb.py): a test licence, not open.
+	header /licences/restricted-test Content-Type "text/plain; charset=utf-8"
+	respond /licences/restricted-test "Restricted test licence (mesh-test.datumesh.com). The cells under this licence are synthetic test data. It is not an open licence: it permits no delivery beyond the test mesh's own answers, and exists only so that clients can test how they treat a licence that is not open." 200
 	reverse_proxy mesh:8080 {
 		header_up X-Forwarded-For {remote_host}
 	}

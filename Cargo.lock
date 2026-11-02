@@ -471,6 +471,8 @@ dependencies = [
 [[package]]
 name = "datumesh-formula"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd456f45b0a6806d9084e5e9216ad0388ab90a6295a53f7b5425fcdb667add01"
 dependencies = [
  "datumesh-core",
  "datumesh-engine",

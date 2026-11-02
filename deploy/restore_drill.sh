@@ -7,7 +7,8 @@
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${DATUMESH_DIR:-/root/datumesh-mesh-test}"
-image="${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:7b295a2c94b458d7d7a088859b91a3863fcd6fa32b90c292f9d19389642f5441}"
+# The live mesh's image, unless DATUMESH_MESH_IMAGE names another.
+image="${DATUMESH_MESH_IMAGE:-$(docker inspect datumesh-mesh-test-mesh-1 --format '{{.Config.Image}}')}"
 net=datumesh-mesh-test-drill
 dump="$(ls -1t "$dir"/backups/datumesh-*.dump | head -n 1)"
 [ -n "$dump" ] || { echo "no dump in $dir/backups" >&2; exit 1; }
@@ -34,8 +35,13 @@ vectors="$(cd "$here/../spec/vectors" && pwd)"
 # The comparing container: on the default bridge (to install the Python library) and on both
 # internal networks, the drill's and the live project's.
 docker rm -f datumesh-mesh-test-drill-check >/dev/null 2>&1 || true
-docker create --name datumesh-mesh-test-drill-check -v "$vectors:/v:ro" -v "$here:/s:ro" python:3.13-slim \
-  sh -c 'pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.1 2>/dev/null; python -I /s/drill.py /v http://mesh:8080 http://datumesh-mesh-test-drill-mesh:8080' >/dev/null
+# The seed's cells too, when deploy/seed.sh has loaded them.
+seed=""; seedmount=""
+if [ -f "$dir/seed/out/scripture.jsonl" ]; then seed=/seed; seedmount="-v $dir/seed/out:/seed:ro"; fi
+# shellcheck disable=SC2086
+docker create --name datumesh-mesh-test-drill-check -v "$vectors:/v:ro" -v "$here:/s:ro" $seedmount \
+  -v "$dir/secrets/tests.api-key:/key:ro" -e DATUMESH_DRILL_KEY_FILE=/key python:3.13-slim \
+  sh -c "pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.2 2>/dev/null; python -I /s/drill.py /v http://mesh:8080 http://datumesh-mesh-test-drill-mesh:8080 $seed" >/dev/null
 docker network connect "$net" datumesh-mesh-test-drill-check
 docker network connect datumesh-mesh-test_backend datumesh-mesh-test-drill-check
 set +e

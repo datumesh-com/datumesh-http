@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.1 (unreleased)
+
+spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; store 0.3.2).
+
+- Pins: `/cell/name@<fn_hash>(args)` and `&fn_hash=` in a cell URI; every answer echoes
+  `fn_hash`, `pending` in its `request`. An unknown pin is `not_covered`.
+- Trust `computed` for receipts this mesh signed (not `primary`); envelopes built with core's
+  `Answer` builder.
+- `GET /slice` JSON answers are page envelopes (SPEC 5.6); Arrow is unchanged.
+- `POST /cells` answers `[{"envelope", "status"}]`, or one envelope refusing the whole batch
+  (SPEC 5.7).
+- `E_SLICE_AT_CELL` (`bad_request`) for a slice marker at `/cell`; `E_NAME_UNBOUND`
+  (`not_covered` with `error`) for an unbound name.
+- One manifest path, `/manifest/<slice id>/<members hash>` (`/slice/<hex>/<hex>` is gone).
+- `GET /versions/<uri>` (SPEC 9.8), listed in the mesh document; the job lifetime text is
+  "while the mesh runs".
+- `client`: a store-less, blocking client for other meshes, every answer checked with core;
+  `foreign` (cross-mesh import) is now a thin layer on it, and uses `versions` when a mesh
+  lists it. `foreign::ForeignError` is now a type alias of `client::ClientError` (the same
+  fields and traits).
+- `publish`: `publish_stored` and `datumesh-mesh publish-stored <file.jsonl>`: stored and
+  formula functions and their cells (blobs included) signed as the mesh, idempotently.
+- `vectors`: `import-vectors` loads every formula and excel vector's function (by hash), so
+  each answers by pinned hash; names only invalid vectors bind are bound too.
+- Additive: `call::Target::pin`, `pinned_reference`, `call::format_pinned`, the provided
+  `Bindings::pinned` and `Bindings::alias`.
+- The test mesh (`deploy/`): the seed data (`deploy/seed.sh`: the synthetic ECB-shaped cells
+  and the scripture corpora), the smoke suite and the drill for 0.1.1.
+
 ## 0.1.0 (unreleased)
 
 The first release: the Datumesh engine (datumesh-engine 0.3.1, the formula runtime of

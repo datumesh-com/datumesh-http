@@ -2,11 +2,14 @@
 """The restore drill's comparison: the same requests to the live mesh and to the mesh on the
 restored database, compared byte for byte (status and body). The sample: every stored cell of
 the vectors' worlds and stored receipt vectors, as of its receipt's asof (an answer that never
-changes), plus the key and mesh documents and the bindings of every name.
+changes), plus the key and mesh documents and the bindings of every name; with a seed dir
+(deploy/seed.sh's output), also every ECB cell and every tenth scripture cell as of its asof,
+and their blobs' first hundred.
 
-    python drill.py <vectors dir> <live base URL> <restored base URL>   (JSON to stdout; exit 1 on a difference)
+    python drill.py <vectors dir> <live base URL> <restored base URL> [seed dir]   (JSON to stdout; exit 1 on a difference)
 """
 import json
+import os
 import pathlib
 import sys
 import urllib.error
@@ -17,9 +20,15 @@ import datumesh
 vectors, live, restored = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 
 
+# The tests' API key (the same on both meshes: they read the same secrets), when given in
+# DATUMESH_DRILL_KEY_FILE: past the anonymous rate limit.
+KEY = open(os.environ["DATUMESH_DRILL_KEY_FILE"]).read().strip() if os.environ.get("DATUMESH_DRILL_KEY_FILE") else None
+
+
 def get(base, path):
+    h = {"Authorization": "Bearer " + KEY} if KEY else {}
     try:
-        with urllib.request.urlopen(base + path, timeout=30) as r:
+        with urllib.request.urlopen(urllib.request.Request(base + path, headers=h), timeout=30) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
@@ -41,6 +50,25 @@ for p in sorted(vectors.glob("*/*.json")):
             seen.add(uri)
             paths.append("/cell/" + uri[len("cell://"):])
         names.add(c["ns"] + "/" + c["fn"])
+if len(sys.argv) > 4:
+    seed = pathlib.Path(sys.argv[4])
+    blobs = []
+    for name, every in (("ecb.jsonl", 1), ("scripture.jsonl", 10)):
+        k = 0
+        for line in open(seed / name, encoding="utf-8"):
+            l = json.loads(line)
+            if "cell" not in l:
+                continue
+            k += 1
+            if k % every:
+                continue
+            ns, fn = l["cell"]["fn"].rsplit("/", 1)
+            uri = datumesh.format_uri({"ns": ns, "fn": fn, "args": l["cell"]["args"], "asof": l["asof"]})
+            paths.append("/cell/" + uri[len("cell://"):])
+            names.add(l["cell"]["fn"])
+            if "blob" in l["value"] and len(blobs) < 100:
+                blobs.append("/blob/" + l["value"]["blob"].rsplit("/", 1)[1])
+    paths.extend(blobs)
 for n in sorted(names):
     paths.append("/bindings?name=" + n.replace("/", "%2F") + "&asof=2026-06-01T00:00:00.000000Z")
 same, differ, ok = 0, [], 0

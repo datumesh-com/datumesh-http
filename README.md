@@ -1,14 +1,14 @@
 # datumesh-http
 
-The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.1](https://github.com/datumesh-com/datumesh-spec)): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), and cross-mesh resolution of names under other hosts. The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.3.1 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.1.0 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.3.2 and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.5.
+The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.2](https://github.com/datumesh-com/datumesh-spec)): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), versions (SPEC 9.8), cross-mesh resolution of names under other hosts, and a store-less client for other meshes (`client`). The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.3.2 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.1.1 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.3.2 and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.6.
 
 ## Example
 
 ```toml
 [dependencies]
-datumesh-http = "0.1.0"
+datumesh-http = "0.1.1"
 datumesh-store = "0.3.2"
-datumesh-core = { version = "0.3.5", features = ["sign"] }
+datumesh-core = { version = "0.3.6", features = ["sign"] }
 ```
 
 A mesh for `mesh.example.com` on a fresh database: its key document in the store, a stored function and one value, then the envelope of the cell asked as a call and as a cell URI (the same bytes):
@@ -77,10 +77,10 @@ It prints `200` and the `ok` envelope with the publisher's receipt (`"trust":"pr
 
 | Endpoint | Answer |
 |---|---|
-| `GET /cell/<call or uri>` | the envelope; a cell URI's rest byte for byte (`/cell/ecb.europa.eu/fx_rate?base=EUR&date=2024-03-15&quote=USD`, `&asof=` last), or a call (`/cell/rates.example.org/fx_rate(%22EUR%22,%202024-03-15,%20%22USD%22)?asof=...`) |
-| `POST /cells` | a JSON array of requests (calls, `cell://` URIs or `{"cell": ...}`), at most 1,000, to an array of envelopes in order (each has its outcome's status; `error`: 500) |
-| `GET /slice/<call or uri with *>` | members of a stored function's slice as of the asof, in key order: JSON pages (`limit=`, default 1,000, at most 10,000; `next` carries `after=` the last key) or, with `Accept: application/vnd.apache.arrow.stream`, one Arrow IPC stream (UTF-8 columns: the open arguments, `value`, `type`, `receipt`, `tx`, `asof`) |
-| `GET /receipt/<hash>`, `/descriptor/<hash>`, `/manifest/<slice id>/<members hash>`, `/blob/<sha256>` | the bytes, immutable; a manifest also at `/slice/<slice id>/<members hash>` (SPEC 15.13) |
+| `GET /cell/<call or uri>` | the envelope; a cell URI's rest byte for byte (`/cell/ecb.europa.eu/fx_rate?base=EUR&date=2024-03-15&quote=USD`, `&fn_hash=` then `&asof=` last), or a call (`/cell/rates.example.org/fx_rate(%22EUR%22,%202024-03-15,%20%22USD%22)?asof=...`, pinned `name@<fn_hash>(...)`); every answer echoes `fn_hash` (a `pending` one in its `request`); trust `computed` for receipts this mesh signed; a slice marker is `E_SLICE_AT_CELL`, an unbound name `not_covered` with `E_NAME_UNBOUND` |
+| `POST /cells` | a JSON array of requests (calls, `cell://` URIs or `{"cell": ...}`), at most 1,000, to `[{"envelope", "status"}]` in request order (SPEC 5.7), or one envelope refusing the whole batch (`bad_request` for a body that is not such an array or too long) |
+| `GET /slice/<call or uri with *>` | members of a stored function's slice as of the asof, in key order: page envelopes (SPEC 5.6: `slice`, `members` as `ok` envelopes, `next`; `limit=`, default 1,000, at most 10,000; `next` carries `after=` the last key) or, with `Accept: application/vnd.apache.arrow.stream`, one Arrow IPC stream (UTF-8 columns: the open arguments, `value`, `type`, `receipt`, `tx`, `asof`) |
+| `GET /receipt/<hash>`, `/descriptor/<hash>`, `/manifest/<slice id>/<members hash>`, `/blob/<sha256>` | the bytes, immutable |
 | `GET /explain/<call or uri>` | `{"envelope", "inputs": [{"entry", "envelope", "inputs", "truncated"} or {"entry", "members", "slice"}], "truncated"}`, `depth=` (default 4, at most 16), at most 2,000 nodes |
 | `GET /find?q=` | `{"query", "results": [{"name", "fn_hash", "since", "description", "descriptor"}]}` over the catalog's names and descriptions (a stub: pgvector is 2.2) |
 | `POST /verify` | the receipt's text as the body: `{"ok", "level", "code", "hash", "computed_by", "path", "detail", "blob_checked"}`, at level `recomputed` with the engine as the resolver (`?level=signed`: steps 1-6; `?blob=<hex>`: step 7.7); `?form=offered` takes `{"receipt": <text>, "recompute": <SPEC 11's object>, "blob_hex"}` and recomputes with what is offered. Free, unauthenticated, 60 a minute per IP |
@@ -88,9 +88,14 @@ It prints `200` and the `ok` envelope with the publisher's receipt (`"trust":"pr
 | `GET /.well-known/datumesh.json` | the key document: the store's namespace record for the mesh's host |
 | `GET /.well-known/datumesh-mesh.json` | the mesh document (SPEC 9.6) |
 | `GET /bindings?name=<name>&asof=` | SPEC 9.7, for names under the hosts the mesh owns |
+| `GET /versions/<uri>` | SPEC 9.8: a cell's versions `{"cell", "versions": [{"tx", "asof", "receipt"}], "next"}`, oldest first, 1,000 a page (`from=`, `to=` instants) |
 | `GET /health`, `/metrics`, `/openapi.json` | the store's health; Prometheus text; the OpenAPI document (generated from the handlers, utoipa) |
 
-The crate documentation has the details: the call forms accepted in 0.1.0, every outcome and its status, how `Engine::get` maps to envelopes, jobs, cross-mesh resolution and its cache lifetimes, caching headers, the pool and the rate limits.
+The crate documentation has the details: the call forms accepted (pins since 0.1.1), every outcome and its status, how `Engine::get` maps to envelopes, jobs, cross-mesh resolution and its cache lifetimes, caching headers, the pool and the rate limits.
+
+## The client
+
+`datumesh_http::client` reads other meshes without a store (for `datumesh-local` and other tools): `Client::new(ClientConfig)` (the hosts it may fetch from, `host=origin` peers, the timeout and the key and mesh documents' lifetimes); `resolve(host)` (the mesh document, checked with the key document, SPEC 9.6), `key_document`, `binding`, `cell(host, rest, &Request)` and `reference(host, &Reference)` (a call, a cell URI or a pin; the envelope checked with core's `check_answer`, signatures through the key document), `slice_page`/`slice` (pages checked with `check_slice_answer`), `batch` (`check_batch`), `receipt`, `descriptor`, `manifest` and `blob` (each checked against its hash), `versions`. It is blocking (`ureq`): call it from a blocking thread in async code. Errors are `ClientError { code, detail }`, the code the mesh would answer with. The mesh's cross-mesh import (`foreign`) is a thin layer on it that puts what the client fetched and checked into the store.
 
 ## Configuration
 
@@ -117,7 +122,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_MIGRATE` | off | apply the store's schema at start |
 | `RUST_LOG`, `DATUMESH_LOG_FORMAT` | `info`, `json` | logs (`text` for plain lines) |
 
-The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh import-vectors <dir>` (the spec vectors' cells into the store: `deploy/README.md`); `datumesh-mesh openapi`; `datumesh-mesh health`. The test deployment (compose with Caddy, backups, the restore drill, the resource check, the smoke suite) is in `deploy/`.
+The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh publish-stored <file.jsonl>` (stored functions, formula functions and their cells, blobs included, signed with `DATUMESH_KEY_FILE` as `DATUMESH_HOST`; idempotent; the format is in the `publish` module's documentation); `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh import-vectors <dir>` (the spec vectors' cells into the store: `deploy/README.md`); `datumesh-mesh openapi`; `datumesh-mesh health`. The test deployment (compose with Caddy, backups, the restore drill, the resource check, the smoke suite) is in `deploy/`.
 
 ## Docker
 
@@ -125,7 +130,7 @@ The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh keygen --out <
 
 ## Development
 
-With a PostgreSQL 16 server whose role may create databases in `DATABASE_URL`, `cargo test` runs everything, each test on a database of its own; the brief's timings are asserted in optimised builds only: `cargo test --release` (the 100,000-member slice test loads its slice first, about a minute). `tools/cargo.sh <toolchain> <args>` runs cargo in a `rust:<toolchain>` container next to a `datumesh-pg` container. `tools/client_check.sh` checks the request-binding cases the tests write (`target-out/binding-cases.jsonl`) with the Python (`datumesh` 0.4.1) and JavaScript (`@datumesh/verify` 0.4.1) libraries; `tools/cache_test.sh` runs nginx (proxy cache) in front of a test mesh and asserts by the origin's counter that repeat gets never reach it; `tools/package_test.sh` is the packaging test (the example above in a new project); `tools/public_api.sh` regenerates `public-api.txt`.
+With a PostgreSQL 16 server whose role may create databases in `DATABASE_URL`, `cargo test` runs everything, each test on a database of its own; the brief's timings are asserted in optimised builds only: `cargo test --release` (the 100,000-member slice test loads its slice first, about a minute). `tools/cargo.sh <toolchain> <args>` runs cargo in a `rust:<toolchain>` container next to a `datumesh-pg` container. `tools/client_check.sh` checks the request-binding cases the tests write (`target-out/binding-cases.jsonl`) with the Python (`datumesh` 0.4.2) and JavaScript (`@datumesh/verify` 0.4.2) libraries (envelopes, pins, `computed`, a page and a batch); `tools/cache_test.sh` runs nginx (proxy cache) in front of a test mesh and asserts by the origin's counter that repeat gets never reach it; `tools/package_test.sh` is the packaging test (the example above in a new project); `tools/public_api.sh` regenerates `public-api.txt`.
 
 Test numbers on the development host (6 vCPU, 15 GB RAM; release build; `target-out/` has each run's): a warm `GET /cell` of a stored cell 0.6-0.7 ms p50 over loopback; 1,000 cells in one `POST /cells` 5-6 ms (about 8 times one cell); 1,000 concurrent warm gets p50 75 ms, p99 110 ms, no errors, the pool saturated (32 in use); a 100,000-member slice as Arrow (16 MB) 0.1 s warm (6 s cold, from the store); `pending` at 1.0 s for a 10 s evaluation, its job done at 10.05 s, then 2 ms from the memo; a rate-limited client's refusals at 0.6 ms p50 while a client under its limit kept its p99.
 

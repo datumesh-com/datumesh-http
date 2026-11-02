@@ -59,6 +59,7 @@ pub fn datumesh_http::call::Bound::fmt(&self, &mut core::fmt::Formatter<'_>) -> 
 pub struct datumesh_http::call::Target
 pub datumesh_http::call::Target::bound: alloc::rcs::arc::Arc<datumesh_http::call::Bound>
 pub datumesh_http::call::Target::cell: datumesh_core::model::Cell
+pub datumesh_http::call::Target::pin: core::option::Option<alloc::string::String>
 pub datumesh_http::call::Target::reference: datumesh_core::model::CellRef
 pub datumesh_http::call::Target::uri: alloc::string::String
 impl datumesh_http::call::Target
@@ -66,6 +67,7 @@ pub fn datumesh_http::call::Target::asof(&self) -> core::option::Option<&str>
 pub fn datumesh_http::call::Target::cell_id(&self) -> &str
 pub fn datumesh_http::call::Target::cell_key(&self) -> &str
 pub fn datumesh_http::call::Target::fn_name(&self) -> alloc::string::String
+pub fn datumesh_http::call::Target::pinned_reference(&self) -> datumesh_core::model::Reference
 pub fn datumesh_http::call::Target::rest(&self) -> &str
 pub fn datumesh_http::call::Target::rest_asof(&self, &str) -> alloc::string::String
 impl core::clone::Clone for datumesh_http::call::Target
@@ -73,13 +75,110 @@ pub fn datumesh_http::call::Target::clone(&self) -> Self
 impl core::fmt::Debug for datumesh_http::call::Target
 pub fn datumesh_http::call::Target::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait datumesh_http::call::Bindings
+pub fn datumesh_http::call::Bindings::alias(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn datumesh_http::call::Bindings::binding(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::cached(&self, &str, &str) -> core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Target>>
+pub fn datumesh_http::call::Bindings::pinned(&self, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::remember(&self, &str, &alloc::rcs::arc::Arc<datumesh_http::call::Target>)
+pub fn datumesh_http::call::format_pinned(&datumesh_core::model::Reference) -> alloc::string::String
 pub fn datumesh_http::call::is_call(&str) -> bool
 pub fn datumesh_http::call::resolve(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
 pub fn datumesh_http::call::resolve_call(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
 pub fn datumesh_http::call::resolve_uri(&str, &str, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
+pub mod datumesh_http::client
+pub struct datumesh_http::client::Client
+impl datumesh_http::client::Client
+pub fn datumesh_http::client::Client::allowed(&self, &str) -> bool
+pub fn datumesh_http::client::Client::batch(&self, &str, &[alloc::string::String], &[datumesh_core::envelope::Request]) -> core::result::Result<datumesh_core::answer::Batch, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::binding(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<core::option::Option<datumesh_http::client::RemoteBinding>, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::blob(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::cell(&self, &str, &str, &datumesh_core::envelope::Request) -> core::result::Result<datumesh_http::client::Fetched, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::descriptor(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::get(&self, &str, u64) -> core::result::Result<(u16, alloc::vec::Vec<u8>), alloc::string::String>
+pub fn datumesh_http::client::Client::key_document(&self, &str, bool) -> core::result::Result<datumesh_core::keys::KeyDoc, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::key_document_bytes(&self, &str) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn datumesh_http::client::Client::keys(&self) -> &alloc::rcs::arc::Arc<datumesh_http::foreign::KeyCache>
+pub fn datumesh_http::client::Client::keys_for_body(&self, &[u8]) -> datumesh_core::keys::Keys
+pub fn datumesh_http::client::Client::manifest(&self, &str, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::new(datumesh_http::client::ClientConfig) -> datumesh_http::client::Client
+pub fn datumesh_http::client::Client::parse_receipt(&[u8]) -> core::result::Result<datumesh_core::receipt::Receipt, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::receipt(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::reference(&self, &str, &datumesh_core::model::Reference) -> core::result::Result<datumesh_http::client::Fetched, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::resolve(&self, &str) -> core::result::Result<datumesh_core::mesh::MeshDoc, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::slice(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<datumesh_http::client::Fetched, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::slice_of(&self, &str, &str) -> core::result::Result<(datumesh_core::slice::Slice, datumesh_core::model::Reference), datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::slice_page(&self, &str, &str, core::option::Option<&str>, core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, datumesh_core::model::Scalar>>) -> core::result::Result<datumesh_http::client::Fetched, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::versions(&self, &str, &str) -> core::result::Result<datumesh_http::client::Versions, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::versions_at(&self, &str) -> core::result::Result<datumesh_http::client::Versions, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::with_keys(datumesh_http::client::ClientConfig, alloc::rcs::arc::Arc<datumesh_http::foreign::KeyCache>) -> datumesh_http::client::Client
+impl core::clone::Clone for datumesh_http::client::Client
+pub fn datumesh_http::client::Client::clone(&self) -> Self
+impl core::fmt::Debug for datumesh_http::client::Client
+pub fn datumesh_http::client::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct datumesh_http::client::ClientConfig
+pub datumesh_http::client::ClientConfig::allowed: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub datumesh_http::client::ClientConfig::key_refetch: core::time::Duration
+pub datumesh_http::client::ClientConfig::key_ttl: core::time::Duration
+pub datumesh_http::client::ClientConfig::mesh_ttl: core::time::Duration
+pub datumesh_http::client::ClientConfig::peers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_http::client::ClientConfig::timeout: core::time::Duration
+impl core::clone::Clone for datumesh_http::client::ClientConfig
+pub fn datumesh_http::client::ClientConfig::clone(&self) -> Self
+impl core::default::Default for datumesh_http::client::ClientConfig
+pub fn datumesh_http::client::ClientConfig::default() -> Self
+impl core::fmt::Debug for datumesh_http::client::ClientConfig
+pub fn datumesh_http::client::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datumesh_http::client::ClientError
+pub datumesh_http::client::ClientError::code: datumesh_core::error::ErrorCode
+pub datumesh_http::client::ClientError::detail: alloc::string::String
+impl core::clone::Clone for datumesh_http::client::ClientError
+pub fn datumesh_http::client::ClientError::clone(&self) -> Self
+impl core::error::Error for datumesh_http::client::ClientError
+impl core::fmt::Debug for datumesh_http::client::ClientError
+pub fn datumesh_http::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::client::ClientError
+pub fn datumesh_http::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datumesh_http::client::Fetched
+pub datumesh_http::client::Fetched::answer: datumesh_core::answer::Answer
+pub datumesh_http::client::Fetched::body: alloc::vec::Vec<u8>
+pub datumesh_http::client::Fetched::status: u16
+impl core::clone::Clone for datumesh_http::client::Fetched
+pub fn datumesh_http::client::Fetched::clone(&self) -> Self
+impl core::fmt::Debug for datumesh_http::client::Fetched
+pub fn datumesh_http::client::Fetched::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datumesh_http::client::RemoteBinding
+pub datumesh_http::client::RemoteBinding::fn_hash: alloc::string::String
+pub datumesh_http::client::RemoteBinding::since: alloc::string::String
+impl core::clone::Clone for datumesh_http::client::RemoteBinding
+pub fn datumesh_http::client::RemoteBinding::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::client::RemoteBinding
+impl core::cmp::PartialEq for datumesh_http::client::RemoteBinding
+pub fn datumesh_http::client::RemoteBinding::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::client::RemoteBinding
+pub fn datumesh_http::client::RemoteBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::client::RemoteBinding
+pub struct datumesh_http::client::VersionEntry
+pub datumesh_http::client::VersionEntry::asof: alloc::string::String
+pub datumesh_http::client::VersionEntry::receipt: alloc::string::String
+pub datumesh_http::client::VersionEntry::tx: alloc::string::String
+impl core::clone::Clone for datumesh_http::client::VersionEntry
+pub fn datumesh_http::client::VersionEntry::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::client::VersionEntry
+impl core::cmp::PartialEq for datumesh_http::client::VersionEntry
+pub fn datumesh_http::client::VersionEntry::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::client::VersionEntry
+pub fn datumesh_http::client::VersionEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::client::VersionEntry
+pub struct datumesh_http::client::Versions
+pub datumesh_http::client::Versions::cell: datumesh_core::json::Value
+pub datumesh_http::client::Versions::next: core::option::Option<alloc::string::String>
+pub datumesh_http::client::Versions::versions: alloc::vec::Vec<datumesh_http::client::VersionEntry>
+impl core::clone::Clone for datumesh_http::client::Versions
+pub fn datumesh_http::client::Versions::clone(&self) -> Self
+impl core::fmt::Debug for datumesh_http::client::Versions
+pub fn datumesh_http::client::Versions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn datumesh_http::client::name_host(&str) -> &str
+pub fn datumesh_http::client::pct(&str) -> alloc::string::String
 pub mod datumesh_http::config
 #[non_exhaustive] pub enum datumesh_http::config::Rule
 pub datumesh_http::config::Rule::Price
@@ -235,13 +334,16 @@ pub fn datumesh_http::envelope::Reply::fmt(&self, &mut core::fmt::Formatter<'_>)
 impl core::marker::StructuralPartialEq for datumesh_http::envelope::Reply
 pub const datumesh_http::envelope::BAD_REQUEST_CODES: &[datumesh_core::error::ErrorCode]
 pub const datumesh_http::envelope::JSON: &str
+pub fn datumesh_http::envelope::answer_reply(&datumesh_core::answer::Answer, datumesh_http::envelope::Cache) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::bad_request(datumesh_core::error::ErrorCode) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::bad_request_reply(datumesh_core::error::ErrorCode) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::error(datumesh_core::error::ErrorCode) -> alloc::vec::Vec<u8>
+pub fn datumesh_http::envelope::error_answer_reply(datumesh_core::error::ErrorCode, core::option::Option<&str>) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::error_reply(datumesh_core::error::ErrorCode) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::error_status(datumesh_core::error::ErrorCode) -> u16
 pub fn datumesh_http::envelope::is_error_code(datumesh_core::error::ErrorCode) -> bool
 pub fn datumesh_http::envelope::is_request_code(datumesh_core::error::ErrorCode) -> bool
+pub fn datumesh_http::envelope::name_unbound_reply(u64) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::not_covered(core::option::Option<datumesh_core::envelope::Fault>) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::ok(&[u8], datumesh_core::envelope::Trust) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::payment_required(&str, &str, &str) -> alloc::vec::Vec<u8>
@@ -249,8 +351,10 @@ pub fn datumesh_http::envelope::pending(&datumesh_core::envelope::Pending) -> al
 pub fn datumesh_http::envelope::rate_limited(u64) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::rate_limited_reply(u64) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::stale(&[u8], datumesh_core::envelope::Trust, u64) -> alloc::vec::Vec<u8>
+pub fn datumesh_http::envelope::trust_label_of(&datumesh_core::receipt::Receipt, &str) -> datumesh_core::answer::TrustLabel
 pub fn datumesh_http::envelope::trust_of(&datumesh_core::receipt::Receipt, &str) -> datumesh_core::envelope::Trust
 pub fn datumesh_http::envelope::unlicensed() -> alloc::vec::Vec<u8>
+pub fn datumesh_http::envelope::with_fn_hash(datumesh_core::answer::Answer, core::option::Option<&str>) -> datumesh_core::answer::Answer
 pub mod datumesh_http::foreign
 pub struct datumesh_http::foreign::CrossMesh
 impl datumesh_http::foreign::CrossMesh
@@ -262,6 +366,7 @@ pub fn datumesh_http::foreign::CrossMesh::lang(&self) -> &str
 pub struct datumesh_http::foreign::Foreign
 impl datumesh_http::foreign::Foreign
 pub fn datumesh_http::foreign::Foreign::any_cells(&self) -> bool
+pub fn datumesh_http::foreign::Foreign::client(&self) -> &datumesh_http::client::Client
 pub fn datumesh_http::foreign::Foreign::ensure_cell(&self, &datumesh_core::model::Cell) -> core::result::Result<bool, datumesh_http::foreign::ForeignError>
 pub fn datumesh_http::foreign::Foreign::ensure_name(&self, &str) -> core::result::Result<(), datumesh_http::foreign::ForeignError>
 pub fn datumesh_http::foreign::Foreign::is_foreign(&self, &str) -> bool
@@ -272,13 +377,6 @@ pub fn datumesh_http::foreign::Foreign::refresh_deps(&self, &str, &str) -> core:
 pub fn datumesh_http::foreign::Foreign::take_invalidated(&self) -> alloc::vec::Vec<alloc::string::String>
 impl core::fmt::Debug for datumesh_http::foreign::Foreign
 pub fn datumesh_http::foreign::Foreign::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct datumesh_http::foreign::ForeignError
-pub datumesh_http::foreign::ForeignError::code: datumesh_core::error::ErrorCode
-pub datumesh_http::foreign::ForeignError::detail: alloc::string::String
-impl core::clone::Clone for datumesh_http::foreign::ForeignError
-pub fn datumesh_http::foreign::ForeignError::clone(&self) -> Self
-impl core::fmt::Debug for datumesh_http::foreign::ForeignError
-pub fn datumesh_http::foreign::ForeignError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datumesh_http::foreign::KeyCache
 impl datumesh_http::foreign::KeyCache
 pub fn datumesh_http::foreign::KeyCache::get(&self, &str) -> core::option::Option<(datumesh_core::keys::KeyDoc, alloc::vec::Vec<u8>, std::time::Instant)>
@@ -292,10 +390,48 @@ impl core::fmt::Debug for datumesh_http::foreign::KeyCache
 pub fn datumesh_http::foreign::KeyCache::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn datumesh_http::foreign::host_of(&str) -> &str
 pub fn datumesh_http::foreign::pct(&str) -> alloc::string::String
+pub type datumesh_http::foreign::ForeignError = datumesh_http::client::ClientError
 pub mod datumesh_http::keydoc
 pub fn datumesh_http::keydoc::with_key(&str, core::option::Option<&[u8]>, &datumesh_core::sign::SigningKey, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_core::error::Error>
+pub mod datumesh_http::publish
+pub struct datumesh_http::publish::PublishError
+pub datumesh_http::publish::PublishError::detail: alloc::string::String
+pub datumesh_http::publish::PublishError::line: usize
+impl core::clone::Clone for datumesh_http::publish::PublishError
+pub fn datumesh_http::publish::PublishError::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::publish::PublishError
+impl core::cmp::PartialEq for datumesh_http::publish::PublishError
+pub fn datumesh_http::publish::PublishError::eq(&self, &Self) -> bool
+impl core::error::Error for datumesh_http::publish::PublishError
+impl core::fmt::Debug for datumesh_http::publish::PublishError
+pub fn datumesh_http::publish::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::publish::PublishError
+pub fn datumesh_http::publish::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::publish::PublishError
+#[non_exhaustive] pub struct datumesh_http::publish::Published
+pub datumesh_http::publish::Published::blob_bytes: u64
+pub datumesh_http::publish::Published::blobs: usize
+pub datumesh_http::publish::Published::cells: usize
+pub datumesh_http::publish::Published::functions: usize
+pub datumesh_http::publish::Published::receipts: usize
+pub datumesh_http::publish::Published::versions: usize
+impl core::clone::Clone for datumesh_http::publish::Published
+pub fn datumesh_http::publish::Published::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::publish::Published
+impl core::cmp::PartialEq for datumesh_http::publish::Published
+pub fn datumesh_http::publish::Published::eq(&self, &Self) -> bool
+impl core::default::Default for datumesh_http::publish::Published
+pub fn datumesh_http::publish::Published::default() -> Self
+impl core::fmt::Debug for datumesh_http::publish::Published
+pub fn datumesh_http::publish::Published::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::publish::Published
+pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::receipt_json(&datumesh_core::receipt::Receipt) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::slice
 pub const datumesh_http::slice::ARROW: &str
+pub mod datumesh_http::vectors
+pub fn datumesh_http::vectors::excel_descriptor(&datumesh_core::json::Value) -> core::option::Option<datumesh_core::json::Value>
+pub fn datumesh_http::vectors::import<S: datumesh_store::Store + ?core::marker::Sized>(&S, &std::path::Path, &str) -> datumesh_core::json::Value
 #[non_exhaustive] pub enum datumesh_http::BuildError
 pub datumesh_http::BuildError::Config(datumesh_http::config::ConfigError)
 pub datumesh_http::BuildError::Engine(datumesh_engine::error::ConfigError)

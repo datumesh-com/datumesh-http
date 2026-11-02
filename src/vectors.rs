@@ -5,7 +5,8 @@
 //! every descriptor the vectors give (a receipt vector's, every formula and excel vector's
 //! function, valid or not: a pinned request evaluates any of them); every receipt (each
 //! verified by `put_receipt`); the manifests; the names the valid vectors bind (a name bound
-//! to several functions keeps the first, reported); the stored cells' versions.
+//! to several functions keeps the first, reported), and the names only invalid vectors bind
+//! (their first function); the stored cells' versions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -147,6 +148,7 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     // Descriptors, receipts, manifests; candidate bindings and versions.
     let mut descriptors: BTreeMap<String, String> = BTreeMap::new(); // fn_hash -> lang
     let mut bindings: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new(); // name -> (since, fn_hash)
+    let mut invalid_bindings: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     let mut versions: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new(); // cell id -> (tx, hash, fn_hash)
     let (mut receipts, mut refused, mut manifests) = (0usize, Vec::new(), 0usize);
     let mut blobs = 0usize;
@@ -225,9 +227,8 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
                         continue;
                     };
                     if let Some(h) = put_descriptor(d, &mut descriptors) {
-                        if valid(v) {
-                            bindings.entry(name.clone()).or_default().push((b.to_string(), h));
-                        }
+                        let to = if valid(v) { &mut bindings } else { &mut invalid_bindings };
+                        to.entry(name.clone()).or_default().push((b.to_string(), h));
                     }
                 }
                 if let Some(Value::Array(rs)) = w.get("receipts") {
@@ -244,6 +245,9 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     // vectors bind to several functions keeps the first (one name means one function at a
     // time) and the others are reported.
     let (mut bound, mut skipped) = (0usize, Vec::new());
+    for (name, cs) in invalid_bindings {
+        bindings.entry(name).or_insert(cs);
+    }
     for (name, cs) in &bindings {
         let hashes: BTreeSet<&String> = cs.iter().map(|(_, h)| h).collect();
         let (since, h) = cs.iter().filter(|(_, h)| *h == cs[0].1).min().cloned().unwrap_or_default();

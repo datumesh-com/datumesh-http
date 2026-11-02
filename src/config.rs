@@ -83,7 +83,7 @@ pub struct Ttls {
     /// `max-age` of answers to requests without an asof (default 10 s).
     pub latest_max_age: Duration,
     /// How long a completed job's result is kept after it is first served, and after it
-    /// completes when it is never served (default and minimum 300 s, SPEC 5.5).
+    /// completes when it is never served, while the mesh runs (default and minimum 300 s, SPEC 5.5).
     pub job: Duration,
 }
 

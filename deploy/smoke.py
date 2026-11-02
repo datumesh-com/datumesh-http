@@ -154,18 +154,23 @@ s, _, b = req("/cell/data.example.org/daily?date=*")
 check("a slice at /cell: E_SLICE_AT_CELL", s == 400 and json.loads(b).get("error") == "E_SLICE_AT_CELL", b.decode()[:160])
 
 # Batch (5.7), slice page (5.6), Arrow, versions (9.8), explain, find, verify.
-daily_id = datumesh.cell_hash({"args": {"date": {"type": "date", "value": "2026-03-04"}}, "fn": "daily", "fn_hash": binds["data.example.org/daily"]["fn_hash"], "ns": "data.example.org"})
-s, _, b = req("/cells", "POST", json.dumps([daily, path[len("/cell/"):], "calc.example.net/e(-" + a + ")"]).encode(), {"Content-Type": "application/json"})
-br = datumesh.check_batch(s, b, [keys], [{"cell_id": daily_id, "asof": "2026-03-04T18:00:00.000000Z", "mesh": host}, {"cell_id": cid, "mesh": host}, {"cell_id": cid, "mesh": host}])
+# The batch and the page use cells this mesh signed (the seed's), whose key document is this
+# host's; the vectors' cells are signed by their hosts' test keys, not served here.
+fx_bind = json.loads(req("/bindings?name=" + urllib.parse.quote(f"{host}/ecb/fx_rate", safe=""))[2])["bindings"][f"{host}/ecb/fx_rate"]["fn_hash"]
+fx_args = {"base": {"type": "string", "value": "EUR"}, "date": {"type": "date", "value": "2026-10-30"}, "quote": {"type": "string", "value": "USD"}}
+fx_id = datumesh.cell_hash({"args": fx_args, "fn": "fx_rate", "fn_hash": fx_bind, "ns": f"{host}/ecb"})
+fx_uri = datumesh.format_uri({"ns": f"{host}/ecb", "fn": "fx_rate", "args": fx_args})[len("cell://"):]
+s, _, b = req("/cells", "POST", json.dumps([fx_uri, path[len("/cell/"):], "calc.example.net/e(-" + a + ")"]).encode(), {"Content-Type": "application/json"})
+br = datumesh.check_batch(s, b, [keys], [{"cell_id": fx_id, "mesh": host}, {"cell_id": cid, "mesh": host}, {"cell_id": cid, "mesh": host}])
 items = json.loads(b) if s == 200 else []
-check("/cells: [{envelope, status}], each bound to its request (Python 0.4.2)", br.ok and all(i.ok for i in br.items) and [i["envelope"].get("outcome") for i in items] == ["ok", "ok", "ok"], br.detail + " " + b.decode()[:200])
+check("/cells: [{envelope, status}], each bound to its request (Python 0.4.2)", br.ok and all(i.ok for i in br.items) and [i["envelope"].get("outcome") for i in items] == ["ok", "ok", "ok"], br.detail + " " + "; ".join(i.detail for i in br.items or [] if not i.ok)[:300])
 for i in items:
     envelope_ok("/cells item", json.dumps(i["envelope"]).encode())
-s, _, b = req("/slice/data.example.org/daily?date=*&asof=2026-03-10T00:00:00.000000Z")
+s, _, b = req(f"/slice/{host}/ecb/fx_rate?base=EUR&date=*&quote=USD")
 page = json.loads(b) if s == 200 else {}
 envelope_ok("/slice page", b)
-pr = datumesh.check_envelope(s, b, [keys], {"slice_id": datumesh.slice_id(page["slice"]) if "slice" in page else "0" * 64, "asof": "2026-03-10T00:00:00.000000Z", "mesh": host})
-check("/slice JSON: a page envelope checked (Python 0.4.2)", pr.ok and len(page.get("members", [])) > 0, f"{len(page.get('members', []))} members; {pr.detail}")
+pr = datumesh.check_envelope(s, b, [keys], {"slice_id": datumesh.slice_id(page["slice"]) if "slice" in page else "0" * 64, "mesh": host})
+check("/slice JSON: a page envelope checked (Python 0.4.2)", pr.ok and len(page.get("members", [])) == 30, f"{len(page.get('members', []))} members; {pr.detail}")
 s, _, b = req("/versions/data.example.org/daily?date=2026-03-04")
 vs = json.loads(b) if s == 200 else {}
 check("/versions (9.8)", s == 200 and len(vs.get("versions", [])) >= 1, b.decode()[:200])

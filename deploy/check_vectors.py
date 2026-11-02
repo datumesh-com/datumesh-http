@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Which of the spec-0.4.1 vectors' cells the test mesh answers, and whether it answers them
-as the vectors say. Uses the Python library datumesh 0.4.1 for cell URIs and hashes.
+"""Which of the spec vectors' cells the test mesh answers, and whether it answers them as the
+vectors say. Uses the Python library datumesh 0.4.2 for cell URIs and hashes.
 
     python check_vectors.py <vectors dir> <base URL> [CA file] <API key file>   (JSON summary to stdout)
 
@@ -10,8 +10,12 @@ as the vectors say. Uses the Python library datumesh 0.4.1 for cell URIs and has
 - formula-eval and excel vectors, when the mesh binds every function of the vector's world as
   the vector does: the cell as of the vector's asof must be `ok` with the vector's value
   (valid vectors), `not_covered` with the fault (an evaluation fault), `not_covered`
-  (E_FORMULA_NOT_COVERED) or `error` E_EVAL_UNAVAILABLE (every other code).
+  (E_FORMULA_NOT_COVERED) or `error` E_EVAL_UNAVAILABLE (every other code);
+- every formula-eval and excel vector by pinned hash (spec-0.4.2, `fn_hash=` in the URI): answered
+  when the answer is not `bad_request` and echoes the pin, and whether it is the vector's answer
+  as above ("pinned").
 """
+import re
 import json
 import pathlib
 import ssl
@@ -52,7 +56,20 @@ def bound(name, asof):
     return bound_cache[k]
 
 
-res = {"receipt": {}, "formula": {}, "world receipts": {}}
+res = {"receipt": {}, "formula": {}, "world receipts": {}, "pinned": {}}
+READ = re.compile(r"(?<![\w./-])([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[A-Za-z_][A-Za-z0-9_]*)+)\s*\(")
+
+
+def as_said(v, env):
+    o = env.get("outcome")
+    if v["valid"]:
+        got = env.get("receipt", {})
+        return o == "ok" and got.get("value") == v["value"]["value"] and got.get("type") == v["value"]["type"]
+    if v["error"] in FAULTS:
+        return o == "not_covered" and env.get("fault") == v["error"]
+    if v["error"] == "E_FORMULA_NOT_COVERED":
+        return o == "not_covered" and "fault" not in env
+    return o == "error" and env.get("error") == "E_EVAL_UNAVAILABLE"
 seen_world = set()
 details = []
 
@@ -106,8 +123,21 @@ for p in sorted(vectors.glob("*/*.json")):
                 count("world receipts", "otherwise: " + str(env.get("outcome")))
         fs = dict(v["world"]["functions"])
         if v["kind"] == "excel":
-            # SPEC 11: an excel vector's function is its printed body under its signature.
-            fs[v["cell"]["fn"]] = {"descriptor": {"code": {"body": v["body"], "lang": "formula"}, "inputs": [], "signature": v["signature"]}}
+            # SPEC 11: an excel vector's function is its printed body under its signature, its
+            # inputs the names the body reads.
+            inputs = sorted(set(READ.findall(v["body"])))
+            fs[v["cell"]["fn"]] = {"descriptor": {"code": {"body": v["body"], "lang": "formula"}, "inputs": inputs, "signature": v["signature"]}}
+        # By pinned hash: the vector's own function, whatever its name is bound to.
+        h = datumesh.function_hash(fs[v["cell"]["fn"]]["descriptor"])
+        ns, fn = v["cell"]["fn"].rsplit("/", 1)
+        uri = datumesh.format_uri({"ns": ns, "fn": fn, "args": v["cell"]["args"], "fn_hash": h, "asof": v["asof"]})
+        _, env = get("/cell/" + uri[len("cell://"):])
+        count("pinned", "total")
+        if env.get("outcome") != "bad_request" and env.get("fn_hash") == h:
+            count("pinned", "answered (the pin echoed)")
+        else:
+            details.append({"id": v["id"], "pinned": True, "outcome": env.get("outcome"), "error": env.get("error")})
+        count("pinned", "as the vector says" if as_said(v, env) else "otherwise")
         if any(bound(n, v["asof"]) != datumesh.function_hash(f["descriptor"]) for n, f in fs.items()):
             count("formula", "a function of its world is bound otherwise")
             continue
@@ -115,15 +145,7 @@ for p in sorted(vectors.glob("*/*.json")):
         uri = datumesh.format_uri({"ns": ns, "fn": fn, "args": v["cell"]["args"], "asof": v["asof"]})
         status, env = get("/cell/" + uri[len("cell://"):])
         o = env.get("outcome")
-        if v["valid"]:
-            got = env.get("receipt", {})
-            ok = o == "ok" and got.get("value") == v["value"]["value"] and got.get("type") == v["value"]["type"]
-        elif v["error"] in FAULTS:
-            ok = o == "not_covered" and env.get("fault") == v["error"]
-        elif v["error"] == "E_FORMULA_NOT_COVERED":
-            ok = o == "not_covered" and "fault" not in env
-        else:
-            ok = o == "error" and env.get("error") == "E_EVAL_UNAVAILABLE"
+        ok = as_said(v, env)
         count("formula", ("valid" if v["valid"] else "invalid") + (": as the vector says" if ok else ": otherwise"))
         if not ok:
             details.append({"id": v["id"], "outcome": o, "error": env.get("error"), "fault": env.get("fault"), "want": v.get("error", v.get("value"))})
