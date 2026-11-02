@@ -281,29 +281,23 @@ async fn cells(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Re
     if let Err(r) = admit(&inner, &client, inner.limiter.batch_cost(items.len())) {
         return to_response(r);
     }
-    let replies = batch(inner.clone(), items, principal.clone()).await;
-    let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    for r in &replies {
-        if let Some(o) = r.outcome() {
-            *counts.entry(o).or_default() += 1;
+    let pieces = batch(inner.clone(), items, principal.clone()).await;
+    let mut counts: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for w in &pieces {
+        for (o, k) in &w.outcomes {
+            *counts.entry(o).or_default() += k;
         }
     }
     for (o, k) in counts {
-        inner.metrics.outcomes("/cells", &o, k);
+        inner.metrics.outcomes("/cells", o, k);
     }
-    // 5.7: [{"envelope": <the envelope>, "status": <its status>}] in request order (JCS member
-    // order: envelope, status).
-    let mut out = Vec::with_capacity(replies.iter().map(|r| r.body.len() + 32).sum::<usize>() + 2);
-    out.push(b'[');
-    for (i, r) in replies.iter().enumerate() {
-        if i > 0 {
-            out.push(b',');
-        }
-        out.extend_from_slice(b"{\"envelope\":");
-        out.extend_from_slice(&r.body);
-        out.extend_from_slice(format!(",\"status\":{}}}", r.status).as_bytes());
+    // 5.7: [{"envelope": <the envelope>, "status": <its status>}] in request order: the
+    // chunks' runs as they wrote them (the first opening the array).
+    let mut out = Vec::with_capacity(pieces.iter().map(|w| w.bytes.len()).sum::<usize>() + 2);
+    for w in &pieces {
+        out.extend_from_slice(&w.bytes);
     }
-    out.push(b']');
+    out.extend_from_slice(if pieces.is_empty() { b"[]" } else { b"]" });
     let mut resp =
         to_response(Reply::json(200, out, if principal.is_some() { Cache::Private } else { Cache::NoStore }));
     resp.extensions_mut().insert(Who(principal.map(|p| p.id)));
@@ -343,29 +337,93 @@ fn parse_batch(body: &[u8], max: usize) -> Result<Vec<String>, (ErrorCode, Strin
         .collect()
 }
 
+/// A run of a batch's answers as 5.7 writes them: the items
+/// `{"envelope": <the envelope>, "status": <its status>}` (JCS member order) joined by commas,
+/// and how many of each outcome they hold. Each chunk writes its own on the pool, in
+/// parallel: reading 1,000 envelopes (each a receipt, the function hash echoed) to copy and
+/// count them is the costliest part of a warm batch after the answers themselves.
+#[derive(Default)]
+struct Written {
+    bytes: Vec<u8>,
+    outcomes: Vec<(String, u64)>,
+}
+
+impl Written {
+    /// The run of `replies`, opening the array when `first`, else continuing it.
+    fn of<'a>(first: bool, replies: impl Iterator<Item = &'a Reply> + Clone) -> Written {
+        let mut w = Written {
+            bytes: Vec::with_capacity(replies.clone().map(|r| r.body.len() + 32).sum::<usize>() + 1),
+            outcomes: vec![],
+        };
+        w.bytes.push(if first { b'[' } else { b',' });
+        for (i, r) in replies.enumerate() {
+            if i > 0 {
+                w.bytes.push(b',');
+            }
+            w.push(r);
+        }
+        w
+    }
+
+    fn push(&mut self, r: &Reply) {
+        self.bytes.extend_from_slice(b"{\"envelope\":");
+        self.bytes.extend_from_slice(&r.body);
+        self.bytes.extend_from_slice(b",\"status\":");
+        push_u16(&mut self.bytes, r.status);
+        self.bytes.push(b'}');
+        if let Some(o) = r.outcome_str() {
+            match self.outcomes.iter_mut().find(|(x, _)| x == o) {
+                Some((_, k)) => *k += 1,
+                None => self.outcomes.push((o.to_string(), 1)),
+            }
+        }
+    }
+}
+
+/// Appends `n` in decimal (a JSON integer).
+fn push_u16(out: &mut Vec<u8>, n: u16) {
+    let mut buf = [0u8; 5];
+    let (mut i, mut n) = (buf.len(), n);
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[i..]);
+}
+
+/// The machine's parallelism, read once: `available_parallelism` reads the cgroup files on
+/// Linux (hundreds of microseconds in a container), too slow to pay on every batch.
+fn cores() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CORES.get_or_init(|| std::thread::available_parallelism().map(|c| c.get()).unwrap_or(4))
+}
+
 /// Answers a batch within the budget: the requests are answered in chunks across the pool
-/// (one chunk per core; bindings looked up once per name and asof within a chunk). Those not
-/// answered within the budget become jobs: each is resolved again to the request it
-/// describes (a store read), and its chunk's answer completes the job.
-async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principal>) -> Vec<Reply> {
+/// (one chunk per core; bindings looked up once per name and asof within the batch), each
+/// chunk writing its answers ([`Written`]). Those not answered within the budget become
+/// jobs: each is resolved again to the request it describes (a store read), and its chunk's
+/// answer completes the job. The runs are in request order.
+async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principal>) -> Vec<Written> {
     let n = items.len();
     let deadline = tokio::time::Instant::now() + inner.config.budget;
-    let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(4);
-    let chunks = n.div_ceil(64).clamp(1, inner.config.pool_size.min(cores));
+    let chunks = n.div_ceil(64).clamp(1, inner.config.pool_size.min(cores()));
     let per = n.div_ceil(chunks).max(1);
+    let ranges: Vec<(usize, usize)> =
+        (0..chunks).map(|c| (c * per, ((c + 1) * per).min(n))).take_while(|(lo, hi)| lo < hi).collect();
     let now = inner.now();
     let items = Arc::new(items);
     // Each chunk's answers so far; once the budget has passed (`late`), its answers go to
-    // the channel instead, to complete their jobs.
-    let shared: Slots = Arc::new((0..chunks).map(|_| Mutex::new((false, Vec::new()))).collect());
+    // the channel instead, to complete their jobs. A chunk done within the budget leaves
+    // its answers written instead.
+    let shared: Slots = Arc::new(ranges.iter().map(|_| Mutex::new(Slot::default())).collect());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Reply)>();
     let seen = Arc::new(crate::mesh::Seen::default());
     let mut tasks = Vec::new();
-    for c in 0..chunks {
-        let (lo, hi) = (c * per, ((c + 1) * per).min(n));
-        if lo >= hi {
-            break;
-        }
+    for (c, &(lo, hi)) in ranges.iter().enumerate() {
         let (i2, items, tx, p, now, shared) =
             (inner.clone(), items.clone(), tx.clone(), principal.clone(), now.clone(), shared.clone());
         let seen = seen.clone();
@@ -376,11 +434,16 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
                 for k in lo..hi {
                     let reply = i2.answer_with(&items[k], p.as_ref(), &memo, &now, &mut |_| {}, false);
                     let mut slot = shared[c].lock().unwrap_or_else(|p| p.into_inner());
-                    if slot.0 {
+                    if slot.late {
                         let _ = tx.send((k, reply));
                     } else {
-                        slot.1.push((k, reply));
+                        slot.answers.push((k, reply));
                     }
+                }
+                let mut slot = shared[c].lock().unwrap_or_else(|p| p.into_inner());
+                if !slot.late {
+                    let answers = std::mem::take(&mut slot.answers);
+                    slot.written = Some(Written::of(c == 0, answers.iter().map(|(_, r)| r)));
                 }
             })
             .await
@@ -389,22 +452,40 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
     drop(tx);
     let all = futures_join(&mut tasks, deadline).await;
     let mut done: Vec<Option<Reply>> = vec![None; n];
+    let mut written: Vec<Option<Written>> = Vec::with_capacity(ranges.len());
     for slot in shared.iter() {
         let mut s = slot.lock().unwrap_or_else(|p| p.into_inner());
-        s.0 = true;
-        for (k, r) in s.1.drain(..) {
+        s.late = true;
+        for (k, r) in s.answers.drain(..) {
             done[k] = Some(r);
         }
+        written.push(s.written.take());
     }
+    // A chunk's run: as it wrote it, else its answers (an error for any it has none of: its
+    // task panicked, or the answer completes a job).
+    let runs = |done: Vec<Option<Reply>>, written: Vec<Option<Written>>| -> Vec<Written> {
+        let error = envelope::error_reply(ErrorCode::EvalUnavailable);
+        ranges
+            .iter()
+            .zip(written)
+            .enumerate()
+            .map(|(c, (&(lo, hi), w))| {
+                w.unwrap_or_else(|| Written::of(c == 0, done[lo..hi].iter().map(|d| d.as_ref().unwrap_or(&error))))
+            })
+            .collect()
+    };
     if all {
-        return done
-            .into_iter()
-            .map(|d| d.unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable)))
-            .collect();
+        return runs(done, written);
     }
     // Past the budget: every request not answered yet becomes a job, resolved again to the
     // request it describes.
-    let open: Vec<usize> = (0..n).filter(|k| done[*k].is_none()).collect();
+    let open: Vec<usize> = ranges
+        .iter()
+        .zip(&written)
+        .filter(|(_, w)| w.is_none())
+        .flat_map(|(&(lo, hi), _)| lo..hi)
+        .filter(|k| done[*k].is_none())
+        .collect();
     let (i2, items2, open2, now2) = (inner.clone(), items.clone(), open.clone(), now.clone());
     let requests: Vec<Option<CoreRequest>> = inner
         .pool
@@ -460,11 +541,20 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
             }
         }
     });
-    done.into_iter().map(|d| d.unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable))).collect()
+    runs(done, written)
 }
 
-/// Each batch chunk's answers so far, and whether the budget has passed.
-type Slots = Arc<Vec<Mutex<(bool, Vec<(usize, Reply)>)>>>;
+/// A batch chunk's state: whether the budget has passed, its answers so far, and its
+/// answers written once it is done within the budget.
+#[derive(Default)]
+struct Slot {
+    late: bool,
+    answers: Vec<(usize, Reply)>,
+    written: Option<Written>,
+}
+
+/// Each batch chunk's state.
+type Slots = Arc<Vec<Mutex<Slot>>>;
 
 /// Waits for every task until `deadline`: whether all finished.
 async fn futures_join(tasks: &mut [tokio::task::JoinHandle<Option<()>>], deadline: tokio::time::Instant) -> bool {

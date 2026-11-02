@@ -65,13 +65,29 @@ impl Reply {
     /// are in JCS order and none before `outcome` holds text, so the first `"outcome":` is
     /// the envelope's own.)
     pub fn outcome(&self) -> Option<String> {
+        self.outcome_str().map(str::to_string)
+    }
+
+    /// As [`Reply::outcome`], borrowed. The first `"outcome":"` starts at a quote, so only
+    /// the body's quotes are tried (a byte search), not every position: since spec-0.4.2 the
+    /// members before `outcome` include `fn_hash` (64 hex digits), and a batch looks up the
+    /// outcome of each of its (up to 1,000) envelopes.
+    pub(crate) fn outcome_str(&self) -> Option<&str> {
         if self.content_type != JSON {
             return None;
         }
         const KEY: &[u8] = b"\"outcome\":\"";
-        let at = self.body.windows(KEY.len()).position(|w| w == KEY)? + KEY.len();
-        let end = self.body[at..].iter().position(|b| *b == b'"')?;
-        std::str::from_utf8(&self.body[at..at + end]).ok().map(str::to_string)
+        let body: &[u8] = &self.body;
+        let mut from = 0;
+        let at = loop {
+            let q = from + body[from..].iter().position(|b| *b == b'"')?;
+            if body[q..].starts_with(KEY) {
+                break q + KEY.len();
+            }
+            from = q + 1;
+        };
+        let end = body[at..].iter().position(|b| *b == b'"')?;
+        std::str::from_utf8(&body[at..at + end]).ok()
     }
 }
 

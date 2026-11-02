@@ -11,6 +11,9 @@ spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; 
 - `GET /slice` JSON answers are page envelopes (SPEC 5.6); Arrow is unchanged.
 - `POST /cells` answers `[{"envelope", "status"}]`, or one envelope refusing the whole batch
   (SPEC 5.7).
+- `POST /cells` is as fast as in 0.1.0 again (1,000 cells under 10 times one cell, the
+  brief's criterion 8): each chunk writes and counts its own answers on the pool, a batch
+  looks each binding up once (not once per chunk), and the core count is read once.
 - `E_SLICE_AT_CELL` (`bad_request`) for a slice marker at `/cell`; `E_NAME_UNBOUND`
   (`not_covered` with `error`) for an unbound name.
 - One manifest path, `/manifest/<slice id>/<members hash>` (`/slice/<hex>/<hex>` is gone).

@@ -230,13 +230,92 @@ pub(crate) struct Memo<'a> {
     seen: std::borrow::Cow<'a, Seen>,
 }
 
-/// The bindings a batch has looked up (shared by its chunks).
+/// A binding a batch looks up: the lookup's result once one succeeded, and the lock held
+/// during a lookup, so the batch's chunks, which start together and ask for the same names,
+/// make one store round trip per name and asof, not one each.
 #[derive(Default)]
-pub(crate) struct Seen(#[allow(clippy::type_complexity)] RwLock<HashMap<String, Vec<(String, Option<Arc<Bound>>)>>>);
+struct SeenEntry {
+    found: std::sync::OnceLock<Option<Arc<Bound>>>,
+    lookup: Mutex<()>,
+}
+
+/// The bindings a batch has looked up (shared by its chunks), by name, then asof.
+#[derive(Default)]
+pub(crate) struct Seen(RwLock<HashMap<String, SeenAsofs>>);
+
+/// A name's entries in [`Seen`], by asof.
+type SeenAsofs = Vec<(String, Arc<SeenEntry>)>;
 
 impl Clone for Seen {
     fn clone(&self) -> Seen {
-        Seen(RwLock::new(self.0.read().unwrap_or_else(|p| p.into_inner()).clone()))
+        let m = self.0.read().unwrap_or_else(|p| p.into_inner());
+        let copy = m
+            .iter()
+            .map(|(name, v)| {
+                let v = v
+                    .iter()
+                    .map(|(a, e)| (a.clone(), Arc::new(SeenEntry { found: e.found.clone(), lookup: Mutex::new(()) })))
+                    .collect();
+                (name.clone(), v)
+            })
+            .collect();
+        Seen(RwLock::new(copy))
+    }
+}
+
+/// What [`Seen`] has of a name as of an asof.
+enum Held {
+    Found(Option<Arc<Bound>>),
+    Entry(Arc<SeenEntry>),
+    Full,
+}
+
+impl Seen {
+    /// The binding of `fn_name` as of `asof` if found, else its entry (made if there is room:
+    /// 64 asofs per name).
+    fn held(&self, fn_name: &str, asof: &str) -> Held {
+        if let Some(v) = self.0.read().unwrap_or_else(|p| p.into_inner()).get(fn_name) {
+            if let Some((_, e)) = v.iter().find(|(a, _)| a == asof) {
+                return match e.found.get() {
+                    Some(b) => Held::Found(b.clone()),
+                    None => Held::Entry(e.clone()),
+                };
+            }
+        }
+        let mut m = self.0.write().unwrap_or_else(|p| p.into_inner());
+        let v = m.entry(fn_name.to_string()).or_default();
+        if let Some((_, e)) = v.iter().find(|(a, _)| a == asof) {
+            return Held::Entry(e.clone());
+        }
+        if v.len() >= 64 {
+            return Held::Full;
+        }
+        let e = Arc::new(SeenEntry::default());
+        v.push((asof.to_string(), e.clone()));
+        Held::Entry(e)
+    }
+
+    /// The binding of `fn_name` as of `asof`: as found before, else looked up by `look`, at
+    /// most one lookup at a time per name and asof (the others wait for its result). A failed
+    /// lookup is not kept: the next request looks the name up again.
+    pub(crate) fn lookup(
+        &self,
+        fn_name: &str,
+        asof: &str,
+        look: impl FnOnce() -> Result<Option<Arc<Bound>>, ErrorCode>,
+    ) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        let e = match self.held(fn_name, asof) {
+            Held::Found(b) => return Ok(b),
+            Held::Full => return look(),
+            Held::Entry(e) => e,
+        };
+        let _looking = e.lookup.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(b) = e.found.get() {
+            return Ok(b.clone());
+        }
+        let b = look()?;
+        let _ = e.found.set(b.clone());
+        Ok(b)
     }
 }
 
@@ -268,18 +347,7 @@ impl Bindings for Memo<'_> {
     }
 
     fn binding(&self, fn_name: &str, asof: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
-        if let Some(v) = self.seen.0.read().unwrap_or_else(|p| p.into_inner()).get(fn_name) {
-            if let Some((_, b)) = v.iter().find(|(a, _)| a == asof) {
-                return Ok(b.clone());
-            }
-        }
-        let b = Bindings::binding(self.inner, fn_name, asof)?;
-        let mut m = self.seen.0.write().unwrap_or_else(|p| p.into_inner());
-        let v = m.entry(fn_name.to_string()).or_default();
-        if v.len() < 64 {
-            v.push((asof.to_string(), b.clone()));
-        }
-        Ok(b)
+        self.seen.lookup(fn_name, asof, || Bindings::binding(self.inner, fn_name, asof))
     }
 }
 
