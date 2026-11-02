@@ -7,9 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{
-    keys_from_response, verify, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt, SigningKey, Trust,
-};
+use datumesh_core::{keys_from_response, verify, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt, SigningKey};
 use datumesh_engine::{Answer, Clock, Engine, EngineError, Runtime, SystemClock};
 use datumesh_formula::runtime::FormulaRuntime;
 use datumesh_store::Store;
@@ -163,6 +161,7 @@ impl MeshBuilder {
             descriptors: Mutex::new(HashMap::new()),
             last_good: Mutex::new(HashMap::new()),
             infos: (0..32).map(|_| Mutex::new(HashMap::new())).collect(),
+            by_hash: (0..32).map(|_| Mutex::new(HashMap::new())).collect(),
             latest: Latest::new(),
             targets: Targets::new(),
             slices: Mutex::new(Vec::new()),
@@ -185,7 +184,9 @@ pub(crate) struct ReceiptInfo {
     pub(crate) hash: String,
     pub(crate) asof: String,
     pub(crate) receipt: Vec<u8>,
-    pub(crate) trust: Trust,
+    pub(crate) parsed: Receipt,
+    pub(crate) trust: datumesh_core::TrustLabel,
+    /// The `ok` envelope, the function hash echoed.
     pub(crate) ok: crate::envelope::Bytes,
 }
 
@@ -203,6 +204,7 @@ pub(crate) struct Inner {
     descriptors: Mutex<HashMap<String, Arc<FunctionDescriptor>>>,
     last_good: Mutex<HashMap<String, LastGood>>,
     infos: Vec<Mutex<HashMap<u64, Arc<ReceiptInfo>>>>,
+    by_hash: Vec<Mutex<HashMap<String, Arc<ReceiptInfo>>>>,
     latest: Latest,
     targets: Targets,
     #[allow(clippy::type_complexity)]
@@ -249,6 +251,14 @@ impl<'a> Memo<'a> {
 }
 
 impl Bindings for Memo<'_> {
+    fn pinned(&self, fn_hash: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        Bindings::pinned(self.inner, fn_hash)
+    }
+
+    fn alias(&self, alias: &str) -> Option<String> {
+        Bindings::alias(self.inner, alias)
+    }
+
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
         self.inner.targets.get(fn_hash, rest)
     }
@@ -274,6 +284,18 @@ impl Bindings for Memo<'_> {
 }
 
 impl Bindings for Inner {
+    fn pinned(&self, fn_hash: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        match self.descriptor(fn_hash) {
+            Ok(d) => Ok(Some(Arc::new(Bound::new(fn_hash, "", d)))),
+            Err(ErrorCode::FnUnavailable) => Ok(None),
+            Err(c) => Err(c),
+        }
+    }
+
+    fn alias(&self, alias: &str) -> Option<String> {
+        self.config.aliases.get(alias).cloned()
+    }
+
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
         self.targets.get(fn_hash, rest)
     }
@@ -504,19 +526,40 @@ impl Inner {
             }
         }
         let r = Receipt::from_json(bytes).ok()?;
-        let trust = envelope::trust_of(&r, &self.config.host);
+        let trust = envelope::trust_label_of(&r, &self.config.host);
+        let ok = envelope::with_fn_hash(datumesh_core::Answer::ok(r.clone(), trust), Some(&r.cell().fn_hash)).to_json();
         let info = Arc::new(ReceiptInfo {
             hash: r.hash().to_string(),
             asof: r.asof().to_string(),
             receipt: bytes.to_vec(),
+            parsed: r,
             trust,
-            ok: envelope::ok(bytes, trust).into(),
+            ok: ok.into(),
         });
         let mut m = shard.lock().unwrap_or_else(|p| p.into_inner());
         if m.len() >= 4_096 {
             m.clear();
         }
         m.insert(key, info.clone());
+        Some(info)
+    }
+
+    /// A receipt's info by its hash: from the cache, else the store.
+    pub(crate) fn receipt_info_by_hash(&self, hash: &str) -> Option<Arc<ReceiptInfo>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        hash.hash(&mut h);
+        let shard = &self.by_hash[(h.finish() % self.by_hash.len() as u64) as usize];
+        if let Some(i) = shard.lock().unwrap_or_else(|p| p.into_inner()).get(hash) {
+            return Some(i.clone());
+        }
+        let bytes = self.store.receipt(hash)?;
+        let info = self.receipt_info(&bytes)?;
+        let mut m = shard.lock().unwrap_or_else(|p| p.into_inner());
+        if m.len() >= 2_048 {
+            m.clear();
+        }
+        m.insert(hash.to_string(), info.clone());
         Some(info)
     }
 
@@ -527,6 +570,9 @@ impl Inner {
             Rejection::NotCovered => {
                 let _ = asof;
                 Reply::json(404, envelope::not_covered(None), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
+            }
+            Rejection::Error(ErrorCode::NameUnbound) => {
+                envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs())
             }
             Rejection::Error(c) => envelope::error_reply(c),
         }
@@ -544,12 +590,16 @@ impl Inner {
                 if principal.is_some_and(|p| ps.contains(&p.id)) {
                     (None, true)
                 } else {
-                    (Some(Reply::json(403, envelope::unlicensed(), Cache::Private)), true)
+                    let a = envelope::with_fn_hash(datumesh_core::Answer::unlicensed(), Some(&target.bound.fn_hash));
+                    (Some(envelope::answer_reply(&a, Cache::Private)), true)
                 }
             }
             Some(Rule::Price { amount, currency }) => {
                 let authorise = format!("{}/pay/{}", self.config.origin(), target.cell_id());
-                (Some(Reply::json(402, envelope::payment_required(amount, currency, &authorise), Cache::Private)), true)
+                let quote = datumesh_core::Quote { amount: amount.clone(), currency: currency.clone(), authorise };
+                let a =
+                    envelope::with_fn_hash(datumesh_core::Answer::payment_required(quote), Some(&target.bound.fn_hash));
+                (Some(envelope::answer_reply(&a, Cache::Private)), true)
             }
         }
     }
@@ -619,7 +669,7 @@ impl Inner {
             return match r {
                 Ok(Answer::Receipt(bytes)) => {
                     let Some(info) = self.receipt_info(&bytes) else {
-                        return envelope::error_reply(ErrorCode::EvalUnavailable);
+                        return envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash));
                     };
                     if attempt < 2 {
                         match self.foreign.refresh_deps(&info.hash, a) {
@@ -640,7 +690,12 @@ impl Inner {
                     self.ok_reply(target, info, a, now, private, link)
                 }
                 Ok(Answer::NotCovered { fault }) => {
-                    let mut reply = Reply::json(404, envelope::not_covered(fault), Cache::Public(0));
+                    let mut ans =
+                        envelope::with_fn_hash(datumesh_core::Answer::not_covered(), Some(&target.bound.fn_hash));
+                    if let Some(f) = fault {
+                        ans = ans.with_fault(f);
+                    }
+                    let mut reply = envelope::answer_reply(&ans, Cache::Public(0));
                     self.cache_rules(&mut reply, target, a, now, private, link);
                     if target.asof().is_some() {
                         reply.cache = if private {
@@ -651,7 +706,7 @@ impl Inner {
                     }
                     reply
                 }
-                Ok(_) => envelope::error_reply(ErrorCode::EvalUnavailable),
+                Ok(_) => envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash)),
                 Err(e) => {
                     let (bad, code) = engine_code(&e);
                     tracing::info!(target: "datumesh_http", error = %e, code = code.as_str(), "engine");
@@ -660,7 +715,7 @@ impl Inner {
                     } else if code == ErrorCode::InputUnavailable {
                         self.unavailable(target, ForeignError { code, detail: e.to_string() })
                     } else {
-                        envelope::error_reply(code)
+                        envelope::error_answer_reply(code, Some(&target.bound.fn_hash))
                     }
                 }
             };
@@ -691,10 +746,12 @@ impl Inner {
         if let Some(g) = lg.get(&last_good_key(target)) {
             if target.asof().is_none_or(|a| g.info.asof.as_str() <= a) {
                 let age = g.at.elapsed().as_secs();
-                return Reply::json(200, envelope::stale(&g.info.receipt, g.info.trust, age), Cache::NoStore);
+                let a = datumesh_core::Answer::stale(g.info.parsed.clone(), g.info.trust, age);
+                let a = envelope::with_fn_hash(a, Some(&g.info.parsed.cell().fn_hash));
+                return envelope::answer_reply(&a, Cache::NoStore);
             }
         }
-        envelope::error_reply(e.code)
+        envelope::error_answer_reply(e.code, Some(&target.bound.fn_hash))
     }
 
     /// The keys to verify `receipt` with: the documents of its signer and of the signers of
@@ -919,6 +976,7 @@ impl Mesh {
             ("receipt", format!("{o}/receipt/{{hash}}")),
             ("slice", format!("{o}/slice/{{cell}}")),
             ("verify", format!("{o}/verify")),
+            ("versions", format!("{o}/versions/{{cell}}")),
         ]
         .into_iter()
         .collect();

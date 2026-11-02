@@ -6,11 +6,11 @@
 //! memory cache (its members cannot change, the store being append-only), so repeated reads
 //! of it are warm.
 //!
-//! JSON: `{"asof", "count", "members": [{"args", "asof", "receipt", "tx", "value"}], "next"?,
-//! "slice", "slice_id"}`, `members` ascending by key, `args` the open arguments of each
-//! member, `next` the URL of the following page (`after=` the last key, hex of its JCS
-//! bytes), absent on the last page. Pages are of `limit` members (default 1,000, at most
-//! 10,000), all with the asof of the first page.
+//! JSON: a page envelope (SPEC 5.6, spec-0.4.2): `{"outcome": "ok", "slice", "members",
+//! "next"?, "fn_hash"}`, `members` the members' `ok` envelopes ascending by key, `next` the URL
+//! of the following page (`limit=` and `after=` the last key, hex of its JCS bytes), absent on
+//! the last page. Pages are of `limit` members (default 1,000, at most 10,000), all with the
+//! asof of the first page.
 //!
 //! Arrow (`Accept: application/vnd.apache.arrow.stream`): one stream, record batches of up
 //! to 65,536 rows, a column per open argument and `value`, `type`, `receipt`, `tx`, `asof`
@@ -194,37 +194,24 @@ impl Inner {
         }
         let limit = q.limit.unwrap_or(self.config.slice_page).clamp(1, crate::config::MAX_SLICE_PAGE);
         let end = (start + limit).min(total);
-        let page: Vec<Value> = members[start..end]
-            .iter()
-            .map(|m| {
-                let args = Value::Object(
-                    open.iter()
-                        .filter_map(|k| m.cell.args.get(k).and_then(Arg::scalar).map(|s| (k.clone(), s.to_value())))
-                        .collect(),
-                );
-                Value::Object(vec![
-                    ("args".into(), args),
-                    ("asof".into(), Value::String(m.version.asof.clone())),
-                    ("receipt".into(), Value::String(m.version.receipt_hash.clone())),
-                    ("tx".into(), Value::String(m.version.tx.clone())),
-                    ("value".into(), m.value.to_value()),
-                ])
-            })
-            .collect();
-        let mut body = vec![
-            ("asof".to_string(), Value::String(a.clone())),
-            ("count".to_string(), crate::envelope::num(page.len() as u64)),
-            ("members".to_string(), Value::Array(page)),
-            ("slice".to_string(), slice.to_value()),
-            ("slice_id".to_string(), Value::String(slice.id().to_string())),
-        ];
-        if end < total {
-            let k = key_of(&members[end - 1], &open);
-            let next =
-                format!("{}/slice/{}&limit={limit}&after={}", self.config.origin(), target.rest_asof(&a), cursor(&k));
-            body.push(("next".to_string(), Value::String(next)));
+        // A page (5.6): the members' envelopes, in key order.
+        let mut page = Vec::with_capacity(end - start);
+        for m in &members[start..end] {
+            match self.receipt_info_by_hash(&m.version.receipt_hash) {
+                Some(info) => page.push(crate::envelope::with_fn_hash(
+                    datumesh_core::Answer::ok(info.parsed.clone(), info.trust),
+                    Some(&info.parsed.cell().fn_hash),
+                )),
+                None => return crate::envelope::error_answer_reply(ErrorCode::InputUnavailable, Some(slice.fn_hash())),
+            }
         }
-        Reply::json(200, Value::Object(body).to_jcs(), cache)
+        let next = (end < total).then(|| {
+            let k = key_of(&members[end - 1], &open);
+            format!("{}/slice/{}&limit={limit}&after={}", self.config.origin(), target.rest_asof(&a), cursor(&k))
+        });
+        let fn_hash = slice.fn_hash().to_string();
+        let answer = datumesh_core::Answer::page(datumesh_core::SlicePage::new(slice, page, next));
+        crate::envelope::answer_reply(&crate::envelope::with_fn_hash(answer, Some(&fn_hash)), cache)
     }
 }
 

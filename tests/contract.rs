@@ -262,16 +262,22 @@ async fn every_endpoint_and_outcome() {
         .map(|i| i.get("envelope").and_then(|e| e.get("outcome")).and_then(Value::as_str).unwrap().to_string())
         .collect();
     assert_eq!(outcomes, ["ok", "ok", "ok", "bad_request"]);
-    let statuses: Vec<String> = items.iter().map(|i| i.get("status").and_then(Value::as_number_text).unwrap().to_string()).collect();
+    let statuses: Vec<String> =
+        items.iter().map(|i| i.get("status").and_then(Value::as_number_text).unwrap().to_string()).collect();
     assert_eq!(statuses, ["200", "200", "200", "400"]);
     for e in &items {
         seen.schemas.assert_envelope(&e.get("envelope").unwrap().to_jcs());
     }
     assert_eq!(items[0].to_jcs(), items[2].to_jcs(), "a call and its URI give the same envelope");
-    let requests: Vec<datumesh_core::Request> = [&rate_id, &a.cell_id(&format!("{A}/rate"), &args(&[("ccy", s("GBP")), ("date", d("2026-03-01"))])), &rate_id, &rate_id]
-        .iter()
-        .map(|c| datumesh_core::Request::new(c, None).unwrap())
-        .collect();
+    let requests: Vec<datumesh_core::Request> = [
+        &rate_id,
+        &a.cell_id(&format!("{A}/rate"), &args(&[("ccy", s("GBP")), ("date", d("2026-03-01"))])),
+        &rate_id,
+        &rate_id,
+    ]
+    .iter()
+    .map(|c| datumesh_core::Request::new(c, None).unwrap())
+    .collect();
     match datumesh_core::check_batch(r.status, &r.body, &keys, &requests).unwrap() {
         datumesh_core::Batch::Items(its) => assert!(its.iter().all(|i| i.is_ok()), "{its:?}"),
         other => panic!("{other:?}"),
@@ -280,7 +286,11 @@ async fn every_endpoint_and_outcome() {
     let r = a.post("/cells", b"{}".to_vec()).await;
     assert_eq!((r.status, r.outcome()), (400, "bad_request".to_string()));
     let r = a.post("/cells", format!("[{}]", vec!["\"x\""; 1001].join(",")).into_bytes()).await;
-    assert_eq!((r.status, r.json().get("error").and_then(Value::as_str)), (400, Some("E_CANON_LIMIT")), "bounded batch size");
+    assert_eq!(
+        (r.status, r.json().get("error").and_then(Value::as_str)),
+        (400, Some("E_CANON_LIMIT")),
+        "bounded batch size"
+    );
 
     // GET /slice (5.6): a page envelope; /manifest for the slice total read.
     let r = a.get(&format!("/slice/{A}/rate?ccy=*&date=2026-03-01")).await;
@@ -367,7 +377,10 @@ async fn every_endpoint_and_outcome() {
     )
     .unwrap();
     assert_eq!(resolved.mesh.bindings, format!("https://{A}/bindings"));
-    assert_eq!(resolved.mesh.endpoints.get("versions").map(String::as_str), Some(format!("https://{A}/versions/{{cell}}").as_str()));
+    assert_eq!(
+        resolved.mesh.endpoints.get("versions").map(String::as_str),
+        Some(format!("https://{A}/versions/{{cell}}").as_str())
+    );
     let r = a.get(&format!("/bindings?name={A}%2Frate&name={A}%2Fnothing&asof={T1}")).await;
     let bv = r.json();
     let bs = bv.get("bindings").unwrap().as_object().unwrap();

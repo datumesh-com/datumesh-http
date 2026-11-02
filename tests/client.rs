@@ -43,7 +43,8 @@ async fn fetch_and_check_without_a_store() {
         // A cell by URI rest, by call, and pinned; each checked against its request.
         let f = c.cell(B, "mesh-b.example/rate?ccy=USD&date=2026-03-01", &Request::new(&id2, None).unwrap()).unwrap();
         assert_eq!(f.answer.outcome.as_str(), "ok");
-        let call = c.cell(B, "mesh-b.example/rate(%22USD%22,%202026-03-01)", &Request::new(&id2, None).unwrap()).unwrap();
+        let call =
+            c.cell(B, "mesh-b.example/rate(%22USD%22,%202026-03-01)", &Request::new(&id2, None).unwrap()).unwrap();
         assert_eq!(call.body, f.body);
         let mut r = Reference::new(B, "rate", usd.clone());
         r.fn_hash = Some(bound.fn_hash.clone());
@@ -69,8 +70,21 @@ async fn fetch_and_check_without_a_store() {
         let sreq = SliceRequest::new(p.slice.id(), None).unwrap();
         datumesh_core::check_slice_answer(page.status, &page.body, &c.keys_for_body(&page.body), &sreq).unwrap();
         // A batch, item by item.
-        let items = ["mesh-b.example/rate?ccy=USD&date=2026-03-01".to_string(), "mesh-b.example/rate?ccy=CHF&date=2026-03-01".to_string()];
-        let chf = Request::new(&datumesh_core::Cell { ns: B.into(), fn_name: "rate".into(), fn_hash: bound.fn_hash.clone(), args: args(&[("ccy", s("CHF")), ("date", d("2026-03-01"))]) }.id(), None).unwrap();
+        let items = [
+            "mesh-b.example/rate?ccy=USD&date=2026-03-01".to_string(),
+            "mesh-b.example/rate?ccy=CHF&date=2026-03-01".to_string(),
+        ];
+        let chf = Request::new(
+            &datumesh_core::Cell {
+                ns: B.into(),
+                fn_name: "rate".into(),
+                fn_hash: bound.fn_hash.clone(),
+                args: args(&[("ccy", s("CHF")), ("date", d("2026-03-01"))]),
+            }
+            .id(),
+            None,
+        )
+        .unwrap();
         let reqs = [Request::new(&id2, None).unwrap(), chf];
         match c.batch(B, &items, &reqs).unwrap() {
             datumesh_core::Batch::Items(its) => {
@@ -81,7 +95,23 @@ async fn fetch_and_check_without_a_store() {
             other => panic!("{other:?}"),
         }
         // A manifest, by its entry.
-        let total = c.cell(B, "mesh-b.example/total?date=2026-03-01", &Request::new(&datumesh_core::Cell { ns: B.into(), fn_name: "total".into(), fn_hash: c.binding(B, "mesh-b.example/total", None).unwrap().unwrap().fn_hash, args: args(&[("date", d("2026-03-01"))]) }.id(), None).unwrap()).unwrap();
+        let total = c
+            .cell(
+                B,
+                "mesh-b.example/total?date=2026-03-01",
+                &Request::new(
+                    &datumesh_core::Cell {
+                        ns: B.into(),
+                        fn_name: "total".into(),
+                        fn_hash: c.binding(B, "mesh-b.example/total", None).unwrap().unwrap().fn_hash,
+                        args: args(&[("date", d("2026-03-01"))]),
+                    }
+                    .id(),
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let entry = total.answer.receipt.unwrap().inputs()[0].clone();
         let parts: Vec<&str> = entry.split(':').collect();
         let m = c.manifest(B, parts[1], parts[2]).unwrap();

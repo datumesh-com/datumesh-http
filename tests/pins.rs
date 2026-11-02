@@ -80,7 +80,10 @@ async fn pinned_requests() {
     assert_eq!(r.outcome(), "bad_request", "the pin comes after the arguments: {}", r.text());
     // An unbound name in a call: not_covered with E_NAME_UNBOUND.
     let r = a.get(&format!("/cell/{}", enc(&format!("{A}/nope(\"USD\")")))).await;
-    assert_eq!((r.outcome(), r.json().get("error").and_then(Value::as_str)), ("not_covered".to_string(), Some("E_NAME_UNBOUND")));
+    assert_eq!(
+        (r.outcome(), r.json().get("error").and_then(Value::as_str)),
+        ("not_covered".to_string(), Some("E_NAME_UNBOUND"))
+    );
 
     // pending echoes the pin in its request, and the job's answer carries it.
     let slow = format!("{A}/slow");
@@ -100,7 +103,7 @@ async fn pinned_requests() {
         }
     };
     assert_eq!(check_pinned(&done, &keys, &slow_id, None, Some(&job), Some(&sh)), Ok("ok".into()));
-    assert_eq!(done.json().get("trust").and_then(Value::as_str), Some("computed"));
+    assert_eq!(done.json().get("trust").and_then(Value::as_str), Some("primary"));
 
     // The versions endpoint, pinned.
     let r = a.get(&format!("/versions/{rate}?ccy=USD&date=2026-03-01&fn_hash={old}")).await;

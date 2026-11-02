@@ -122,6 +122,7 @@
 
 pub mod apikeys;
 pub mod call;
+pub mod client;
 pub mod config;
 pub mod envelope;
 pub mod foreign;
@@ -132,7 +133,9 @@ mod limit;
 mod mesh;
 mod metrics;
 mod pool;
+pub mod publish;
 pub mod slice;
+pub mod vectors;
 
 pub use config::Config;
 pub use http::openapi;

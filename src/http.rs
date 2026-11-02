@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use datumesh_core::json::{self, Value};
-use datumesh_core::{lexical, ErrorCode, Pending, Receipt, Request as CoreRequest};
+use datumesh_core::{lexical, ErrorCode, Pending, Request as CoreRequest};
 use tracing::Instrument;
 use utoipa::OpenApi;
 
@@ -114,7 +114,7 @@ async fn within_budget(
     let mut task = tokio::spawn(async move {
         pool.run(move || {
             let mut on = |t: &crate::call::Target| {
-                if let Ok(r) = CoreRequest::new(t.cell_id(), t.asof()) {
+                if let Some(r) = request_of(t) {
                     let _ = tx.send(Some(r));
                 }
             };
@@ -134,6 +134,15 @@ async fn within_budget(
             };
             pend(inner, request, task)
         }
+    }
+}
+
+/// The request description of a target: its cell id, asof and pin (spec-0.4.2).
+fn request_of(t: &crate::call::Target) -> Option<CoreRequest> {
+    let r = CoreRequest::new(t.cell_id(), t.asof()).ok()?;
+    match &t.pin {
+        Some(p) => r.with_pin(p).ok(),
+        None => Some(r),
     }
 }
 
@@ -177,6 +186,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         cell,
         cells,
         slice,
+        versions,
         receipt,
         descriptor,
         manifest,
@@ -258,11 +268,15 @@ async fn cells(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Re
     };
     let body = match axum::body::to_bytes(req.into_body(), 64 << 20).await {
         Ok(b) => b,
-        Err(_) => return batch_error("body too large"),
+        Err(_) => return to_response(envelope::bad_request_reply(ErrorCode::CanonLimit)),
     };
     let items = match parse_batch(&body, inner.config.batch_max) {
         Ok(i) => i,
-        Err(e) => return batch_error(&e),
+        // A refusal of the whole batch (5.7): one envelope.
+        Err((code, detail)) => {
+            tracing::info!(target: "datumesh_http", detail = %detail, "batch refused");
+            return to_response(envelope::bad_request_reply(code));
+        }
     };
     if let Err(r) = admit(&inner, &client, inner.limiter.batch_cost(items.len())) {
         return to_response(r);
@@ -277,13 +291,17 @@ async fn cells(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Re
     for (o, k) in counts {
         inner.metrics.outcomes("/cells", &o, k);
     }
-    let mut out = Vec::with_capacity(replies.iter().map(|r| r.body.len() + 1).sum::<usize>() + 2);
+    // 5.7: [{"envelope": <the envelope>, "status": <its status>}] in request order (JCS member
+    // order: envelope, status).
+    let mut out = Vec::with_capacity(replies.iter().map(|r| r.body.len() + 32).sum::<usize>() + 2);
     out.push(b'[');
     for (i, r) in replies.iter().enumerate() {
         if i > 0 {
             out.push(b',');
         }
+        out.extend_from_slice(b"{\"envelope\":");
         out.extend_from_slice(&r.body);
+        out.extend_from_slice(format!(",\"status\":{}}}", r.status).as_bytes());
     }
     out.push(b']');
     let mut resp =
@@ -296,12 +314,15 @@ fn batch_error(e: &str) -> Response {
     plain_json(400, Value::Object(vec![("error".into(), Value::String(e.to_string()))]), Cache::NoStore)
 }
 
-fn parse_batch(body: &[u8], max: usize) -> Result<Vec<String>, String> {
+/// The batch's requests, or the code of its refusal: `E_PARSE_URI` for a body that is not an
+/// array of requests, `E_CANON_LIMIT` for more than the mesh accepts (5.7).
+fn parse_batch(body: &[u8], max: usize) -> Result<Vec<String>, (ErrorCode, String)> {
+    let pu = |m: String| (ErrorCode::ParseUri, m);
     // The body is a list of requests, not a protocol object: plain JSON.
-    let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
-    let serde_json::Value::Array(items) = v else { return Err("not a JSON array".into()) };
+    let v: serde_json::Value = serde_json::from_slice(body).map_err(|e| pu(format!("not JSON: {e}")))?;
+    let serde_json::Value::Array(items) = v else { return Err(pu("not a JSON array".into())) };
     if items.len() > max {
-        return Err(format!("{} requests: at most {max}", items.len()));
+        return Err((ErrorCode::CanonLimit, format!("{} requests: at most {max}", items.len())));
     }
     items
         .into_iter()
@@ -310,9 +331,9 @@ fn parse_batch(body: &[u8], max: usize) -> Result<Vec<String>, String> {
                 serde_json::Value::String(s) => s,
                 serde_json::Value::Object(mut o) => match o.remove("cell") {
                     Some(serde_json::Value::String(s)) => s,
-                    _ => return Err("an object without a string cell".to_string()),
+                    _ => return Err(pu("an object without a string cell".to_string())),
                 },
-                _ => return Err("an item that is neither a string nor an object".to_string()),
+                _ => return Err(pu("an item that is neither a string nor an object".to_string())),
             };
             Ok(match s.strip_prefix("cell://") {
                 Some(r) => r.to_string(),
@@ -394,7 +415,7 @@ async fn batch(inner: Arc<Inner>, items: Vec<String>, principal: Option<Principa
                 .map(|k| {
                     crate::call::resolve(&items2[*k], &now2, &i2.config.aliases, &memo, false)
                         .ok()
-                        .and_then(|t| CoreRequest::new(t.cell_id(), t.asof()).ok())
+                        .and_then(|t| request_of(&t))
                 })
                 .collect()
         })
@@ -458,6 +479,102 @@ async fn futures_join(tasks: &mut [tokio::task::JoinHandle<Option<()>>], deadlin
     true
 }
 
+/// The versions of a stored cell (SPEC 9.8, spec-0.4.2).
+#[utoipa::path(get, path = "/versions/{cell}",
+    params(("cell" = String, Path, description = "A cell URI's rest without asof (a pin allowed), then optionally `from=` and `to=` (instants, inclusive bounds on tx) as its last parameters.")),
+    responses(
+        (status = 200, description = "`{\"cell\", \"versions\": [{\"asof\", \"receipt\", \"tx\"}], \"next\"?}` ascending by tx", content_type = "application/json"),
+        (status = 400, description = "`bad_request`", content_type = "application/json"),
+        (status = 404, description = "`not_covered` (with `E_NAME_UNBOUND` for an unbound name)", content_type = "application/json"),
+    ))]
+async fn versions(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let inner = mesh.inner.clone();
+    let rest = rest_of(&uri, "/versions/");
+    let r = inner
+        .pool
+        .clone()
+        .run(move || inner.versions(&rest))
+        .await
+        .unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable));
+    to_response(r)
+}
+
+/// The most versions in one answer of the versions endpoint.
+const VERSIONS_PAGE: usize = 1000;
+
+impl Inner {
+    fn versions(&self, rest: &str) -> Reply {
+        // `from=` and `to=` are the endpoint's, taken off the end of the query.
+        let (path, query) = match rest.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (rest, ""),
+        };
+        let mut ps: Vec<&str> = if query.is_empty() { vec![] } else { query.split('&').collect() };
+        let (mut from, mut to) = (None, None);
+        while let Some(last) = ps.last() {
+            if let Some(v) = last.strip_prefix("from=") {
+                from = Some(v.to_string());
+            } else if let Some(v) = last.strip_prefix("to=") {
+                to = Some(v.to_string());
+            } else {
+                break;
+            }
+            ps.pop();
+        }
+        for t in [&from, &to].into_iter().flatten() {
+            if lexical::check_instant(t, "$").is_err() {
+                return envelope::bad_request_reply(ErrorCode::CanonInstant);
+            }
+        }
+        let cell_rest = if ps.is_empty() { path.to_string() } else { format!("{path}?{}", ps.join("&")) };
+        let now = self.now();
+        let target = match crate::call::resolve(&cell_rest, &now, &self.config.aliases, self, false) {
+            Ok(t) => t,
+            Err(r) => return self.rejection(r, None),
+        };
+        if target.asof().is_some() {
+            return envelope::bad_request_reply(ErrorCode::ParseUri);
+        }
+        let lo = from.unwrap_or_else(|| "0001-01-01T00:00:00.000000Z".into());
+        let hi = to.clone().unwrap_or_else(|| "9999-12-31T23:59:59.999999Z".into());
+        let mut vs = match self.store.versions(target.cell_id(), &lo, &hi) {
+            Ok(v) => v,
+            Err(_) => return envelope::error_answer_reply(ErrorCode::InputUnavailable, Some(&target.bound.fn_hash)),
+        };
+        vs.sort_by(|a, b| (&a.tx, &a.receipt_hash).cmp(&(&b.tx, &b.receipt_hash)));
+        let more = vs.len() > VERSIONS_PAGE;
+        vs.truncate(VERSIONS_PAGE);
+        let list: Vec<Value> = vs
+            .iter()
+            .map(|v| {
+                Value::Object(vec![
+                    ("asof".into(), Value::String(v.asof.clone())),
+                    ("receipt".into(), Value::String(v.receipt_hash.clone())),
+                    ("tx".into(), Value::String(v.tx.clone())),
+                ])
+            })
+            .collect();
+        let mut body = vec![("cell".to_string(), target.cell.to_value()), ("versions".to_string(), Value::Array(list))];
+        if more {
+            if let Some(last) = vs.last() {
+                let us = datumesh_formula::calendar::parse_instant(&last.tx).unwrap_or(0) + 1;
+                let next_from = datumesh_formula::calendar::instant_text(us).unwrap_or_default();
+                let mut next = format!("{}/versions/{cell_rest}", self.config.origin());
+                next.push(if cell_rest.contains('?') { '&' } else { '?' });
+                next.push_str(&format!("from={next_from}"));
+                if let Some(t) = &to {
+                    next.push_str(&format!("&to={t}"));
+                }
+                body.push(("next".to_string(), Value::String(next)));
+            }
+        }
+        Reply::json(200, Value::Object(body).to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
+    }
+}
+
 /// The members of a slice.
 #[utoipa::path(get, path = "/slice/{cell}",
     params(
@@ -477,13 +594,8 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
     if let Err(r) = admit(&inner, &client, 1) {
         return to_response(r);
     }
+    // One manifest path since spec-0.4.2: /manifest/<slice id>/<members hash>.
     let rest = rest_of(&uri, "/slice/");
-    // A manifest at /slice/<slice id>/<members hash> (SPEC 15.13).
-    if let Some((a, b)) = rest.split_once('/') {
-        if lexical::check_hex(a, 64, "$").is_ok() && lexical::check_hex(b, 64, "$").is_ok() {
-            return manifest_of(inner, format!("slice:{a}:{b}")).await;
-        }
-    }
     let arrow = accepts(&headers, crate::slice::ARROW);
     let r = inner
         .pool
@@ -692,18 +804,8 @@ impl Inner {
                 out.push(Value::Object(node));
                 continue;
             }
-            let child = match self.store.receipt(&e) {
-                Some(bytes) => {
-                    let trust = Receipt::from_json(&bytes).map(|r| envelope::trust_of(&r, &self.config.host)).ok();
-                    match trust {
-                        Some(t) => self.explain_node(
-                            json::parse(&envelope::ok(&bytes, t)).unwrap_or(Value::Null),
-                            depth - 1,
-                            budget,
-                        ),
-                        None => Value::Null,
-                    }
-                }
+            let child = match self.receipt_info_by_hash(&e) {
+                Some(info) => self.explain_node(json::parse(&info.ok).unwrap_or(Value::Null), depth - 1, budget),
                 None => json::parse(&envelope::not_covered(None)).unwrap_or(Value::Null),
             };
             let mut node = vec![("entry".to_string(), Value::String(e.clone()))];
@@ -1083,6 +1185,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/cell/{*rest}" => "/cell/{cell}".to_string(),
         "/slice/{*rest}" => "/slice/{cell}".to_string(),
         "/explain/{*rest}" => "/explain/{cell}".to_string(),
+        "/versions/{*rest}" => "/versions/{cell}".to_string(),
         _ => route,
     };
     let id = req
@@ -1141,6 +1244,7 @@ impl Mesh {
             .route("/receipt/{hash}", get(receipt))
             .route("/descriptor/{hash}", get(descriptor))
             .route("/manifest/{slice_id}/{members_hash}", get(manifest))
+            .route("/versions/{*rest}", get(versions))
             .route("/blob/{sha256}", get(blob))
             .route("/explain/{*rest}", get(explain))
             .route("/find", get(find))

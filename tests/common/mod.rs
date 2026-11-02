@@ -12,8 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    Arg, Args, Cell, FunctionDescriptor, Keys, Receipt, ReceiptBuilder, Request, Scalar,
-    SigningKey, Type,
+    Arg, Args, Cell, FunctionDescriptor, Keys, Receipt, ReceiptBuilder, Request, Scalar, SigningKey, Type,
 };
 use datumesh_engine::{Budget, Clock, EvalError, Inputs, Runtime, SystemClock};
 use datumesh_http::{Config, Mesh, MeshBuilder};

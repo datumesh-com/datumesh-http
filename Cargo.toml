@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.1.0"
+version = "0.1.1"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -23,11 +23,11 @@ path = "src/bin/datumesh-mesh.rs"
 [dependencies]
 # Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
 # `sign` for the keys the binary generates.
-datumesh-core = { version = "0.3.5", features = ["sign"] }
+datumesh-core = { version = "0.3.6", features = ["sign"] }
 datumesh-store = "0.3.2"
-datumesh-engine = "0.3.1"
+datumesh-engine = "0.3.2"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
-datumesh-formula = "0.1.0"
+datumesh-formula = "0.1.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query", "matched-path", "original-uri"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tower = { version = "0.5.3", features = ["util"] }

@@ -18,8 +18,8 @@ async fn publish_stored_cells() {
     let text = "בְּרֵאשִׁ֖ית בָּרָ֣א אֱלֹהִ֑ים אֵ֥ת הַשָּׁמַ֖יִם וְאֵ֥ת הָאָֽרֶץ׃".as_bytes();
     std::fs::write(dir.join("gen-1-1.txt"), text).unwrap();
     let lines = format!(
-        r#"{{"function":"{A}/scripture/verse_text","signature":{{"args":{{"book":{{"type":"string","valid":false}},"chapter":{{"type":"number","unit":"1","valid":false}},"corpus":{{"type":"string","valid":false}},"edition":{{"type":"string","valid":false}},"verse":{{"type":"number","unit":"1","valid":false}}}},"order":["corpus","book","chapter","verse","edition"],"returns":"blob"}},"bound":"2026-01-01T00:00:00.000000Z"}}
-{{"function":"{A}/ecb/fx_rate","signature":{{"args":{{"base":{{"type":"string","valid":false}},"date":{{"type":"date","valid":true}},"quote":{{"type":"string","valid":false}}}},"order":["base","quote","date"],"returns":{{"type":"number","unit":{{"of":{{"arg":"quote"}},"per":{{"arg":"base"}}}}}}}},"bound":"2026-01-01T00:00:00.000000Z"}}
+        r#"{{"function":"{A}/scripture/verse_text","signature":{{"args":{{"book":{{"type":"string","valid":false}},"chapter":{{"type":"number","unit":"1","valid":false}},"corpus":{{"type":"string","valid":false}},"edition":{{"type":"string","valid":false}},"verse":{{"type":"number","unit":"1","valid":false}}}},"order":["corpus","book","chapter","verse","edition"],"returns":"blob"}},"bound":"2020-01-01T00:00:00.000000Z"}}
+{{"function":"{A}/ecb/fx_rate","signature":{{"args":{{"base":{{"type":"string","valid":false}},"date":{{"type":"date","valid":true}},"quote":{{"type":"string","valid":false}}}},"order":["base","quote","date"],"returns":{{"type":"number","unit":{{"of":{{"arg":"quote"}},"per":{{"arg":"base"}}}}}}}},"bound":"2020-01-01T00:00:00.000000Z"}}
 {{"cell":{{"fn":"{A}/scripture/verse_text","args":{{"book":{{"type":"string","value":"Gen"}},"chapter":{{"type":"number","value":"1"}},"corpus":{{"type":"string","value":"tanakh"}},"edition":{{"type":"string","value":"uxlc"}},"verse":{{"type":"number","value":"1"}}}}}},"value":{{"blob":"gen-1-1.txt","media_type":"text/plain"}},"tx":"2026-03-01T00:00:00.000000Z","asof":"2026-03-01T00:00:00.000000Z","issued":"2026-03-01T00:00:00.000000Z","licence":"https://tanach.us/License.html","summary":"Test: Genesis 1:1, UXLC 2.6."}}
 {{"cell":{{"fn":"{A}/ecb/fx_rate","args":{{"base":{{"type":"string","value":"EUR"}},"date":{{"type":"date","value":"2026-03-02"}},"quote":{{"type":"string","value":"USD"}}}}}},"value":{{"type":"number","value":"1.0832"}},"tx":"2026-03-02T16:00:00.000000Z","asof":"2026-03-02T16:00:00.000000Z","issued":"2026-03-02T16:00:00.000000Z","licence":"CC0-1.0","summary":"Synthetic test data."}}
 "#
@@ -33,7 +33,8 @@ async fn publish_stored_cells() {
     assert_eq!((again.functions, again.versions), (0, 0), "idempotent: {again:?}");
 
     // The verse by name: primary, a blob value whose bytes are the file's.
-    let r = a.get(&format!("/cell/{A}/scripture/verse_text?book=Gen&chapter=1&corpus=tanakh&edition=uxlc&verse=1")).await;
+    let r =
+        a.get(&format!("/cell/{A}/scripture/verse_text?book=Gen&chapter=1&corpus=tanakh&edition=uxlc&verse=1")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("primary"));
     let blob = r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str).unwrap().to_string();
@@ -47,7 +48,22 @@ async fn publish_stored_cells() {
 
     // A derived edition: a formula over the blob.
     let sig = r#"{"args":{"book":{"type":"string","valid":false},"chapter":{"type":"number","unit":"1","valid":false},"verse":{"type":"number","unit":"1","valid":false}},"order":["book","chapter","verse"],"returns":"string"}"#;
-    let strip: String = (0x0591u32..=0x05C7).filter(|c| ![0x05BE, 0x05C0, 0x05C3, 0x05C6].contains(c)).filter_map(char::from_u32).collect();
+    // The characters of the spec vector formula-eval/hebrew-consonantal (U+0591-U+05C7 but
+    // maqaf, paseq, sof pasuq and nun hafukha), in its NFC order.
+    let vector = datumesh_core::json::parse(
+        &std::fs::read(spec_dir().join("vectors/formula-eval/hebrew-consonantal.json")).unwrap(),
+    )
+    .unwrap();
+    let body = vector.get("world").and_then(|w| w.get("functions")).and_then(Value::as_object).unwrap()[0]
+        .1
+        .get("descriptor")
+        .and_then(|d| d.get("code"))
+        .and_then(|c| c.get("body"))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    let strip = body.rsplit_once(", \"").unwrap().1.split('"').next().unwrap().to_string();
+    assert_eq!(strip.chars().count(), 51);
     a.formula(
         &format!("{A}/scripture/strip_niqqud"),
         &format!(r#"remove_chars(text_of({A}/scripture/verse_text(corpus: "tanakh", book: book, chapter: chapter, verse: verse, edition: "uxlc")), "{strip}")"#),
@@ -56,7 +72,10 @@ async fn publish_stored_cells() {
     let r = a.get(&format!("/cell/{A}/scripture/strip_niqqud?book=Gen&chapter=1&verse=1")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("computed"));
-    assert_eq!(r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str), Some("בראשית ברא אלהים את השמים ואת הארץ׃"));
+    assert_eq!(
+        r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str),
+        Some("בראשית ברא אלהים את השמים ואת הארץ׃")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

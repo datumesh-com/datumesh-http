@@ -35,7 +35,7 @@ jobs:
       - run: cargo test --locked
       # The brief's timings (batch, slice, load, rate limits) hold for an optimised build.
       - run: cargo test --release --locked
-      # Request binding through the client libraries: Python datumesh 0.4.1, JS @datumesh/verify 0.4.1.
+      # Request binding through the client libraries: Python datumesh 0.4.2, JS @datumesh/verify 0.4.2.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"

@@ -125,18 +125,43 @@ async fn adversarial_request_binding() {
     )]);
 
     let mut lines = Vec::new();
-    let mut emit = |id: String, r: &Resp, cell_id: &str, asof: Option<&str>, job: Option<&str>, expect: &str| {
-        let got = match check(r, &keys, cell_id, asof, job) {
+    // A case: the response, the request it is checked against (the cell, asof, job; since
+    // spec-0.4.2 the pin and the host asked), and the expected result.
+    let mut emit_req = |id: String,
+                        r: &Resp,
+                        cell_id: &str,
+                        asof: Option<&str>,
+                        job: Option<&str>,
+                        pin: Option<&str>,
+                        mesh: Option<&str>,
+                        expect: &str| {
+        let mut request = match job {
+            Some(j) => datumesh_core::Request::with_job(cell_id, asof, j).unwrap(),
+            None => datumesh_core::Request::new(cell_id, asof).unwrap(),
+        };
+        if let Some(p) = pin {
+            request = request.with_pin(p).unwrap();
+        }
+        if let Some(m) = mesh {
+            request = request.with_mesh(m).unwrap();
+        }
+        let got = match datumesh_core::check_answer(r.status, &r.body, &keys, &request) {
             Ok(_) => "ok".to_string(),
-            Err(c) => c,
+            Err(e) => e.code_str().to_string(),
         };
         assert_eq!(got, expect, "{id} (Rust core): {}", r.text());
         let mut req = vec![("cell_id".to_string(), Value::String(cell_id.into()))];
         if let Some(t) = asof {
             req.push(("asof".into(), Value::String(t.into())));
         }
+        if let Some(p) = pin {
+            req.push(("fn_hash".into(), Value::String(p.into())));
+        }
         if let Some(j) = job {
             req.push(("job".into(), Value::String(j.into())));
+        }
+        if let Some(m) = mesh {
+            req.push(("mesh".into(), Value::String(m.into())));
         }
         let line = Value::Object(vec![
             ("expect".into(), Value::String(expect.into())),
@@ -148,6 +173,9 @@ async fn adversarial_request_binding() {
             ("status".into(), datumesh_core::json::parse(r.status.to_string().as_bytes()).unwrap()),
         ]);
         lines.push(String::from_utf8(line.to_jcs()).unwrap());
+    };
+    let mut emit = |id: String, r: &Resp, cell_id: &str, asof: Option<&str>, job: Option<&str>, expect: &str| {
+        emit_req(id, r, cell_id, asof, job, None, None, expect)
     };
 
     // The generator's cases, served by the real endpoint.
@@ -219,10 +247,100 @@ async fn adversarial_request_binding() {
     emit("job/unknown-at-job-url".into(), &unknown, &slow_id, None, Some(&"b".repeat(64)), "ok");
     emit("job/unknown-at-cell-url".into(), &unknown, &slow_id, None, None, "E_ENVELOPE");
 
+    drop(emit);
+
+    // spec-0.4.2: a pinned request (the answer echoes the pin; another pin is not this
+    // answer), and trust `computed` checked against the host asked.
+    let h1 = bl(|| a.store.resolve_name(&fx, ASOFS[0]).unwrap().unwrap());
+    let pinned = a.get(&format!("/cell/{}&fn_hash={h1}&asof={}", uri_of(&sibs[0]), ASOFS[2])).await;
+    assert_eq!(pinned.outcome(), "ok", "{}", pinned.text());
+    emit_req("pin/own".into(), &pinned, &ids[0], Some(ASOFS[2]), None, Some(&h1), None, "ok");
+    emit_req("pin/other-pin".into(), &pinned, &ids[0], Some(ASOFS[2]), None, Some(&h2), None, "E_ENVELOPE");
+    emit_req("pin/own-with-mesh".into(), &pinned, &ids[0], Some(ASOFS[2]), None, Some(&h1), Some(A), "ok");
+    let twice = format!("{A}/fx_twice");
+    a.formula(&twice, &format!("{fx}(base: base, quote: quote, date: date) * 2"), SIG);
+    let tw = a.get(&format!("/cell/{A}/fx_twice?base=EUR&date=2026-03-15&quote=USD&asof={}", ASOFS[2])).await;
+    assert_eq!(tw.json().get("trust").and_then(Value::as_str), Some("computed"), "{}", tw.text());
+    let tw_id = a.cell_id(&twice, &sibs[0].args);
+    emit_req("computed/host-asked".into(), &tw, &tw_id, Some(ASOFS[2]), None, None, Some(A), "ok");
+    emit_req("computed/host-not-asked".into(), &tw, &tw_id, Some(ASOFS[2]), None, None, None, "ok");
+    emit_req(
+        "computed/other-host-asked".into(),
+        &tw,
+        &tw_id,
+        Some(ASOFS[2]),
+        None,
+        None,
+        Some("mesh-b.example"),
+        "E_ENVELOPE",
+    );
+
+    // spec-0.4.2: a slice page (5.6) against its slice and another, and a batch (5.7)
+    // against its requests and with two requests swapped.
+    let str_ = |x: &str| Value::String(x.into());
+    let case = |kind: &str, id: &str, r: &Resp, request: (&str, Value), expect: &str| {
+        let line = Value::Object(vec![
+            ("expect".into(), str_(expect)),
+            ("id".into(), str_(id)),
+            ("input".into(), Value::String(r.text())),
+            ("keys".into(), keys_env.clone()),
+            ("kind".into(), str_(kind)),
+            (request.0.into(), request.1),
+            ("status".into(), datumesh_core::json::parse(r.status.to_string().as_bytes()).unwrap()),
+        ]);
+        String::from_utf8(line.to_jcs()).unwrap()
+    };
+    let page = a.get(&format!("/slice/{A}/fx_rate?base=*&date=2026-03-15&quote=*&asof={}", ASOFS[2])).await;
+    assert_eq!(page.outcome(), "ok", "{}", page.text());
+    let slice_id = datumesh_core::Slice::from_value(page.json().get("slice").unwrap()).unwrap().id().to_string();
+    let other_slice = "c".repeat(64);
+    for (label, sid, mesh, expect) in
+        [("own", slice_id.as_str(), Some(A), "ok"), ("other-slice", other_slice.as_str(), None, "E_ENVELOPE")]
+    {
+        let mut sreq = datumesh_core::SliceRequest::new(sid, Some(ASOFS[2])).unwrap();
+        let mut req = vec![("asof".to_string(), str_(ASOFS[2]))];
+        if let Some(m) = mesh {
+            sreq = sreq.with_mesh(m).unwrap();
+            req.push(("mesh".into(), str_(m)));
+        }
+        req.push(("slice_id".into(), str_(sid)));
+        let got = match datumesh_core::check_slice_answer(page.status, &page.body, &keys, &sreq) {
+            Ok(_) => "ok".to_string(),
+            Err(e) => e.code_str().to_string(),
+        };
+        assert_eq!(got, expect, "page/{label} (Rust core): {}", page.text());
+        lines.push(case("page", &format!("page/{label}"), &page, ("request", Value::Object(req)), expect));
+    }
+    let batch = a
+        .post(
+            "/cells",
+            format!(r#"["{}&asof={}", "{}&asof={}"]"#, uri_of(&sibs[0]), ASOFS[2], uri_of(&sibs[1]), ASOFS[2])
+                .into_bytes(),
+        )
+        .await;
+    assert_eq!(batch.status, 200, "{}", batch.text());
+    for (label, order, expect) in [("own", [0usize, 1], "ok"), ("swapped", [1, 0], "E_ENVELOPE")] {
+        let reqs: Vec<datumesh_core::Request> =
+            order.iter().map(|&i| datumesh_core::Request::new(&ids[i], Some(ASOFS[2])).unwrap()).collect();
+        let got = match datumesh_core::check_batch(batch.status, &batch.body, &keys, &reqs).unwrap() {
+            datumesh_core::Batch::Items(its) => its
+                .iter()
+                .find_map(|i| i.as_ref().err().map(|e| e.code_str().to_string()))
+                .unwrap_or_else(|| "ok".into()),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(got, expect, "batch/{label} (Rust core): {}", batch.text());
+        let reqs = order
+            .iter()
+            .map(|&i| Value::Object(vec![("asof".into(), str_(ASOFS[2])), ("cell_id".into(), str_(&ids[i]))]))
+            .collect();
+        lines.push(case("batch", &format!("batch/{label}"), &batch, ("requests", Value::Array(reqs)), expect));
+    }
+
     let path = out_dir().join("binding-cases.jsonl");
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     let summary = format!(
-        "request binding: {} cases: {n_cases} of the generator ({matched} matching, {refused} mismatching: E_ENVELOPE) and {} job cases; Rust core 0.3.5 gives every expected result; {}\n",
+        "request binding: {} cases: {n_cases} of the generator ({matched} matching, {refused} mismatching: E_ENVELOPE) and {} job cases; Rust core 0.3.6 gives every expected result; {}\n",
         lines.len(),
         lines.len() - n_cases,
         path.display()

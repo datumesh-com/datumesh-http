@@ -166,8 +166,10 @@ pub fn pending(p: &Pending) -> Vec<u8> {
     p.to_json()
 }
 
-/// The parse codes a `bad_request` may carry at `/cell` (SPEC 5.5).
+/// The parse codes a `bad_request` may carry at `/cell` (SPEC 5.5; `E_CANON_HEX` for a pin since
+/// spec-0.4.2).
 pub const BAD_REQUEST_CODES: &[ErrorCode] = &[
+    ErrorCode::CanonHex,
     ErrorCode::ParseUri,
     ErrorCode::CanonName,
     ErrorCode::CanonArgName,
@@ -185,15 +187,16 @@ pub const BAD_REQUEST_CODES: &[ErrorCode] = &[
     ErrorCode::ArgMissing,
 ];
 
-/// Whether `code` may be a `bad_request`'s `error` at `/cell`.
+/// Whether `code` may be a `bad_request`'s `error` at `/cell` (the parse codes, and
+/// `E_SLICE_AT_CELL`).
 pub fn is_request_code(code: ErrorCode) -> bool {
-    BAD_REQUEST_CODES.contains(&code)
+    BAD_REQUEST_CODES.contains(&code) || code == ErrorCode::SliceAtCell
 }
 
 /// Whether `code` may be an `error` envelope's `error`: any code of 10.2 but `E_ENVELOPE` and
-/// `E_JOB_UNKNOWN`.
+/// the request codes `E_JOB_UNKNOWN`, `E_SLICE_AT_CELL` and `E_NAME_UNBOUND`.
 pub fn is_error_code(code: ErrorCode) -> bool {
-    !matches!(code, ErrorCode::Envelope | ErrorCode::JobUnknown)
+    !matches!(code, ErrorCode::Envelope | ErrorCode::JobUnknown | ErrorCode::SliceAtCell | ErrorCode::NameUnbound)
 }
 
 /// The HTTP status of an `error` envelope with `code`: 503 when something the mesh depends on
@@ -222,4 +225,53 @@ pub fn rate_limited_reply(retry_after_seconds: u64) -> Reply {
     let mut r = Reply::json(429, rate_limited(retry_after_seconds), Cache::NoStore);
     r.retry_after = Some(retry_after_seconds);
     r
+}
+
+/// The trust label of spec-0.4.2 for a receipt this mesh serves (SPEC 5.5): `primary` exactly
+/// when the signer's host is the namespace's host and there are no inputs; `computed` when
+/// this mesh signed it (it evaluated the cell); `unverified` otherwise (this mesh does not
+/// recompute other meshes' receipts).
+pub fn trust_label_of(receipt: &Receipt, mesh_host: &str) -> datumesh_core::TrustLabel {
+    let ns_host = receipt.cell().ns.split('/').next().unwrap_or("");
+    if receipt.signer_host() == ns_host && receipt.inputs().is_empty() {
+        datumesh_core::TrustLabel::Primary
+    } else if receipt.signer_host() == mesh_host {
+        datumesh_core::TrustLabel::Computed
+    } else {
+        datumesh_core::TrustLabel::Unverified
+    }
+}
+
+/// The reply of an answer built with the core's envelope builder (spec-0.4.2), with its
+/// status.
+pub fn answer_reply(answer: &datumesh_core::Answer, cache: Cache) -> Reply {
+    Reply::json(answer.status(), answer.to_json(), cache)
+}
+
+/// An answer with the function hash echoed (SPEC 5.5: required for a pinned request, allowed
+/// otherwise), when one is given.
+pub fn with_fn_hash(answer: datumesh_core::Answer, fn_hash: Option<&str>) -> datumesh_core::Answer {
+    match fn_hash {
+        Some(h) => answer.clone().with_fn_hash(h).unwrap_or(answer),
+        None => answer,
+    }
+}
+
+/// The reply of an `error` answer with `code`, the function hash echoed.
+pub fn error_answer_reply(code: ErrorCode, fn_hash: Option<&str>) -> Reply {
+    match datumesh_core::Answer::error(code) {
+        Ok(a) => {
+            let a = with_fn_hash(a, fn_hash).with_status(error_status(code));
+            answer_reply(&a, Cache::NoStore)
+        }
+        Err(_) => error_reply(ErrorCode::EvalUnavailable),
+    }
+}
+
+/// The reply of a `not_covered` answer with `E_NAME_UNBOUND` (spec-0.4.2).
+pub fn name_unbound_reply(max_age: u64) -> Reply {
+    match datumesh_core::Answer::not_covered().with_error(ErrorCode::NameUnbound) {
+        Ok(a) => answer_reply(&a, Cache::Public(max_age)),
+        Err(_) => Reply::json(404, not_covered(None), Cache::Public(max_age)),
+    }
 }
