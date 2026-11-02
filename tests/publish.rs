@@ -1,6 +1,6 @@
 //! `publish_stored` (the `publish-stored` subcommand): stored functions and their cells signed
-//! by the mesh, blobs included, idempotently; a formula over a blob (`text_of`,
-//! `remove_chars`) evaluates and is signed by the mesh, trust `computed`.
+//! by the mesh, blobs included, idempotently; a formula function (a `formula` line) over a blob
+//! (`text_of`, `remove_chars`) evaluates and is signed by the mesh, trust `computed`.
 
 mod common;
 
@@ -46,7 +46,7 @@ async fn publish_stored_cells() {
     let v = datumesh_core::verify(&receipt, &a.keys(), None, Some(text));
     assert!(v.ok && v.blob_checked, "{v:?}");
 
-    // A derived edition: a formula over the blob.
+    // A derived edition: a formula over the blob, defined by a `formula` line.
     let sig = r#"{"args":{"book":{"type":"string","valid":false},"chapter":{"type":"number","unit":"1","valid":false},"verse":{"type":"number","unit":"1","valid":false}},"order":["book","chapter","verse"],"returns":"string"}"#;
     // The characters of the spec vector formula-eval/hebrew-consonantal (U+0591-U+05C7 but
     // maqaf, paseq, sof pasuq and nun hafukha), in its NFC order.
@@ -64,11 +64,21 @@ async fn publish_stored_cells() {
         .to_string();
     let strip = body.rsplit_once(", \"").unwrap().1.split('"').next().unwrap().to_string();
     assert_eq!(strip.chars().count(), 51);
-    a.formula(
-        &format!("{A}/scripture/strip_niqqud"),
-        &format!(r#"remove_chars(text_of({A}/scripture/verse_text(corpus: "tanakh", book: book, chapter: chapter, verse: verse, edition: "uxlc")), "{strip}")"#),
-        sig,
+    let source = format!(
+        r#"remove_chars(text_of({A}/scripture/verse_text(corpus: "tanakh", book: book, chapter: chapter, verse: verse, edition: "uxlc")), "{strip}")"#
     );
+    let line = Value::Object(vec![
+        ("bound".into(), Value::String("2020-01-01T00:00:00.000000Z".into())),
+        ("formula".into(), Value::String(format!("{A}/scripture/strip_niqqud"))),
+        ("signature".into(), datumesh_core::json::parse(sig.as_bytes()).unwrap()),
+        ("source".into(), Value::String(source)),
+    ]);
+    let fpath = dir.join("formulas.jsonl");
+    std::fs::write(&fpath, [line.to_jcs(), b"\n".to_vec()].concat()).unwrap();
+    let f1 = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &fpath).unwrap());
+    assert_eq!((f1.functions, f1.cells), (1, 0), "{f1:?}");
+    let f2 = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &fpath).unwrap());
+    assert_eq!(f2.functions, 0, "idempotent: {f2:?}");
     let r = a.get(&format!("/cell/{A}/scripture/strip_niqqud?book=Gen&chapter=1&verse=1")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("computed"));
