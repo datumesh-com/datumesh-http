@@ -1279,3 +1279,77 @@ impl IntoResponse for Reply {
         to_response(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(status: u16, body: &str) -> Reply {
+        Reply::json(status, body.as_bytes().to_vec(), Cache::NoStore)
+    }
+
+    /// The runs the chunks write, concatenated and closed, are the batch as 5.7 writes it, and
+    /// count its outcomes.
+    #[test]
+    fn runs_make_the_batch() {
+        let h = "a".repeat(64);
+        let replies = [
+            reply(200, &format!(r#"{{"fn_hash":"{h}","outcome":"ok","receipt":{{"value":"1"}},"trust":"primary"}}"#)),
+            reply(400, r#"{"error":"E_CANON_NUMBER","outcome":"bad_request"}"#),
+            reply(
+                200,
+                &format!(r#"{{"age_seconds":3,"fn_hash":"{h}","outcome":"stale","receipt":{{}},"trust":"computed"}}"#),
+            ),
+            reply(404, r#"{"error":"E_NAME_UNBOUND","outcome":"not_covered"}"#),
+            reply(200, &format!(r#"{{"fn_hash":"{h}","outcome":"ok","receipt":{{"value":"2"}},"trust":"primary"}}"#)),
+        ];
+        let mut want = b"[".to_vec();
+        for (i, r) in replies.iter().enumerate() {
+            if i > 0 {
+                want.push(b',');
+            }
+            want.extend_from_slice(b"{\"envelope\":");
+            want.extend_from_slice(&r.body);
+            want.extend_from_slice(format!(",\"status\":{}}}", r.status).as_bytes());
+        }
+        want.push(b']');
+        for split in 1..replies.len() {
+            let runs = [Written::of(true, replies[..split].iter()), Written::of(false, replies[split..].iter())];
+            let mut got: Vec<u8> = runs.iter().flat_map(|w| w.bytes.iter().copied()).collect();
+            got.push(b']');
+            assert_eq!(String::from_utf8(got).unwrap(), String::from_utf8(want.clone()).unwrap());
+            let mut counts = std::collections::BTreeMap::new();
+            for (o, k) in runs.iter().flat_map(|w| w.outcomes.iter()) {
+                *counts.entry(o.as_str()).or_insert(0) += k;
+            }
+            let want_counts: std::collections::BTreeMap<&str, u64> =
+                [("bad_request", 1), ("not_covered", 1), ("ok", 2), ("stale", 1)].into_iter().collect();
+            assert_eq!(counts, want_counts);
+        }
+        for (n, s) in [(0u16, "0"), (7, "7"), (200, "200"), (404, "404"), (65535, "65535")] {
+            let mut out = Vec::new();
+            push_u16(&mut out, n);
+            assert_eq!(out, s.as_bytes());
+        }
+    }
+
+    /// The outcome of each envelope, whatever members come before it.
+    #[test]
+    fn outcomes() {
+        let h = "0".repeat(64);
+        for (body, want) in [
+            (format!(r#"{{"fn_hash":"{h}","outcome":"ok","receipt":{{"outcome":"x"}}}}"#), Some("ok")),
+            (r#"{"age_seconds":12,"outcome":"stale"}"#.to_string(), Some("stale")),
+            (r#"{"error":"E_PARSE_URI","outcome":"bad_request"}"#.to_string(), Some("bad_request")),
+            (r#"{"outcome":"pending","poll":"https://a.example/jobs/1"}"#.to_string(), Some("pending")),
+            (r#"{"error":"no such endpoint"}"#.to_string(), None),
+            (r#"{"outcome""#.to_string(), None),
+        ] {
+            assert_eq!(reply(200, &body).outcome_str(), want, "{body}");
+            assert_eq!(reply(200, &body).outcome(), want.map(str::to_string), "{body}");
+        }
+        let mut arrow = reply(200, r#"{"outcome":"ok"}"#);
+        arrow.content_type = "application/vnd.apache.arrow.stream";
+        assert_eq!(arrow.outcome(), None);
+    }
+}

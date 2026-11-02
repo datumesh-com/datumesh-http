@@ -79,3 +79,55 @@ async fn thousand_cells() {
     }
     let _ = Duration::ZERO;
 }
+
+/// A batch answered in several chunks (one per core, at least 64 requests each) is, byte for
+/// byte, the envelopes `/cell` gives for its requests, wrapped as 5.7 says, in request order,
+/// and the metrics count its outcomes: whatever each chunk writes on its own, the batch is
+/// the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunks_write_the_batch() {
+    let a = Node::start(A, |c| c.rate.enabled = false).await;
+    let name = format!("{A}/obs");
+    a.stored(&name, SIG);
+    let fh = bl(|| a.store.resolve_name(&name, T1).unwrap().unwrap());
+    bl(|| {
+        for i in 0..200 {
+            put_obs(&a.store, &a.key, A, "obs", &fh, i, T1);
+        }
+    });
+    // Stored values (ok), values not stored (not_covered), an unbound name (not_covered with
+    // E_NAME_UNBOUND) and malformed arguments (bad_request), mixed through every chunk.
+    let reqs: Vec<String> = (0..400)
+        .map(|k| match k % 10 {
+            3 => format!("{A}/nobody?i={k}"),
+            7 => format!("{A}/obs?i=0{k}"),
+            9 => format!("{A}/obs?i={}", 1000 + k),
+            _ => format!("{A}/obs?i={}", k % 200),
+        })
+        .collect();
+    let body: Vec<String> = reqs.iter().map(|r| format!("\"{r}\"")).collect();
+    let r = a.post("/cells", format!("[{}]", body.join(",")).into_bytes()).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    let mut want = b"[".to_vec();
+    let mut outcomes = std::collections::BTreeMap::<String, u64>::new();
+    for (k, req) in reqs.iter().enumerate() {
+        let one = a.get(&format!("/cell/{req}")).await;
+        if k > 0 {
+            want.push(b',');
+        }
+        want.extend_from_slice(b"{\"envelope\":");
+        want.extend_from_slice(&one.body);
+        want.extend_from_slice(format!(",\"status\":{}}}", one.status).as_bytes());
+        *outcomes.entry(one.outcome()).or_default() += 1;
+    }
+    want.push(b']');
+    assert_eq!(r.text(), String::from_utf8(want).unwrap());
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+
+    let m = a.get("/metrics").await.text();
+    for (o, n) in &outcomes {
+        let line = format!("datumesh_envelopes_total{{route=\"/cells\",outcome=\"{o}\"}} {n}");
+        assert!(m.lines().any(|l| l == line), "{line} in\n{m}");
+    }
+}

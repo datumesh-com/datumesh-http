@@ -1017,3 +1017,44 @@ impl Mesh {
         self.inner.started.elapsed()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A batch's chunks start together and ask for the same names: one store round trip per
+    /// name and asof for the whole batch, not one per chunk.
+    #[test]
+    fn a_batch_looks_each_binding_up_once() {
+        let seen = Seen::default();
+        let lookups = AtomicUsize::new(0);
+        let start = std::sync::Barrier::new(6);
+        let look = || {
+            lookups.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            Ok(None)
+        };
+        std::thread::scope(|s| {
+            for _ in 0..6 {
+                s.spawn(|| {
+                    start.wait();
+                    assert!(matches!(seen.lookup("a.example/f", "2026-01-01T00:00:00Z", look), Ok(None)));
+                });
+            }
+        });
+        assert_eq!(lookups.load(Ordering::SeqCst), 1, "one lookup for six chunks");
+        // Found: no lookup.
+        assert!(matches!(seen.lookup("a.example/f", "2026-01-01T00:00:00Z", look), Ok(None)));
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        // Another asof, another name: looked up.
+        assert!(matches!(seen.lookup("a.example/f", "2026-01-02T00:00:00Z", look), Ok(None)));
+        assert!(matches!(seen.lookup("a.example/g", "2026-01-01T00:00:00Z", look), Ok(None)));
+        assert_eq!(lookups.load(Ordering::SeqCst), 3);
+        // A failed lookup is not kept.
+        let fail = || Err(ErrorCode::InputUnavailable);
+        assert!(matches!(seen.lookup("a.example/h", "2026-01-01T00:00:00Z", fail), Err(ErrorCode::InputUnavailable)));
+        assert!(matches!(seen.lookup("a.example/h", "2026-01-01T00:00:00Z", look), Ok(None)));
+        assert_eq!(lookups.load(Ordering::SeqCst), 4);
+    }
+}
