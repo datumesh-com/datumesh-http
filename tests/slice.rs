@@ -76,12 +76,18 @@ async fn hundred_thousand_members() {
         let r = a.http.get(&url).send().await.unwrap();
         assert_eq!(r.status().as_u16(), 200);
         let v = datumesh_core::json::parse(&r.bytes().await.unwrap()).unwrap();
-        let page_asof = v.get("asof").and_then(Value::as_str).unwrap().to_string();
-        assert_eq!(asof.get_or_insert(page_asof.clone()), &page_asof);
+        assert_eq!(v.get("outcome").and_then(Value::as_str), Some("ok"), "a page envelope (5.6)");
+        // Following pages carry the first page's asof in their URL.
+        if let Some(n) = v.get("next").and_then(Value::as_str) {
+            let page_asof = n.split("asof=").nth(1).unwrap().split('&').next().unwrap().to_string();
+            assert_eq!(asof.get_or_insert(page_asof.clone()), &page_asof);
+        }
         let Some(Value::Array(ms)) = v.get("members") else { panic!("members") };
         for m in ms {
             let x: i64 = m
-                .get("args")
+                .get("receipt")
+                .and_then(|r| r.get("cell"))
+                .and_then(|c| c.get("args"))
                 .and_then(|a| a.get("i"))
                 .and_then(|i| i.get("value"))
                 .and_then(Value::as_str)

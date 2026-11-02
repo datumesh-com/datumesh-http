@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    check_envelope_any, Arg, Args, Cell, FunctionDescriptor, Keys, Receipt, ReceiptBuilder, Request, Scalar,
+    Arg, Args, Cell, FunctionDescriptor, Keys, Receipt, ReceiptBuilder, Request, Scalar,
     SigningKey, Type,
 };
 use datumesh_engine::{Budget, Clock, EvalError, Inputs, Runtime, SystemClock};
@@ -415,12 +415,27 @@ pub fn receipt_json(r: &Receipt) -> Vec<u8> {
 
 /// Checks a response as a client does (SPEC 5.5): the outcome, or the code.
 pub fn check(resp: &Resp, keys: &Keys, cell_id: &str, asof: Option<&str>, job: Option<&str>) -> Result<String, String> {
-    let req = match job {
+    check_pinned(resp, keys, cell_id, asof, job, None)
+}
+
+/// As [`check`], for a request pinned to `pin` (spec-0.4.2), with the host asked.
+pub fn check_pinned(
+    resp: &Resp,
+    keys: &Keys,
+    cell_id: &str,
+    asof: Option<&str>,
+    job: Option<&str>,
+    pin: Option<&str>,
+) -> Result<String, String> {
+    let mut req = match job {
         Some(j) => Request::with_job(cell_id, asof, j).unwrap(),
         None => Request::new(cell_id, asof).unwrap(),
     };
-    check_envelope_any(resp.status, &resp.body, keys, &req)
-        .map(|e| e.outcome_str().to_string())
+    if let Some(p) = pin {
+        req = req.with_pin(p).unwrap();
+    }
+    datumesh_core::check_answer(resp.status, &resp.body, keys, &req)
+        .map(|a| a.outcome.as_str().to_string())
         .map_err(|e| e.code_str().to_string())
 }
 

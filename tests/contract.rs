@@ -73,7 +73,8 @@ async fn every_endpoint_and_outcome() {
     let double_id = a.cell_id(&format!("{A}/double"), &usd);
     let r = a.get(&format!("/cell/{A}/double?ccy=USD&date=2026-03-01&asof={T2}")).await;
     seen.envelope(&r, "ok", &keys, &double_id, Some(T2), None);
-    assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("verified"));
+    assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("computed"), "this mesh signed it (spec-0.4.2)");
+    assert!(r.json().get("fn_hash").is_some(), "the function hash is echoed");
     assert_eq!(r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str), Some("2.16"));
     let double_receipt = r.json().get("receipt").unwrap().to_jcs();
 
@@ -86,6 +87,10 @@ async fn every_endpoint_and_outcome() {
     assert_eq!(r.status, 404);
     seen.schemas.assert_envelope(&r.body);
     assert_eq!(r.outcome(), "not_covered");
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_NAME_UNBOUND"), "an unbound name (spec-0.4.2)");
+    // A slice marker at /cell (spec-0.4.2).
+    let r = a.get(&format!("/cell/{A}/rate?ccy=*&date=2026-03-01")).await;
+    assert_eq!((r.status, r.json().get("error").and_then(Value::as_str)), (400, Some("E_SLICE_AT_CELL")));
     let r = a.get(&format!("/cell/{A}/broken?ccy=USD&date=2026-03-01")).await;
     seen.envelope(&r, "not_covered", &keys, &a.cell_id(&format!("{A}/broken"), &usd), None, None);
     assert_eq!(r.json().get("fault").and_then(Value::as_str), Some("E_FORMULA_DIV_ZERO"));
@@ -175,6 +180,7 @@ async fn every_endpoint_and_outcome() {
         ("E_CANON_LIMIT", format!("{A}/rate?{}=1&ccy=USD&date=2026-03-01", "a".repeat(65))),
         ("E_ARG_UNKNOWN", format!("{A}/rate?ccy=USD&date=2026-03-01&zzz=1")),
         ("E_ARG_MISSING", format!("{A}/rate?ccy=USD")),
+        ("E_CANON_HEX", format!("{A}/rate?ccy=USD&date=2026-03-01&fn_hash=ABC")),
     ];
     let mut codes = BTreeSet::new();
     for (code, rest) in &cases {
@@ -244,31 +250,48 @@ async fn every_endpoint_and_outcome() {
     .collect();
     assert_eq!(seen.outcomes, want, "every outcome reached");
 
-    // POST /cells: an array of envelopes, in order, each schema-valid.
+    // POST /cells (5.7): [{envelope, status}] in request order, each envelope schema-valid.
     let body = format!(
         r#"["{A}/rate?ccy=USD&date=2026-03-01", {{"cell": "cell://{A}/rate?ccy=GBP&date=2026-03-01"}}, "{A}/rate(\"USD\", 2026-03-01)", "{A}/rate?ccy"]"#
     );
     let r = a.post("/cells", body.into_bytes()).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let Value::Array(items) = r.json() else { panic!("not an array") };
-    let outcomes: Vec<String> =
-        items.iter().map(|e| e.get("outcome").and_then(Value::as_str).unwrap().to_string()).collect();
+    let outcomes: Vec<String> = items
+        .iter()
+        .map(|i| i.get("envelope").and_then(|e| e.get("outcome")).and_then(Value::as_str).unwrap().to_string())
+        .collect();
     assert_eq!(outcomes, ["ok", "ok", "ok", "bad_request"]);
+    let statuses: Vec<String> = items.iter().map(|i| i.get("status").and_then(Value::as_number_text).unwrap().to_string()).collect();
+    assert_eq!(statuses, ["200", "200", "200", "400"]);
     for e in &items {
-        seen.schemas.assert_envelope(&e.to_jcs());
+        seen.schemas.assert_envelope(&e.get("envelope").unwrap().to_jcs());
     }
     assert_eq!(items[0].to_jcs(), items[2].to_jcs(), "a call and its URI give the same envelope");
+    let requests: Vec<datumesh_core::Request> = [&rate_id, &a.cell_id(&format!("{A}/rate"), &args(&[("ccy", s("GBP")), ("date", d("2026-03-01"))])), &rate_id, &rate_id]
+        .iter()
+        .map(|c| datumesh_core::Request::new(c, None).unwrap())
+        .collect();
+    match datumesh_core::check_batch(r.status, &r.body, &keys, &requests).unwrap() {
+        datumesh_core::Batch::Items(its) => assert!(its.iter().all(|i| i.is_ok()), "{its:?}"),
+        other => panic!("{other:?}"),
+    }
+    // A whole-batch refusal: one envelope.
     let r = a.post("/cells", b"{}".to_vec()).await;
-    assert_eq!(r.status, 400);
+    assert_eq!((r.status, r.outcome()), (400, "bad_request".to_string()));
     let r = a.post("/cells", format!("[{}]", vec!["\"x\""; 1001].join(",")).into_bytes()).await;
-    assert_eq!(r.status, 400, "bounded batch size");
+    assert_eq!((r.status, r.json().get("error").and_then(Value::as_str)), (400, Some("E_CANON_LIMIT")), "bounded batch size");
 
-    // GET /slice (JSON); /manifest and /slice/<id>/<members> for the slice total read.
+    // GET /slice (5.6): a page envelope; /manifest for the slice total read.
     let r = a.get(&format!("/slice/{A}/rate?ccy=*&date=2026-03-01")).await;
     assert_eq!(r.status, 200, "{}", r.text());
+    seen.schemas.assert_envelope(&r.body);
     let page = r.json();
     let Some(Value::Array(members)) = page.get("members") else { panic!("members") };
     assert_eq!(members.len(), 2);
+    let slice_id = datumesh_core::Slice::from_value(page.get("slice").unwrap()).unwrap().id().to_string();
+    let sreq = datumesh_core::SliceRequest::new(&slice_id, None).unwrap();
+    datumesh_core::check_slice_answer(r.status, &r.body, &keys, &sreq).unwrap();
     let r = a.get(&format!("/cell/{A}/total?date=2026-03-01")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     let total = Receipt::from_json(&r.json().get("receipt").unwrap().to_jcs()).unwrap();
@@ -278,9 +301,19 @@ async fn every_endpoint_and_outcome() {
     let m1 = a.get(&format!("/manifest/{}/{}", parts[1], parts[2])).await;
     assert_eq!(m1.status, 200);
     assert_eq!(datumesh_core::Manifest::from_json(&m1.body).unwrap().entry(), entry);
-    let m2 = a.get(&format!("/slice/{}/{}", parts[1], parts[2])).await;
-    assert_eq!(m2.body, m1.body);
     assert!(m1.header("cache-control").unwrap().contains("immutable"));
+    let m2 = a.get(&format!("/slice/{}/{}", parts[1], parts[2])).await;
+    assert_ne!(m2.body, m1.body, "one manifest path (spec-0.4.2): /slice/<id>/<members> is a slice request");
+
+    // GET /versions (9.8).
+    let r = a.get(&format!("/versions/{A}/rate?ccy=USD&date=2026-03-01")).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = r.json();
+    let Some(Value::Array(vs)) = v.get("versions") else { panic!("versions") };
+    assert_eq!(vs.len(), 1);
+    assert_eq!(vs[0].get("tx").and_then(Value::as_str), Some(T1));
+    let r = a.get(&format!("/versions/{A}/nothing?ccy=USD")).await;
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_NAME_UNBOUND"));
 
     // GET /receipt, /descriptor, /blob: bytes, immutable.
     let dr = Receipt::from_json(&double_receipt).unwrap();
@@ -334,6 +367,7 @@ async fn every_endpoint_and_outcome() {
     )
     .unwrap();
     assert_eq!(resolved.mesh.bindings, format!("https://{A}/bindings"));
+    assert_eq!(resolved.mesh.endpoints.get("versions").map(String::as_str), Some(format!("https://{A}/versions/{{cell}}").as_str()));
     let r = a.get(&format!("/bindings?name={A}%2Frate&name={A}%2Fnothing&asof={T1}")).await;
     let bv = r.json();
     let bs = bv.get("bindings").unwrap().as_object().unwrap();

@@ -92,7 +92,7 @@ async fn two_meshes() {
     let r = a.get(&format!("/cell/{A}/with_tax?item=bolt")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     let env = r.json();
-    assert_eq!(env.get("trust").and_then(Value::as_str), Some("verified"));
+    assert_eq!(env.get("trust").and_then(Value::as_str), Some("computed"));
     let receipt = env.get("receipt").unwrap().to_jcs();
     let rec = Receipt::from_json(&receipt).unwrap();
     assert_eq!(rec.value().lexical(), "120");

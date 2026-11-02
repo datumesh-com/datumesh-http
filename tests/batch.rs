@@ -57,7 +57,7 @@ async fn thousand_cells() {
         server.push(r.header("server-timing").unwrap_or_default().trim_start_matches("app;dur=").to_string());
         let Value::Array(items) = r.json() else { panic!("array") };
         assert_eq!(items.len(), 1000);
-        assert!(items.iter().all(|e| e.get("outcome").and_then(Value::as_str) == Some("ok")));
+        assert!(items.iter().all(|e| e.get("envelope").and_then(|x| x.get("outcome")).and_then(Value::as_str) == Some("ok")));
     }
     batches.sort();
     let batch = pct(&batches, 0.5);

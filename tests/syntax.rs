@@ -120,12 +120,12 @@ async fn call_and_uri_are_one_request() {
         (enc(&format!("{A}/rate(USD, 2026-03-01)")), "E_PARSE_URI"), // a key literal (15.15)
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01).spot(1)")), "E_PARSE_URI"), // a method
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01 + 1)")), "E_PARSE_URI"), // an expression
-        (enc(&format!("{A}/rate(\"USD\", 2026-03-01, 3)")), "E_PARSE_URI"),
+        (enc(&format!("{A}/rate(\"USD\", 2026-03-01, 3)")), "E_ARG_UNKNOWN"), // a positional past order (5.8)
         (enc(&format!("{A}/rate(\"USD\")")), "E_ARG_MISSING"),
         (enc(&format!("{A}/rate(\"USD\", date: 2026-03-01, zzz: 1)")), "E_ARG_UNKNOWN"),
         (enc(&format!("{A}/rate(1, 2026-03-01)")), "E_CANON_TYPE"),
         (enc(&format!("{A}/rate(\"Zu\u{308}rich\", 2026-03-01)")), "E_CANON_STRING"),
-        (enc(&format!("{A}/rate(\"USD\", *)")), "E_PARSE_URI"),
+        (enc(&format!("{A}/rate(\"USD\", *)")), "E_SLICE_AT_CELL"),
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01)")) + "?asof=yesterday", "E_CANON_INSTANT"),
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01)")) + "?x=1", "E_PARSE_URI"),
     ] {
@@ -135,6 +135,7 @@ async fn call_and_uri_are_one_request() {
     }
     let r = a.get(&format!("/cell/{}", enc("@nope(\"USD\")"))).await;
     assert_eq!(r.outcome(), "not_covered", "an unknown alias names no function");
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_NAME_UNBOUND"));
 }
 
 fn percent_decode(s: &str) -> String {
@@ -159,6 +160,10 @@ struct One(Option<Arc<FunctionDescriptor>>);
 impl Bindings for One {
     fn binding(&self, _: &str, _: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
         Ok(self.0.clone().map(|d| Arc::new(Bound::new(d.hash(), BIND_TX, d))))
+    }
+    // The pinned vectors pin an arbitrary hash: the vector's signature stands for it.
+    fn pinned(&self, fn_hash: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        Ok(self.0.clone().map(|d| Arc::new(Bound::new(fn_hash, BIND_TX, d))))
     }
 }
 
@@ -203,7 +208,7 @@ fn spec_uri_vectors() {
             let https = v.get("https").and_then(Value::as_str).unwrap();
             assert_eq!(format!("https://mesh.example/cell/{}", t.rest()), https, "{id}");
             assert_eq!(
-                datumesh_core::sha256_hex(&t.reference.canonical()),
+                datumesh_core::sha256_hex(&t.pinned_reference().canonical()),
                 v.get("sha256").and_then(Value::as_str).unwrap(),
                 "{id}"
             );
