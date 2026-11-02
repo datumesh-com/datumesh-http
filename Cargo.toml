@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.1.1"
+version = "0.1.2"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"

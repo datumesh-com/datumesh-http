@@ -6,7 +6,7 @@ The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.2](https://g
 
 ```toml
 [dependencies]
-datumesh-http = "0.1.1"
+datumesh-http = "0.1.2"
 datumesh-store = "0.3.2"
 datumesh-core = { version = "0.3.6", features = ["sign"] }
 ```
@@ -91,7 +91,7 @@ It prints `200` and the `ok` envelope with the publisher's receipt (`"trust":"pr
 | `GET /versions/<uri>` | SPEC 9.8: a cell's versions `{"cell", "versions": [{"tx", "asof", "receipt"}], "next"}`, oldest first, 1,000 a page (`from=`, `to=` instants) |
 | `GET /health`, `/metrics`, `/openapi.json` | the store's health; Prometheus text; the OpenAPI document (generated from the handlers, utoipa) |
 
-The crate documentation has the details: the call forms accepted (pins since 0.1.1), every outcome and its status, how `Engine::get` maps to envelopes, jobs, cross-mesh resolution and its cache lifetimes, caching headers, the pool and the rate limits.
+The crate documentation has the details: the call forms accepted (pins since 0.1.2), every outcome and its status, how `Engine::get` maps to envelopes, jobs, cross-mesh resolution and its cache lifetimes, caching headers, the pool and the rate limits.
 
 ## The client
 

@@ -20,7 +20,7 @@ State and secrets are outside the repository, in `/root/datumesh-mesh-test` (`DA
 ## Setting up and running
 
 ```sh
-docker build -t datumesh-mesh:0.1.1-local .      # until GHCR has 0.1.1: DATUMESH_MESH_IMAGE=datumesh-mesh:0.1.1-local
+docker build -t datumesh-mesh:0.1.2-local .      # until GHCR has 0.1.2: DATUMESH_MESH_IMAGE=datumesh-mesh:0.1.2-local
 deploy/setup.sh                                   # directories, password, key (keygen --publish), API keys, import
 deploy/seed.sh                                    # the seed data (below): download, generate, publish-stored, checks
 CADDYFILE=Caddyfile.internal docker compose -p datumesh-mesh-test -f deploy/compose.yml up -d   # before DNS
@@ -30,8 +30,8 @@ deploy/smoke.sh [--local]                         # the HTTPS smoke suite (--loc
 deploy/restore_drill.sh                           # restore the newest dump next to the live mesh and compare
 ```
 
-`compose.yml` names the published image by digest; `DATUMESH_MESH_IMAGE` overrides it (0.1.1
-runs as `datumesh-mesh:0.1.1-local` until its image is on GHCR, then by digest). The other
+`compose.yml` names the published image by digest; `DATUMESH_MESH_IMAGE` overrides it (0.1.2
+runs as `datumesh-mesh:0.1.2-local` until its image is on GHCR, then by digest). The other
 scripts use the image of the running mesh container unless `DATUMESH_MESH_IMAGE` says otherwise.
 
 Configuration (in `compose.yml`): host `mesh-test.datumesh.com`; the vectors' hosts served as

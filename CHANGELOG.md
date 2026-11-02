@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.2
+
+The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was over 10 times one cell on CI; fixed below), so 0.1.1 was never published.
 
 spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; store 0.3.2).
 
