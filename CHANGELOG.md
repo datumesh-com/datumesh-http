@@ -10,8 +10,12 @@ On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 
   gives the engine, `BuildError::Engine` carries its error), which are now store 0.4's, engine
   0.4's and formula 0.2's: users move to the four together. No code change was needed for it.
   Store 0.4.0 adds a SQLite backend (`SqliteStore`), which a `Mesh` can run on (the store's
-  `Store` is the same trait); **the image's backend is unchanged: PostgreSQL** (`DATABASE_URL`
-  names a PostgreSQL 16 database, as before).
+  `Store` is the same trait) when the application enables it (`datumesh-store`'s default
+  feature `sqlite`, or `datumesh-engine/sqlite`). **The image's backend is unchanged:
+  PostgreSQL** (`DATABASE_URL` names a PostgreSQL 16 database, as before): this crate depends on
+  the store with `default-features = false`, and on engine and formula without their `sqlite`
+  features, so the mesh binary and the image compile no SQLite (`cargo tree -e features` has no
+  `rusqlite` or `libsqlite3-sys`; `Cargo.lock` holds neither).
 - **A base URL for the mesh document** (`Config::base_url`, `Config::with_base_url`,
   `DATUMESH_BASE_URL`): when set, every URL of `/.well-known/datumesh-mesh.json` (`bindings`
   and the endpoints) is on it instead of `https://<host>`, so a mesh on this machine (`datumesh
