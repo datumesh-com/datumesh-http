@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 (were 0.3.2,
+0.3.2 and 0.1.1), and a configurable base URL for the mesh document.
+
+- **The store 0.4 move.** Breaking only because the public API names the store's, engine's
+  and formula's types (`Mesh::builder` takes an `Arc<dyn Store + Send + Sync>`, `Mesh::engine`
+  gives the engine, `BuildError::Engine` carries its error), which are now store 0.4's, engine
+  0.4's and formula 0.2's: users move to the four together. No code change was needed for it.
+  Store 0.4.0 adds a SQLite backend (`SqliteStore`), which a `Mesh` can run on (the store's
+  `Store` is the same trait); **the image's backend is unchanged: PostgreSQL** (`DATABASE_URL`
+  names a PostgreSQL 16 database, as before).
+- **A base URL for the mesh document** (`Config::base_url`, `Config::with_base_url`,
+  `DATUMESH_BASE_URL`): when set, every URL of `/.well-known/datumesh-mesh.json` (`bindings`
+  and the endpoints) is on it instead of `https://<host>`, so a mesh on this machine (`datumesh
+  serve`) can advertise `http://127.0.0.1:<port>`. `https://` with any host; `http://` with
+  `127.0.0.1`, `[::1]` or `localhost` only; an optional port; no path, query, fragment or
+  trailing slash. Another is refused when the mesh is built, `BuildError::BaseUrl` with a
+  `config::BaseUrlError` (`Scheme`, `HttpNotLoopback`, `Host`, `Port`, `Path`,
+  `TrailingSlash`, `Query`, `Fragment`), or by `Config::from_env` and `Config::check` as a
+  `ConfigError`; `config::check_base_url` checks one alone. The key document and `host` do not
+  change, nor do the URLs in envelopes and headers (`poll`, a page's `next`, the `canonical`
+  link), which stay on `https://<host>` (`Config::origin`): SPEC 5.5 makes `poll` an `https://`
+  URL. Unset (the default), the mesh document is 0.1.2's byte for byte.
+- Additive otherwise: `Config::base_url`, `Config::with_base_url`, `Config::mesh_document_base`,
+  `config::BaseUrlError`, `config::check_base_url`, `BuildError::BaseUrl`.
+
 ## 0.1.2
 
 The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was over 10 times one cell on CI; fixed below), so 0.1.1 was never published.

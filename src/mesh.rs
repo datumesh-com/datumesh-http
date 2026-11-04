@@ -30,6 +30,8 @@ pub enum BuildError {
     Config(ConfigError),
     /// The engine's configuration (the key, its publication in the store, the runtimes).
     Engine(datumesh_engine::ConfigError),
+    /// The base URL ([`Config::base_url`]). Since 0.2.0.
+    BaseUrl(crate::config::BaseUrlError),
 }
 
 impl std::fmt::Display for BuildError {
@@ -37,6 +39,7 @@ impl std::fmt::Display for BuildError {
         match self {
             BuildError::Config(e) => write!(f, "{e}"),
             BuildError::Engine(e) => write!(f, "engine: {e}"),
+            BuildError::BaseUrl(e) => write!(f, "configuration: base URL: {e}"),
         }
     }
 }
@@ -118,6 +121,9 @@ impl MeshBuilder {
     /// Checks the configuration, builds the engine (its key must be published in the store's
     /// namespace record for the host) and the mesh.
     pub fn build(self) -> Result<Mesh, BuildError> {
+        if let Some(u) = &self.config.base_url {
+            crate::config::check_base_url(u).map_err(BuildError::BaseUrl)?;
+        }
         self.config.check().map_err(BuildError::Config)?;
         let keys = Arc::new(KeyCache::default());
         let foreign = Arc::new(Foreign::new(&self.config, self.store.clone(), keys.clone(), self.clock.clone()));
@@ -1029,9 +1035,10 @@ impl Mesh {
         verified(verify(receipt, &keys, Some(&m), blob))
     }
 
-    /// The mesh document (SPEC 9.6) this mesh serves.
+    /// The mesh document (SPEC 9.6) this mesh serves: its URLs on the base URL when one is
+    /// set ([`Config::base_url`]), else on `https://<host>`.
     pub fn mesh_document(&self) -> Vec<u8> {
-        let o = self.inner.config.origin();
+        let o = self.inner.config.mesh_document_base();
         let ep: BTreeMap<&str, String> = [
             ("blob", format!("{o}/blob/{{sha256}}")),
             ("cell", format!("{o}/cell/{{cell}}")),

@@ -7,7 +7,7 @@ set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${DATUMESH_DIR:-/root/datumesh-mesh-test}"
 vectors="$(cd "$here/../spec/vectors" && pwd)"
-image="${DATUMESH_MESH_IMAGE:-$(docker inspect datumesh-mesh-test-mesh-1 --format '{{.Config.Image}}' 2>/dev/null || echo datumesh-mesh:0.1.2-local)}"
+image="${DATUMESH_MESH_IMAGE:-$(docker inspect datumesh-mesh-test-mesh-1 --format '{{.Config.Image}}' 2>/dev/null || echo datumesh-mesh:0.2.0-local)}"
 docker run --rm --network datumesh-mesh-test_backend --env-file "$dir/secrets/db.env" -v "$vectors:/vectors:ro" \
   "$image" import-vectors /vectors > "$dir/status/import.json"
 cat "$dir/status/import.json"; echo

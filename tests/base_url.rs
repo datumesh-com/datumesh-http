@@ -73,6 +73,7 @@ async fn default_unchanged() {
     assert_eq!(md.text(), DOC_0_1_2);
     assert_eq!(a.mesh.mesh_document(), DOC_0_1_2.as_bytes());
     assert_eq!(a.mesh.config().origin(), format!("https://{A}"));
+    assert_eq!(a.mesh.config().mesh_document_base(), format!("https://{A}"));
     // From the environment: unset is unset.
     let c = Config::from_vars(|k| (k == "DATUMESH_HOST").then(|| A.to_string())).unwrap();
     assert_eq!(c.base_url, None);
@@ -81,17 +82,21 @@ async fn default_unchanged() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loopback_http_accepted() {
     let db = TestDb::migrated();
-    for base in
-        ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"]
-    {
-        let m = build(&db, base).unwrap_or_else(|e| panic!("{base} refused: {e}"));
-        let doc = datumesh_core::json::parse(&m.mesh_document()).unwrap();
-        for u in urls(&doc) {
-            assert!(u.starts_with(&format!("{base}/")), "{u} not under {base}");
+    // Built and dropped off the runtime (the store's driver may not run on a runtime thread).
+    bl(|| {
+        for base in
+            ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"]
+        {
+            let m = build(&db, base).unwrap_or_else(|e| panic!("{base} refused: {e}"));
+            let doc = datumesh_core::json::parse(&m.mesh_document()).unwrap();
+            for u in urls(&doc) {
+                assert!(u.starts_with(&format!("{base}/")), "{u} not under {base}");
+            }
+            assert_eq!(doc.get("host").and_then(Value::as_str), Some(A), "host unchanged");
+            assert_eq!(m.config().mesh_document_base(), base);
+            assert_eq!(m.config().origin(), format!("https://{A}"), "envelopes' URLs unchanged");
         }
-        assert_eq!(doc.get("host").and_then(Value::as_str), Some(A), "host unchanged");
-        assert_eq!(m.config().origin(), base);
-    }
+    });
 
     // Served: the mesh document uses the base URL; the key document and host are unchanged.
     let base = "http://127.0.0.1:8787";
@@ -108,13 +113,14 @@ async fn loopback_http_accepted() {
     assert_eq!(kd.status, 200);
     assert_eq!(kd.body, key_doc(A, &a.key), "key document unchanged");
 
-    // A pending envelope's poll is the jobs endpoint with its job (SPEC 9.6), on the base.
+    // A pending envelope's poll stays on https://<host>: SPEC 5.5 makes it an https URL
+    // (core's Pending refuses another), and a client maps it onto where it reaches the mesh.
     a.function(&format!("{A}/slow"), "sleep", "2000", &[], TAG_SIG);
     let r = a.get(&format!("/cell/{A}/slow?tag=x")).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let env = r.json();
     let job = env.get("job").and_then(Value::as_str).unwrap();
-    assert_eq!(env.get("poll").and_then(Value::as_str), Some(format!("{base}/jobs/{job}").as_str()));
+    assert_eq!(env.get("poll").and_then(Value::as_str), Some(format!("https://{A}/jobs/{job}").as_str()));
 
     // From the environment.
     let c = Config::from_vars(|k| match k {

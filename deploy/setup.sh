@@ -4,11 +4,11 @@
 # API keys (one for the user, one for the tests), the vectors' cells, the /find catalog.
 # Nothing secret is printed.
 #
-#   deploy/setup.sh            (after the image is built: docker build -t datumesh-mesh:0.1.2-local .)
+#   deploy/setup.sh            (after the image is built: docker build -t datumesh-mesh:0.2.0-local .)
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${DATUMESH_DIR:-/root/datumesh-mesh-test}"
-image="${DATUMESH_MESH_IMAGE:-datumesh-mesh:0.1.2-local}"
+image="${DATUMESH_MESH_IMAGE:-datumesh-mesh:0.2.0-local}"
 compose="docker compose -p datumesh-mesh-test -f $here/compose.yml"
 umask 077
 mkdir -p "$dir/secrets" "$dir/backups" "$dir/status" "$dir/logs"

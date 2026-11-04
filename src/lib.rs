@@ -19,7 +19,7 @@
 //! | `GET /find?q=` | functions of the catalog by keyword (a stub until 2.2) |
 //! | `POST /verify` | the core verifier on a submitted receipt with this mesh's keys |
 //! | `GET /jobs/<id>` | a job: `pending`, or the envelope of the original request |
-//! | `GET /.well-known/datumesh.json`, `/.well-known/datumesh-mesh.json` | the key document (the store's namespace record for the host, SPEC 9.2) and the mesh document (SPEC 9.6) |
+//! | `GET /.well-known/datumesh.json`, `/.well-known/datumesh-mesh.json` | the key document (the store's namespace record for the host, SPEC 9.2) and the mesh document (SPEC 9.6; its URLs on [`Config::base_url`] when set) |
 //! | `GET /bindings?name=&asof=` | which function a name denotes (SPEC 9.7), for names this mesh owns |
 //! | `GET /health`, `/metrics`, `/openapi.json` | liveness and the store; Prometheus text; the OpenAPI document generated from the handlers |
 //!

@@ -168,8 +168,19 @@ impl Policy {
 #[derive(Clone, Debug)]
 pub struct Config {
     /// The DNS name the mesh signs as (`computed_by`) and serves on: `https://<host>/...`
-    /// (e.g. `mesh-test.datumesh.com`).
+    /// (e.g. `mesh-test.datumesh.com`), unless [`Config::base_url`] says otherwise.
     pub host: String,
+    /// Where the mesh is served when not at `https://<host>`, e.g. `http://127.0.0.1:8787`
+    /// for a mesh on this machine (default: none): the base of every URL in the mesh
+    /// document (`bindings` and the endpoints, [`crate::Mesh::mesh_document`]). `https://`
+    /// with any host; `http://` with `127.0.0.1`, `[::1]` or `localhost` only; an optional
+    /// port; no path, query, fragment or trailing slash ([`check_base_url`];
+    /// [`crate::MeshBuilder::build`] refuses another with [`crate::BuildError::BaseUrl`]).
+    /// The key document and `host` do not change, nor do the URLs in envelopes and headers
+    /// (a `pending` envelope's `poll`, a page's `next`, the `canonical` link), which stay
+    /// [`Config::origin`]: SPEC 5.5 makes `poll` an `https://` URL, and a client maps
+    /// `https://<host>/` onto where it reaches the mesh (its peers).
+    pub base_url: Option<String>,
     /// The hosts whose names this mesh owns (default: `host`). A name under any other host
     /// is resolved across meshes.
     pub namespaces: Vec<String>,
@@ -221,6 +232,7 @@ impl Config {
         Config {
             namespaces: vec![host.clone()],
             host,
+            base_url: None,
             budget: DEFAULT_BUDGET,
             pool_size: DEFAULT_POOL_SIZE,
             batch_max: DEFAULT_BATCH_MAX,
@@ -242,6 +254,13 @@ impl Config {
         }
     }
 
+    /// The configuration with this base URL ([`Config::base_url`]); it is checked when the
+    /// mesh is built.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Config {
+        self.base_url = Some(url.into());
+        self
+    }
+
     /// The configuration from the environment (`DATUMESH_*`; the README lists them). The
     /// files named (`DATUMESH_API_KEYS_FILE`, and the others) are read here; the API keys
     /// file must have mode 0600.
@@ -253,6 +272,9 @@ impl Config {
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Config, ConfigError> {
         let host = get("DATUMESH_HOST").ok_or_else(|| ConfigError::new("DATUMESH_HOST", "not set"))?;
         let mut c = Config::new(host);
+        if let Some(v) = get("DATUMESH_BASE_URL").filter(|v| !v.is_empty()) {
+            c.base_url = Some(v);
+        }
         if let Some(v) = get("DATUMESH_NAMESPACES") {
             c.namespaces = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
@@ -329,9 +351,13 @@ impl Config {
         Ok(c)
     }
 
-    /// Checks the configuration: names are DNS names and function names, numbers in range.
+    /// Checks the configuration: names are DNS names and function names, the base URL is
+    /// one ([`check_base_url`]), numbers in range.
     pub fn check(&self) -> Result<(), ConfigError> {
         lexical::check_dns_name(&self.host, "$").map_err(|e| ConfigError::new("host", e.to_string()))?;
+        if let Some(u) = &self.base_url {
+            check_base_url(u).map_err(|e| ConfigError::new("base URL", format!("{u}: {e}")))?;
+        }
         for h in &self.namespaces {
             lexical::check_dns_name(h, "$").map_err(|e| ConfigError::new("namespaces", e.to_string()))?;
         }
@@ -361,10 +387,126 @@ impl Config {
         self.namespaces.iter().any(|h| h == host)
     }
 
-    /// `https://<host>`: where this mesh is served.
+    /// `https://<host>`: where this mesh is served, the base of the URLs in its envelopes.
     pub fn origin(&self) -> String {
         format!("https://{}", self.host)
     }
+
+    /// The base of the URLs in the mesh document: the base URL when set, else
+    /// [`Config::origin`].
+    pub fn mesh_document_base(&self) -> String {
+        self.base_url.clone().unwrap_or_else(|| self.origin())
+    }
+}
+
+/// Why a base URL ([`Config::base_url`]) is refused.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseUrlError {
+    /// Neither `https://` nor `http://` (lower case).
+    Scheme,
+    /// `http://` with a host other than `127.0.0.1`, `[::1]` and `localhost`.
+    HttpNotLoopback,
+    /// No host, userinfo, or a host that is neither a DNS name (lower case), an IPv4 address
+    /// nor an IPv6 address in brackets.
+    Host,
+    /// A port that is not a decimal number from 1 to 65535 (`:` with nothing after it too).
+    Port,
+    /// A path after the host and port.
+    Path,
+    /// A slash alone after the host and port.
+    TrailingSlash,
+    /// A query.
+    Query,
+    /// A fragment.
+    Fragment,
+}
+
+impl fmt::Display for BaseUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            BaseUrlError::Scheme => "not an https:// or http:// URL",
+            BaseUrlError::HttpNotLoopback => "http:// is for 127.0.0.1, [::1] and localhost only",
+            BaseUrlError::Host => "not a host name, IPv4 address or bracketed IPv6 address",
+            BaseUrlError::Port => "not a port from 1 to 65535",
+            BaseUrlError::Path => "a path (the base URL is a scheme, a host and a port)",
+            BaseUrlError::TrailingSlash => "a trailing slash",
+            BaseUrlError::Query => "a query",
+            BaseUrlError::Fragment => "a fragment",
+        })
+    }
+}
+
+impl std::error::Error for BaseUrlError {}
+
+/// Checks a base URL ([`Config::base_url`]): `https://` with any host, or `http://` with
+/// `127.0.0.1`, `[::1]` or `localhost`; then an optional `:<port>` (1 to 65535) and nothing
+/// else: no path, query, fragment, trailing slash or userinfo.
+pub fn check_base_url(url: &str) -> Result<(), BaseUrlError> {
+    let (http, rest) = if let Some(r) = url.strip_prefix("https://") {
+        (false, r)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (true, r)
+    } else {
+        return Err(BaseUrlError::Scheme);
+    };
+    if rest.contains('#') {
+        return Err(BaseUrlError::Fragment);
+    }
+    if rest.contains('?') {
+        return Err(BaseUrlError::Query);
+    }
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    match path {
+        "" => {}
+        "/" => return Err(BaseUrlError::TrailingSlash),
+        _ => return Err(BaseUrlError::Path),
+    }
+    if authority.contains('@') {
+        return Err(BaseUrlError::Host);
+    }
+    let (host, port) = if let Some(r) = authority.strip_prefix('[') {
+        let (inside, after) = r.split_once(']').ok_or(BaseUrlError::Host)?;
+        inside.parse::<std::net::Ipv6Addr>().map_err(|_| BaseUrlError::Host)?;
+        let port = match after {
+            "" => None,
+            p => Some(p.strip_prefix(':').ok_or(BaseUrlError::Host)?),
+        };
+        (&authority[..inside.len() + 2], port)
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        };
+        if host.parse::<std::net::Ipv4Addr>().is_err() && !is_dns_name(host) {
+            return Err(BaseUrlError::Host);
+        }
+        (host, port)
+    };
+    if let Some(p) = port {
+        let ok = !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit());
+        if !ok || !(1..=65535).contains(&p.parse::<u32>().unwrap_or(0)) {
+            return Err(BaseUrlError::Port);
+        }
+    }
+    if http && !matches!(host, "127.0.0.1" | "[::1]" | "localhost") {
+        return Err(BaseUrlError::HttpNotLoopback);
+    }
+    Ok(())
+}
+
+/// A DNS name in lower case: labels of 1 to 63 of `a-z`, `0-9` and `-`, not starting or
+/// ending with `-`, at most 253 characters.
+fn is_dns_name(h: &str) -> bool {
+    !h.is_empty()
+        && h.len() <= 253
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 fn string_map(bytes: &[u8], what: &str) -> Result<BTreeMap<String, String>, ConfigError> {

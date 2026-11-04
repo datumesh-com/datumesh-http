@@ -1,13 +1,13 @@
 # datumesh-http
 
-The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.2](https://github.com/datumesh-com/datumesh-spec)): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), versions (SPEC 9.8), cross-mesh resolution of names under other hosts, and a store-less client for other meshes (`client`). The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.3.2 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.1.1 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.3.2 and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.6.
+The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.2](https://github.com/datumesh-com/datumesh-spec)): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), versions (SPEC 9.8), cross-mesh resolution of names under other hosts, and a store-less client for other meshes (`client`). The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.4.0 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.2.0 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.4.0 (PostgreSQL, as the image uses; or SQLite) and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.6.
 
 ## Example
 
 ```toml
 [dependencies]
-datumesh-http = "0.1.2"
-datumesh-store = "0.3.2"
+datumesh-http = "0.2.0"
+datumesh-store = "0.4.0"
 datumesh-core = { version = "0.3.6", features = ["sign"] }
 ```
 
@@ -105,6 +105,7 @@ The server reads the environment; files named there are read at start (secrets o
 |---|---|---|
 | `DATABASE_URL` | | PostgreSQL 16 (`?sslmode=require` for TLS; `DATABASE_CA_FILE` adds roots) |
 | `DATUMESH_HOST` | | the DNS name the mesh signs as and serves on (`mesh-test.datumesh.com`) |
+| `DATUMESH_BASE_URL` | none | where the mesh is served when not at `https://<host>`: every URL of the mesh document is on it (`http://127.0.0.1:8787` for a mesh on this machine); `https://` with any host, `http://` with `127.0.0.1`, `[::1]` or `localhost` only, an optional port, no path, query, fragment or trailing slash. The key document, `host` and the URLs in envelopes (`poll`, `next`, `canonical`) stay on `https://<host>` |
 | `DATUMESH_KEY_FILE` | | the signing key's seed (32 bytes or 64 hex digits), mode 0600; its key must be in the host's key document in the store (`datumesh-mesh keygen --publish`) |
 | `DATUMESH_LISTEN` | `127.0.0.1:8080` | where to listen (plain HTTP: Caddy terminates TLS in front) |
 | `DATUMESH_NAMESPACES` | the host | the hosts whose names this mesh owns (comma-separated) |
