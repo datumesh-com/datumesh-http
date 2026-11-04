@@ -19,17 +19,26 @@ On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 
 - **A base URL for the mesh document** (`Config::base_url`, `Config::with_base_url`,
   `DATUMESH_BASE_URL`): when set, every URL of `/.well-known/datumesh-mesh.json` (`bindings`
   and the endpoints) is on it instead of `https://<host>`, so a mesh on this machine (`datumesh
-  serve`) can advertise `http://127.0.0.1:<port>`. `https://` with any host; `http://` with
-  `127.0.0.1`, `[::1]` or `localhost` only; an optional port; no path, query, fragment or
-  trailing slash. Another is refused when the mesh is built, `BuildError::BaseUrl` with a
-  `config::BaseUrlError` (`Scheme`, `HttpNotLoopback`, `Host`, `Port`, `Path`,
-  `TrailingSlash`, `Query`, `Fragment`), or by `Config::from_env` and `Config::check` as a
-  `ConfigError`; `config::check_base_url` checks one alone. The key document and `host` do not
-  change, nor do the URLs in envelopes and headers (`poll`, a page's `next`, the `canonical`
-  link), which stay on `https://<host>` (`Config::origin`): SPEC 5.5 makes `poll` an `https://`
-  URL. Unset (the default), the mesh document is 0.1.2's byte for byte.
+  serve`) can advertise `http://127.0.0.1:<port>`. `https://` with any host. `http://` only
+  when the mesh's host is unrooted (under `.invalid`, SPEC 2.5, e.g. `local.invalid`), and
+  then only on `127.0.0.1`, `[::1]` or `localhost`; a rooted host is never served over
+  `http://`. An optional port; no path, query, fragment or trailing slash. Another is refused
+  when the mesh is built, `BuildError::BaseUrl` with a `config::BaseUrlError` (`Scheme`,
+  `HttpRootedHost`, `HttpNotLoopback`, `Host`, `Port`, `Path`, `TrailingSlash`, `Query`,
+  `Fragment`), or by `Config::from_env` and `Config::check` as a `ConfigError`;
+  `config::check_base_url(host, url)` checks one alone, `config::is_unrooted(host)` tells an
+  unrooted host. The key document and `host` do not change, nor do the URLs in envelopes and
+  headers (`poll`, a page's `next`, the `canonical` link), which stay on `https://<host>`
+  (`Config::origin`): core's `Pending` takes an `https://` `poll` only. Unset (the default),
+  the mesh document is 0.1.2's byte for byte.
+- **An `http://` mesh document is local-only.** It is not valid under spec-0.4.3 (9.6: every
+  URL `https://` on the host), and core 0.3.6's `resolve_mesh` (so `client::Client::resolve`)
+  refuses it with `E_MESH_DOC`. spec-0.4.4 will allow exactly this: for an unrooted host,
+  mesh-document URLs and `poll` may be `http://` on a loopback address only (`127.0.0.1`,
+  `[::1]`, `localhost`); rooted hosts stay `https://`-only. datumesh-core 0.3.8 will accept it.
 - Additive otherwise: `Config::base_url`, `Config::with_base_url`, `Config::mesh_document_base`,
-  `config::BaseUrlError`, `config::check_base_url`, `BuildError::BaseUrl`.
+  `config::BaseUrlError`, `config::check_base_url`, `config::is_unrooted`,
+  `BuildError::BaseUrl`.
 
 ## 0.1.2
 

@@ -122,7 +122,7 @@ impl MeshBuilder {
     /// namespace record for the host) and the mesh.
     pub fn build(self) -> Result<Mesh, BuildError> {
         if let Some(u) = &self.config.base_url {
-            crate::config::check_base_url(u).map_err(BuildError::BaseUrl)?;
+            crate::config::check_base_url(&self.config.host, u).map_err(BuildError::BaseUrl)?;
         }
         self.config.check().map_err(BuildError::Config)?;
         let keys = Arc::new(KeyCache::default());

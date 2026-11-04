@@ -173,9 +173,17 @@ pub struct Config {
     /// Where the mesh is served when not at `https://<host>`, e.g. `http://127.0.0.1:8787`
     /// for a mesh on this machine (default: none): the base of every URL in the mesh
     /// document (`bindings` and the endpoints, [`crate::Mesh::mesh_document`]). `https://`
-    /// with any host; `http://` with `127.0.0.1`, `[::1]` or `localhost` only; an optional
-    /// port; no path, query, fragment or trailing slash ([`check_base_url`];
-    /// [`crate::MeshBuilder::build`] refuses another with [`crate::BuildError::BaseUrl`]).
+    /// with any host; `http://` only when the mesh's `host` is unrooted (its last label is
+    /// `invalid`, SPEC 2.5, e.g. `local.invalid`) and only with `127.0.0.1`, `[::1]` or
+    /// `localhost`; an optional port; no path, query, fragment or trailing slash
+    /// ([`check_base_url`]; [`crate::MeshBuilder::build`] refuses another with
+    /// [`crate::BuildError::BaseUrl`]).
+    ///
+    /// An `http://` mesh document is for local use only: it is not valid under spec-0.4.3
+    /// (9.6 wants `https://` URLs on the host), and core 0.3.6's `resolve_mesh` refuses it.
+    /// spec-0.4.4 will allow exactly this: for an unrooted host, mesh-document URLs and
+    /// `poll` may be `http://` on a loopback address only (`127.0.0.1`, `[::1]`,
+    /// `localhost`); rooted hosts stay `https://`-only. datumesh-core 0.3.8 will accept it.
     /// The key document and `host` do not change, nor do the URLs in envelopes and headers
     /// (a `pending` envelope's `poll`, a page's `next`, the `canonical` link), which stay
     /// [`Config::origin`]: SPEC 5.5 makes `poll` an `https://` URL, and a client maps
@@ -356,7 +364,7 @@ impl Config {
     pub fn check(&self) -> Result<(), ConfigError> {
         lexical::check_dns_name(&self.host, "$").map_err(|e| ConfigError::new("host", e.to_string()))?;
         if let Some(u) = &self.base_url {
-            check_base_url(u).map_err(|e| ConfigError::new("base URL", format!("{u}: {e}")))?;
+            check_base_url(&self.host, u).map_err(|e| ConfigError::new("base URL", format!("{u}: {e}")))?;
         }
         for h in &self.namespaces {
             lexical::check_dns_name(h, "$").map_err(|e| ConfigError::new("namespaces", e.to_string()))?;
@@ -405,7 +413,11 @@ impl Config {
 pub enum BaseUrlError {
     /// Neither `https://` nor `http://` (lower case).
     Scheme,
-    /// `http://` with a host other than `127.0.0.1`, `[::1]` and `localhost`.
+    /// `http://` for a mesh whose host is rooted (not under `.invalid`, SPEC 2.5): rooted
+    /// hosts are served over `https://` only, whatever the base URL's host.
+    HttpRootedHost,
+    /// `http://` (for an unrooted host) with a host other than `127.0.0.1`, `[::1]` and
+    /// `localhost`.
     HttpNotLoopback,
     /// No host, userinfo, or a host that is neither a DNS name (lower case), an IPv4 address
     /// nor an IPv6 address in brackets.
@@ -426,6 +438,7 @@ impl fmt::Display for BaseUrlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             BaseUrlError::Scheme => "not an https:// or http:// URL",
+            BaseUrlError::HttpRootedHost => "http:// is for an unrooted host (under .invalid) only",
             BaseUrlError::HttpNotLoopback => "http:// is for 127.0.0.1, [::1] and localhost only",
             BaseUrlError::Host => "not a host name, IPv4 address or bracketed IPv6 address",
             BaseUrlError::Port => "not a port from 1 to 65535",
@@ -439,10 +452,14 @@ impl fmt::Display for BaseUrlError {
 
 impl std::error::Error for BaseUrlError {}
 
-/// Checks a base URL ([`Config::base_url`]): `https://` with any host, or `http://` with
-/// `127.0.0.1`, `[::1]` or `localhost`; then an optional `:<port>` (1 to 65535) and nothing
-/// else: no path, query, fragment, trailing slash or userinfo.
-pub fn check_base_url(url: &str) -> Result<(), BaseUrlError> {
+/// Checks a base URL ([`Config::base_url`]) for a mesh signing as `host`: `https://` with any
+/// host, or, when `host` is unrooted ([`is_unrooted`]), `http://` with `127.0.0.1`, `[::1]`
+/// or `localhost`; then an optional `:<port>` (1 to 65535) and nothing else: no path, query,
+/// fragment, trailing slash or userinfo. The form is checked first, then the scheme's rule:
+/// `http://` for a rooted host is [`BaseUrlError::HttpRootedHost`] before anything about the
+/// URL's host.
+pub fn check_base_url(host: &str, url: &str) -> Result<(), BaseUrlError> {
+    let mesh_host = host;
     let (http, rest) = if let Some(r) = url.strip_prefix("https://") {
         (false, r)
     } else if let Some(r) = url.strip_prefix("http://") {
@@ -489,10 +506,19 @@ pub fn check_base_url(url: &str) -> Result<(), BaseUrlError> {
             return Err(BaseUrlError::Port);
         }
     }
+    if http && !is_unrooted(mesh_host) {
+        return Err(BaseUrlError::HttpRootedHost);
+    }
     if http && !matches!(host, "127.0.0.1" | "[::1]" | "localhost") {
         return Err(BaseUrlError::HttpNotLoopback);
     }
     Ok(())
+}
+
+/// Whether a host is unrooted (SPEC 2.5, spec-0.4.3): its last label is `invalid`
+/// (`local.invalid`, `agent-7.local.invalid`). Every other host is rooted.
+pub fn is_unrooted(host: &str) -> bool {
+    host.rsplit('.').next() == Some("invalid")
 }
 
 /// A DNS name in lower case: labels of 1 to 63 of `a-z`, `0-9` and `-`, not starting or

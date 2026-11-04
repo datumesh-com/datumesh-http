@@ -105,7 +105,7 @@ The server reads the environment; files named there are read at start (secrets o
 |---|---|---|
 | `DATABASE_URL` | | PostgreSQL 16 (`?sslmode=require` for TLS; `DATABASE_CA_FILE` adds roots) |
 | `DATUMESH_HOST` | | the DNS name the mesh signs as and serves on (`mesh-test.datumesh.com`) |
-| `DATUMESH_BASE_URL` | none | where the mesh is served when not at `https://<host>`: every URL of the mesh document is on it (`http://127.0.0.1:8787` for a mesh on this machine); `https://` with any host, `http://` with `127.0.0.1`, `[::1]` or `localhost` only, an optional port, no path, query, fragment or trailing slash. The key document, `host` and the URLs in envelopes (`poll`, `next`, `canonical`) stay on `https://<host>` |
+| `DATUMESH_BASE_URL` | none | where the mesh is served when not at `https://<host>`: every URL of the mesh document is on it (`http://127.0.0.1:8787` for a mesh on this machine); `https://` with any host; `http://` only for an unrooted `DATUMESH_HOST` (under `.invalid`, e.g. `local.invalid`) and only on `127.0.0.1`, `[::1]` or `localhost` (local use: such a document is not valid under spec-0.4.3, spec-0.4.4 will allow it); an optional port, no path, query, fragment or trailing slash. The key document, `host` and the URLs in envelopes (`poll`, `next`, `canonical`) stay on `https://<host>` |
 | `DATUMESH_KEY_FILE` | | the signing key's seed (32 bytes or 64 hex digits), mode 0600; its key must be in the host's key document in the store (`datumesh-mesh keygen --publish`) |
 | `DATUMESH_LISTEN` | `127.0.0.1:8080` | where to listen (plain HTTP: Caddy terminates TLS in front) |
 | `DATUMESH_NAMESPACES` | the host | the hosts whose names this mesh owns (comma-separated) |
