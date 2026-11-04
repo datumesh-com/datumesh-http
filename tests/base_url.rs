@@ -1,8 +1,9 @@
 //! A configurable base URL (0.2.0): where the mesh is served, for the endpoints of its mesh
 //! document (`datumesh serve` advertising `http://127.0.0.1:<port>`). `https://` for any
-//! host, `http://` for the loopback hosts only; an optional port; no path, query, fragment or
-//! trailing slash; a typed error when the mesh is built. Unset, the mesh document is 0.1.2's,
-//! byte for byte. The key document and `host` never change.
+//! host; `http://` only for a mesh whose host is unrooted (under `.invalid`, SPEC 2.5) and
+//! only on the loopback hosts; an optional port; no path, query, fragment or trailing slash;
+//! a typed error when the mesh is built. Unset, the mesh document is 0.1.2's, byte for byte.
+//! The key document and `host` never change.
 
 mod common;
 
@@ -16,6 +17,8 @@ use datumesh_http::{BuildError, Config, Mesh};
 use datumesh_store::Store;
 
 const A: &str = "mesh-a.example";
+/// An unrooted host (SPEC 2.5).
+const U: &str = "local.invalid";
 
 /// The endpoints of the mesh document, `bindings` first.
 fn urls(doc: &Value) -> Vec<String> {
@@ -28,23 +31,35 @@ fn urls(doc: &Value) -> Vec<String> {
 
 /// What building a mesh for `A` with `base` gives (the store holds A's key document).
 fn build(db: &TestDb, base: &str) -> Result<Mesh, BuildError> {
+    build_for(db, A, base)
+}
+
+/// What building a mesh for `host` with `base` gives (the store holds its key document).
+fn build_for(db: &TestDb, host: &str, base: &str) -> Result<Mesh, BuildError> {
     bl(|| {
         let store = Arc::new(db.store(2));
-        if store.namespace(A).unwrap().is_none() {
-            store.put_namespace(A, &key_doc(A, &key_for(A)), BIND_TX).unwrap();
+        if store.namespace(host).unwrap().is_none() {
+            store.put_namespace(host, &key_doc(host, &key_for(host)), BIND_TX).unwrap();
         }
         let shared: Arc<dyn Store + Send + Sync> = store;
-        Mesh::builder(Config::new(A).with_base_url(base), shared).signing_key(key_for(A)).build()
+        Mesh::builder(Config::new(host).with_base_url(base), shared).signing_key(key_for(host)).build()
     })
 }
 
 fn refused(db: &TestDb, base: &str) -> BaseUrlError {
-    match build(db, base) {
-        Ok(_) => panic!("{base} accepted"),
+    refused_for(db, A, base)
+}
+
+fn refused_for(db: &TestDb, host: &str, base: &str) -> BaseUrlError {
+    match build_for(db, host, base) {
+        Ok(_) => panic!("{host}, {base} accepted"),
         Err(BuildError::BaseUrl(e)) => e,
-        Err(e) => panic!("{base}: not a base URL error: {e}"),
+        Err(e) => panic!("{host}, {base}: not a base URL error: {e}"),
     }
 }
+
+const LOOPBACK: [&str; 5] =
+    ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"];
 
 /// The mesh document of 0.1.2 for `A`, byte for byte.
 const DOC_0_1_2: &str = concat!(
@@ -80,51 +95,54 @@ async fn default_unchanged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn loopback_http_accepted() {
+async fn unrooted_loopback_http_accepted() {
     let db = TestDb::migrated();
     // Built and dropped off the runtime (the store's driver may not run on a runtime thread).
     bl(|| {
-        for base in
-            ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"]
-        {
-            let m = build(&db, base).unwrap_or_else(|e| panic!("{base} refused: {e}"));
-            let doc = datumesh_core::json::parse(&m.mesh_document()).unwrap();
-            for u in urls(&doc) {
-                assert!(u.starts_with(&format!("{base}/")), "{u} not under {base}");
+        for host in [U, "agent-7.local.invalid"] {
+            for base in LOOPBACK {
+                let m = build_for(&db, host, base).unwrap_or_else(|e| panic!("{host}, {base} refused: {e}"));
+                let doc = datumesh_core::json::parse(&m.mesh_document()).unwrap();
+                for u in urls(&doc) {
+                    assert!(u.starts_with(&format!("{base}/")), "{u} not under {base}");
+                }
+                assert_eq!(doc.get("host").and_then(Value::as_str), Some(host), "host unchanged");
+                assert_eq!(m.config().mesh_document_base(), base);
+                assert_eq!(m.config().origin(), format!("https://{host}"), "envelopes' URLs unchanged");
             }
-            assert_eq!(doc.get("host").and_then(Value::as_str), Some(A), "host unchanged");
-            assert_eq!(m.config().mesh_document_base(), base);
-            assert_eq!(m.config().origin(), format!("https://{A}"), "envelopes' URLs unchanged");
         }
     });
+    assert_eq!(datumesh_http::config::check_base_url(U, "http://localhost:8787"), Ok(()));
 
     // Served: the mesh document uses the base URL; the key document and host are unchanged.
     let base = "http://127.0.0.1:8787";
-    let a = Node::start(A, |c| {
+    let a = Node::start(U, |c| {
         *c = c.clone().with_base_url(base);
         c.budget = Duration::from_millis(200);
     })
     .await;
     let md = a.get("/.well-known/datumesh-mesh.json").await;
     assert_eq!(md.status, 200);
-    let expected = DOC_0_1_2.replace(&format!("https://{A}/"), &format!("{base}/"));
+    let expected = DOC_0_1_2
+        .replace(&format!("https://{A}/"), &format!("{base}/"))
+        .replace(&format!(r#""host":"{A}""#), &format!(r#""host":"{U}""#));
     assert_eq!(md.text(), expected);
     let kd = a.get("/.well-known/datumesh.json").await;
     assert_eq!(kd.status, 200);
-    assert_eq!(kd.body, key_doc(A, &a.key), "key document unchanged");
+    assert_eq!(kd.body, key_doc(U, &a.key), "key document unchanged");
 
     // A pending envelope's poll stays on https://<host>: SPEC 5.5 makes it an https URL
     // (core's Pending refuses another), and a client maps it onto where it reaches the mesh.
-    a.function(&format!("{A}/slow"), "sleep", "2000", &[], TAG_SIG);
-    let r = a.get(&format!("/cell/{A}/slow?tag=x")).await;
+    a.function(&format!("{U}/slow"), "sleep", "2000", &[], TAG_SIG);
+    let r = a.get(&format!("/cell/{U}/slow?tag=x")).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let env = r.json();
     let job = env.get("job").and_then(Value::as_str).unwrap();
-    assert_eq!(env.get("poll").and_then(Value::as_str), Some(format!("https://{A}/jobs/{job}").as_str()));
+    assert_eq!(env.get("poll").and_then(Value::as_str), Some(format!("https://{U}/jobs/{job}").as_str()));
 
     // From the environment.
     let c = Config::from_vars(|k| match k {
-        "DATUMESH_HOST" => Some(A.to_string()),
+        "DATUMESH_HOST" => Some(U.to_string()),
         "DATUMESH_BASE_URL" => Some(base.to_string()),
         _ => None,
     })
@@ -133,7 +151,26 @@ async fn loopback_http_accepted() {
 }
 
 #[test]
-fn non_loopback_http_refused() {
+fn rooted_host_http_refused() {
+    let db = TestDb::migrated();
+    // A rooted host: http is refused even on a loopback address, and on any other.
+    for host in [A, "invalid.example", "local.invalid.example", "app.localhost"] {
+        for base in LOOPBACK.into_iter().chain(["http://mesh-a.example", "http://10.0.0.1:8787"]) {
+            assert_eq!(refused_for(&db, host, base), BaseUrlError::HttpRootedHost, "{host}, {base}");
+        }
+    }
+    assert_eq!(datumesh_http::config::check_base_url(A, "http://127.0.0.1:8787"), Err(BaseUrlError::HttpRootedHost));
+    // From the environment: a configuration error.
+    let r = Config::from_vars(|k| match k {
+        "DATUMESH_HOST" => Some(A.to_string()),
+        "DATUMESH_BASE_URL" => Some("http://127.0.0.1:8787".to_string()),
+        _ => None,
+    });
+    assert!(r.is_err());
+}
+
+#[test]
+fn unrooted_non_loopback_http_refused() {
     let db = TestDb::migrated();
     for base in [
         "http://mesh-a.example",
@@ -143,15 +180,16 @@ fn non_loopback_http_refused() {
         "http://0.0.0.0:8787",
         "http://localhost.example",
         "http://[::2]:8787",
+        "http://local.invalid:8787",
     ] {
-        assert_eq!(refused(&db, base), BaseUrlError::HttpNotLoopback, "{base}");
+        assert_eq!(refused_for(&db, U, base), BaseUrlError::HttpNotLoopback, "{base}");
     }
     for base in ["ftp://mesh-a.example", "mesh-a.example", "HTTPS://mesh-a.example", "//mesh-a.example"] {
         assert_eq!(refused(&db, base), BaseUrlError::Scheme, "{base}");
     }
     // From the environment: a configuration error.
     let r = Config::from_vars(|k| match k {
-        "DATUMESH_HOST" => Some(A.to_string()),
+        "DATUMESH_HOST" => Some(U.to_string()),
         "DATUMESH_BASE_URL" => Some("http://mesh-a.example".to_string()),
         _ => None,
     });
@@ -198,4 +236,6 @@ fn https_with_port_accepted() {
         }
         assert_eq!(doc.get("host").and_then(Value::as_str), Some(A));
     }
+    // https on an unrooted host too.
+    build_for(&db, U, "https://127.0.0.1:8443").unwrap_or_else(|e| panic!("refused: {e}"));
 }
