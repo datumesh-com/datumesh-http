@@ -184,6 +184,7 @@ pub mod datumesh_http::config
 pub datumesh_http::config::BaseUrlError::Fragment
 pub datumesh_http::config::BaseUrlError::Host
 pub datumesh_http::config::BaseUrlError::HttpNotLoopback
+pub datumesh_http::config::BaseUrlError::HttpRootedHost
 pub datumesh_http::config::BaseUrlError::Path
 pub datumesh_http::config::BaseUrlError::Port
 pub datumesh_http::config::BaseUrlError::Query
@@ -317,7 +318,8 @@ pub const datumesh_http::config::DEFAULT_POOL_SIZE: usize
 pub const datumesh_http::config::DEFAULT_SLICE_PAGE: usize
 pub const datumesh_http::config::MAX_SLICE_MEMBERS: usize
 pub const datumesh_http::config::MAX_SLICE_PAGE: usize
-pub fn datumesh_http::config::check_base_url(&str) -> core::result::Result<(), datumesh_http::config::BaseUrlError>
+pub fn datumesh_http::config::check_base_url(&str, &str) -> core::result::Result<(), datumesh_http::config::BaseUrlError>
+pub fn datumesh_http::config::is_unrooted(&str) -> bool
 pub fn datumesh_http::config::read_secret_file(&std::path::Path) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::config::ConfigError>
 pub mod datumesh_http::envelope
 pub use datumesh_http::envelope::Bytes
