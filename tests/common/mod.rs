@@ -337,6 +337,19 @@ impl Node {
     /// A stored version of `name`'s cell with `args`, signed by `key` (default this mesh's)
     /// as publisher `host_of(name)`, at `tx` (asof = issued = tx). Returns the receipt hash.
     pub fn put_value_signed(&self, key: &SigningKey, name: &str, a: &Args, value: Scalar, tx: &str) -> String {
+        self.put_value_licensed(key, name, a, value, tx, "CC-BY-4.0")
+    }
+
+    /// [`put_value_signed`](Node::put_value_signed) under `licence` (spec-0.4.3 tests).
+    pub fn put_value_licensed(
+        &self,
+        key: &SigningKey,
+        name: &str,
+        a: &Args,
+        value: Scalar,
+        tx: &str,
+        licence: &str,
+    ) -> String {
         bl(|| {
             let (ns, f) = name.rsplit_once('/').unwrap();
             let fn_hash = self.store.resolve_name(name, tx).unwrap().expect("bound");
@@ -357,7 +370,7 @@ impl Node {
                 .issued(tx)
                 .publisher(ns)
                 .signer_host(host)
-                .licence("CC-BY-4.0")
+                .licence(licence)
                 .summary("A test value.")
                 .sign(key)
                 .unwrap();
@@ -380,6 +393,17 @@ impl Node {
             let (ns, f) = name.rsplit_once('/').unwrap();
             let fn_hash = self.store.resolve_name(name, &now()).unwrap().expect("bound");
             Cell { ns: ns.into(), fn_name: f.into(), fn_hash, args: a.clone() }.id()
+        })
+    }
+
+    /// Adds a declaration to this mesh's key document in the store (`keydoc::with_declaration`):
+    /// `fn_name` over inputs under `licence` from `from` (spec-0.4.3).
+    pub fn declare(&self, fn_name: &str, licence: &str, from: &str) {
+        bl(|| {
+            let doc = self.store.namespace(&self.host).unwrap().unwrap().keydoc;
+            let (doc, _) =
+                datumesh_http::keydoc::with_declaration(&self.host, &doc, fn_name, licence, from, None).unwrap();
+            self.store.put_namespace(&self.host, &doc, &now()).unwrap();
         })
     }
 

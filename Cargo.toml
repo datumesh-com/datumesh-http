@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.2.0"
+version = "0.2.1"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -23,10 +23,10 @@ path = "src/bin/datumesh-mesh.rs"
 [dependencies]
 # Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
 # `sign` for the keys the binary generates.
-datumesh-core = { version = "0.3.6", features = ["sign"] }
+datumesh-core = { version = "0.3.7", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
 datumesh-store = { version = "0.4.0", default-features = false }
-datumesh-engine = "0.4.0"
+datumesh-engine = "0.4.1"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
 datumesh-formula = "0.2.0"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query", "matched-path", "original-uri"] }

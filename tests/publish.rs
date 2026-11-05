@@ -79,8 +79,17 @@ async fn publish_stored_cells() {
     assert_eq!((f1.functions, f1.cells), (1, 0), "{f1:?}");
     let f2 = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &fpath).unwrap());
     assert_eq!(f2.functions, 0, "idempotent: {f2:?}");
+    // Since 0.2.1 (spec-0.4.3, SPEC 8.5): the verse's licence is restricted (a URL), so the
+    // formula is computed only where its publisher declared that licence for it.
+    let r = a.get(&format!("/cell/{A}/scripture/strip_niqqud?book=Gen&chapter=1&verse=1")).await;
+    assert_eq!((r.status, r.outcome()), (403, "unlicensed".to_string()), "{}", r.text());
+    a.declare(&format!("{A}/scripture/strip_niqqud"), "https://tanach.us/License.html", "2020-01-01T00:00:00.000000Z");
     let r = a.get(&format!("/cell/{A}/scripture/strip_niqqud?book=Gen&chapter=1&verse=1")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
+    assert_eq!(
+        r.json().get("receipt").and_then(|x| x.get("licence")).and_then(Value::as_str),
+        Some("https://tanach.us/License.html")
+    );
     assert_eq!(r.json().get("trust").and_then(Value::as_str), Some("computed"));
     assert_eq!(
         r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str),

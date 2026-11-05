@@ -448,9 +448,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-core"
-version = "0.3.6"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28ab6d39a31fe98daf83ff91a35a6090f65502d41aee376dedfd3b1aad60d7d5"
+checksum = "d2859fbf2de6e15905d0372bf08ea4f4cae1860df65103bd7abed80e01a8ba8c"
 dependencies = [
  "curve25519-dalek",
  "sha2",
@@ -459,9 +459,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-engine"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c7f78fbb9158ad5e6b3da973f661ddb8b53cbf234f80111e1a224abc3fa918e"
+version = "0.4.1"
 dependencies = [
  "datumesh-core",
  "datumesh-store",
@@ -482,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-http"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
