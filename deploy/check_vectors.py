@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Which of the spec vectors' cells the test mesh answers, and whether it answers them as the
-vectors say. Uses the Python library datumesh 0.4.2 for cell URIs and hashes.
+vectors say. Uses the Python library datumesh 0.4.3 for cell URIs and hashes.
 
     python check_vectors.py <vectors dir> <base URL> [CA file] <API key file>   (JSON summary to stdout)
 

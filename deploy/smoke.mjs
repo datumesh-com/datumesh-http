@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // The smoke suite's JavaScript part: a computed cell's envelope and the key document fetched
-// over HTTPS, checked and verified with @datumesh/verify 0.4.2 (trust computed against the host
+// over HTTPS, checked and verified with @datumesh/verify 0.4.3 (trust computed against the host
 // asked), and a scripture verse verified with its blob content (10.1 step 7.7).
 //   node smoke.mjs <base URL> <receipt.json written by smoke.py> <verse.json written by smoke.py>   (NODE_EXTRA_CA_CERTS for a private CA)
 import { readFileSync } from 'node:fs';

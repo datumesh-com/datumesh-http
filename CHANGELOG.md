@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+For spec-0.4.3: licence inheritance and `declarations` in the key document. On
+`datumesh-engine` 0.4.1 and `datumesh-core` 0.3.7 (were 0.4.0 and 0.3.6). Additive.
+
+**A mesh that serves `declarations` is unverifiable by clients on core < 0.3.7 or datumesh <
+0.4.3; publishers should wait for their consumers to upgrade before declaring.** The same holds
+for @datumesh/verify < 0.4.3.
+
+- **Licence inheritance (SPEC 8.5).** The engine (0.4.1) signs a computed receipt under the
+  licence its input receipts give; where the rule refuses (`EngineError::Unlicensed`), the mesh
+  answers `unlicensed` (403, no new code, the function hash echoed; `public, max-age` of
+  `DATUMESH_LATEST_MAX_AGE`, never immutable: a declaration may come later). A cell that reads
+  a refused cell is refused too. `DATUMESH_LICENCE` is now the licence of a computed receipt
+  with no inputs. Computed receipts signed before 0.2.1 are signed again under the inherited
+  licence (or refused) on their next request; nothing needs migrating.
+- **Declarations (SPEC 9.2).** `/.well-known/datumesh.json` is the store's key document, as
+  before, so the declarations it holds are served; without any, the bytes are 0.2.0's.
+  `keydoc::with_declaration(host, existing, fn_name, licence, valid_from, valid_to)` adds an
+  entry, leaves an identical one unchanged, or closes an open one (`keydoc::Declared`); entries
+  are never removed. The binary's `datumesh-mesh declare --fn <name> --licence <licence>
+  --valid-from <instant> [--valid-to <instant>]` applies it to `DATUMESH_HOST`'s document in the
+  store. `keydoc::with_key` (key rotation, `keygen --publish`) keeps the declarations.
+- **Another mesh's function, computed here.** Before evaluating a function under a host it does
+  not own, the mesh puts that publisher's key document in the store (the key document cache's
+  TTL, `DATUMESH_TTL_KEY_DOC`), where the engine reads its declarations
+  (`foreign::Foreign::ensure_publisher`, also in the cross-mesh runtime layer). A publisher that
+  gives no HTTP response then is `error` `E_FOREIGN_UNAVAILABLE` (spec-0.4.3: 502, with
+  `detail` `dns`, `tls`, `timeout`, `refused` or `network`), or `stale` with a receipt served
+  before. `client::Client::publisher_key_document` and `ClientError::foreign_detail` (the
+  detail is the start of `ClientError::detail`). The other cross-mesh failures keep their
+  0.2.0 codes.
+- **Deployment (`deploy/`).** The seed binds `ecb/fx_cross_undeclared` (defined like
+  `fx_cross`, not declared); `seed/declarations.py` lists the test mesh's two declarations
+  (`ecb/fx_cross` over the restricted test licence, `scripture/strip_niqqud` over the UXLC
+  licence); `licences.sh` applies both once after the image upgrade (idempotent); `smoke.sh`
+  checks fx_cross over NOK (restricted licence, entitled), fx_cross_undeclared over NOK
+  (`unlicensed`) and strip_niqqud (UXLC licence, entitled). The smoke, seed and vector checks
+  use datumesh 0.4.3 and @datumesh/verify 0.4.3. The spec submodule is at `spec-0.4.3`.
+- Public API: additions only (`public-api.txt`).
+
 ## 0.2.0 (unreleased)
 
 On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 (were 0.3.2,

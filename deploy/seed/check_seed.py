@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The seed data's tests over HTTPS, with the Python library datumesh 0.4.2 (check_seed.mjs
-repeats the per-corpus verification with @datumesh/verify 0.4.2):
+"""The seed data's tests over HTTPS, with the Python library datumesh 0.4.3 (check_seed.mjs
+repeats the per-corpus verification with @datumesh/verify 0.4.3):
 
 * every verse_text cell of the seed answers by name (POST /cells, 1,000 a batch, checked with
   check_batch against its cell id and the host asked; an item `pending` past the mesh's budget
@@ -227,7 +227,7 @@ for key, (book, ch, vn) in samples.items():
     want, data = blob_value(line)
     s2, _, blob = req("/blob/" + want[:64])
     v = datumesh.verify(json.dumps(rec), [keys], None, blob)
-    check(f"{key} {book} {ch}:{vn}: envelope (Python 0.4.2), receipt signed with its blob (7.7), the source's bytes",
+    check(f"{key} {book} {ch}:{vn}: envelope (Python 0.4.3), receipt signed with its blob (7.7), the source's bytes",
           r.ok and r.trust == "primary" and v.ok and v.level == "signed" and getattr(v, "blob_checked", False) and s2 == 200 and blob == data,
           f"{r.code} {v.code} {getattr(v, 'detail', '')} licence {rec.get('licence')}; {rec.get('summary', '')[:160]}")
     for_js.append({"corpus": key, "path": "/cell/" + uri_path(line["cell"]), "cell_id": cell_id(line["cell"], hashes[line["cell"]["fn"]]), "blob": want[:64]})

@@ -7,7 +7,7 @@ set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${DATUMESH_DIR:-/root/datumesh-mesh-test}"
 vectors="$(cd "$here/../spec/vectors" && pwd)"
-image="${DATUMESH_MESH_IMAGE:-$(docker inspect datumesh-mesh-test-mesh-1 --format '{{.Config.Image}}' 2>/dev/null || echo datumesh-mesh:0.2.0-local)}"
+image="${DATUMESH_MESH_IMAGE:-$(docker inspect datumesh-mesh-test-mesh-1 --format '{{.Config.Image}}' 2>/dev/null || echo datumesh-mesh:0.2.1-local)}"
 docker run --rm --network datumesh-mesh-test_backend --env-file "$dir/secrets/db.env" -v "$vectors:/vectors:ro" \
   "$image" import-vectors /vectors > "$dir/status/import.json"
 cat "$dir/status/import.json"; echo
@@ -31,6 +31,7 @@ about = {
     "ecb/fx_rate": "Synthetic test data, ECB-shaped: 1 EUR in USD, GBP, JPY, CHF (and one NOK cell under a restricted test licence), 30 weekdays to 2026-10-30.",
     "ecb/holiday": "Synthetic test data: TARGET closing days of 2026.",
     "ecb/fx_cross": "Test formula: the cross rate of two fx_rate quotes against EUR.",
+    "ecb/fx_cross_undeclared": "Test formula: fx_cross again, with no licence declaration (over the restricted NOK cell it is unlicensed).",
     "scripture/verse_text": "The text of a verse, as the source publishes it (a text/plain blob): Tanakh (UXLC 2.6), New Testament (SBLGNT v1.2), Quran (Tanzil 1.1, Uthmani and Simple).",
     "scripture/chapter_count": "The number of chapters of a book of a corpus.",
     "scripture/verse_count": "The number of verses of a chapter of a book of a corpus.",

@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The HTTPS smoke suite (brief test 12) against the test mesh: every endpoint once, envelopes
 against the spec's schema, the key and mesh documents, a receipt fetched over HTTPS verified
-with the Python library datumesh 0.4.2 (smoke.mjs does the same with @datumesh/verify 0.4.2),
+with the Python library datumesh 0.4.3 (smoke.mjs does the same with @datumesh/verify 0.4.3),
 cache headers, pending (a batch of cold computed cells), a rate-limit refusal, /metrics,
 /health. Since 0.1.1 (spec-0.4.2): pinned requests (call and URI) and the echo, trust
 `computed`, E_NAME_UNBOUND, a slice page and a batch checked with the library, the versions
-endpoint, and a scripture verse with its blob (10.1 step 7.7).
+endpoint, and a scripture verse with its blob (10.1 step 7.7). Since 0.2.1 (spec-0.4.3): the
+key document's declarations, fx_cross over NOK under the restricted test licence and entitled,
+fx_cross_undeclared over NOK unlicensed, strip_niqqud under the UXLC licence and entitled; the
+libraries are 0.4.3, which read a key document with declarations (0.4.2 rejects it).
 
     python smoke.py <base URL> <spec dir> <API key file> [CA file]   (JSON results to stdout; exit 1 on a failure)
 
@@ -113,11 +116,11 @@ for _ in range(30):
     time.sleep(1)
 envelope_ok("/cell computed", b)
 r = datumesh.check_envelope(s, b, [keys], {"cell_id": cid, "mesh": host})
-check("/cell computed: envelope bound to the request, trust computed (Python 0.4.2)", r.ok and r.outcome == "ok" and r.trust == "computed", r.detail)
+check("/cell computed: envelope bound to the request, trust computed (Python 0.4.3)", r.ok and r.outcome == "ok" and r.trust == "computed", r.detail)
 check("/cell computed: fn_hash echoed", json.loads(b).get("fn_hash") == e_hash)
 rec = json.loads(b).get("receipt", {})
 v = datumesh.verify(json.dumps(rec), [keys])
-check("receipt verified at signed (Python 0.4.2)", v.ok and v.level == "signed", v.detail)
+check("receipt verified at signed (Python 0.4.3)", v.ok and v.level == "signed", v.detail)
 check("computed value: abs", rec.get("value") == a, rec.get("value", ""))
 check("cache: about now, max-age=10 and Link canonical", h.get("Cache-Control") == "public, max-age=10" and 'rel="canonical"' in h.get("Link", ""), h.get("Link", ""))
 canon = h.get("Link", "<>").split(">")[0][1:]
@@ -141,7 +144,7 @@ check("/blob (none held: 404)", s == 404)
 # Pins (spec-0.4.2): the call form name@<fn_hash>(args) and the URI's fn_hash=, the pin echoed.
 s, _, b = req("/cell/" + urllib.parse.quote(f"calc.example.net/e@{e_hash}(-{a})", safe="/@"))
 r = datumesh.check_envelope(s, b, [keys], {"cell_id": cid, "fn_hash": e_hash, "mesh": host})
-check("pinned call: ok, the pin echoed (Python 0.4.2)", r.ok and r.outcome == "ok" and json.loads(b).get("fn_hash") == e_hash, r.detail)
+check("pinned call: ok, the pin echoed (Python 0.4.3)", r.ok and r.outcome == "ok" and json.loads(b).get("fn_hash") == e_hash, r.detail)
 s, _, b = req(f"{path}&fn_hash={e_hash}")
 r = datumesh.check_envelope(s, b, [keys], {"cell_id": cid, "fn_hash": e_hash, "mesh": host})
 check("pinned URI: ok, the pin echoed", r.ok and r.outcome == "ok", r.detail)
@@ -163,14 +166,14 @@ fx_uri = datumesh.format_uri({"ns": f"{host}/ecb", "fn": "fx_rate", "args": fx_a
 s, _, b = req("/cells", "POST", json.dumps([fx_uri, path[len("/cell/"):], "calc.example.net/e(-" + a + ")"]).encode(), {"Content-Type": "application/json"})
 br = datumesh.check_batch(s, b, [keys], [{"cell_id": fx_id, "mesh": host}, {"cell_id": cid, "mesh": host}, {"cell_id": cid, "mesh": host}])
 items = json.loads(b) if s == 200 else []
-check("/cells: [{envelope, status}], each bound to its request (Python 0.4.2)", br.ok and all(i.ok for i in br.items) and [i["envelope"].get("outcome") for i in items] == ["ok", "ok", "ok"], br.detail + " " + "; ".join(i.detail for i in br.items or [] if not i.ok)[:300])
+check("/cells: [{envelope, status}], each bound to its request (Python 0.4.3)", br.ok and all(i.ok for i in br.items) and [i["envelope"].get("outcome") for i in items] == ["ok", "ok", "ok"], br.detail + " " + "; ".join(i.detail for i in br.items or [] if not i.ok)[:300])
 for i in items:
     envelope_ok("/cells item", json.dumps(i["envelope"]).encode())
 s, _, b = req(f"/slice/{host}/ecb/fx_rate?base=EUR&date=*&quote=USD")
 page = json.loads(b) if s == 200 else {}
 envelope_ok("/slice page", b)
 pr = datumesh.check_envelope(s, b, [keys], {"slice_id": datumesh.slice_id(page["slice"]) if "slice" in page else "0" * 64, "mesh": host})
-check("/slice JSON: a page envelope checked (Python 0.4.2)", pr.ok and len(page.get("members", [])) == 30, f"{len(page.get('members', []))} members; {pr.detail}")
+check("/slice JSON: a page envelope checked (Python 0.4.3)", pr.ok and len(page.get("members", [])) == 30, f"{len(page.get('members', []))} members; {pr.detail}")
 s, _, b = req("/versions/data.example.org/daily?date=2026-03-04")
 vs = json.loads(b) if s == 200 else {}
 check("/versions (9.8)", s == 200 and len(vs.get("versions", [])) >= 1, b.decode()[:200])
@@ -214,10 +217,51 @@ vrec = ve.get("receipt", {})
 blob_ref = vrec.get("value", "")
 s2, h2, blob = req("/blob/" + blob_ref[:64])
 vv = datumesh.verify(json.dumps(vrec), [keys], None, blob)
-check("scripture verse (Genesis 1:1, UXLC 2.6): primary, a blob; verified with its content (Python 0.4.2)",
+check("scripture verse (Genesis 1:1, UXLC 2.6): primary, a blob; verified with its content (Python 0.4.3)",
       ve.get("trust") == "primary" and vrec.get("type") == "blob" and s2 == 200 and vv.ok and vv.level == "signed" and vv.blob_checked,
       f"{blob_ref}; {vv.code} {vv.detail}; {vrec.get('licence')}")
 json.dump({"path": verse, "receipt": vrec}, open("/tmp/verse.json", "w"))
+
+# Licence inheritance (spec-0.4.3, http 0.2.1): the key document declares fx_cross over the
+# restricted test licence and strip_niqqud over the UXLC licence (seed/declarations.py), and
+# nothing for fx_cross_undeclared. Each receipt verified, and the entitlement check (SPEC 10.3)
+# with the served key document and the input receipts from /receipt/<hash>.
+def entitlement(rec):
+    lic = []
+    for h in rec.get("inputs", []):
+        s_, _, rb = req("/receipt/" + h)
+        lic.append(json.loads(rb)["licence"] if s_ == 200 else None)
+    if None in lic:
+        return None
+    return datumesh.check_entitlement(json.dumps(rec), lic, keys)
+
+
+nok = "base=USD&date=2026-10-30&quote=NOK"
+restricted = f"https://{host}/licences/restricted-test"
+s, _, b = req(f"/cell/{host}/ecb/fx_cross?{nok}")
+envelope_ok("fx_cross over NOK", b)
+fe = json.loads(b)
+frec = fe.get("receipt", {})
+fv = datumesh.verify(json.dumps(frec), [keys]) if frec else None
+fent = entitlement(frec) if frec else None
+check("fx_cross over NOK: computed, the restricted test licence, verified, entitled (declared)",
+      s == 200 and fe.get("trust") == "computed" and frec.get("licence") == restricted and fv is not None and fv.ok
+      and fent is not None and fent.entitled and fent.reason == "declared",
+      f"{s} {frec.get('licence')}; {getattr(fv, 'code', None)}; {fent}")
+s, _, b = req(f"/cell/{host}/ecb/fx_cross_undeclared?{nok}")
+envelope_ok("fx_cross_undeclared over NOK", b)
+check("fx_cross_undeclared over NOK: unlicensed (403, no receipt)",
+      s == 403 and json.loads(b).get("outcome") == "unlicensed" and "receipt" not in json.loads(b), f"{s} {b.decode()[:200]}")
+s, _, b = req(f"/cell/{host}/scripture/strip_niqqud?book=Gen&chapter=1&verse=1")
+envelope_ok("strip_niqqud", b)
+se = json.loads(b)
+srec = se.get("receipt", {})
+sv = datumesh.verify(json.dumps(srec), [keys]) if srec else None
+sent = entitlement(srec) if srec else None
+check("strip_niqqud (Genesis 1:1): computed, the UXLC licence, verified, entitled (declared)",
+      s == 200 and se.get("trust") == "computed" and srec.get("licence") == "https://tanach.us/License.html"
+      and sv is not None and sv.ok and sent is not None and sent.entitled and sent.reason == "declared",
+      f"{s} {srec.get('licence')}; {getattr(sv, 'code', None)}; {sent}")
 
 # A rate-limit refusal (anonymous: 60 a minute, burst 120), last.
 refused = None

@@ -1,14 +1,14 @@
 # datumesh-http
 
-The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.2](https://github.com/datumesh-com/datumesh-spec)): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), versions (SPEC 9.8), cross-mesh resolution of names under other hosts, and a store-less client for other meshes (`client`). The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.4.0 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.2.0 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.4.0 (PostgreSQL: the store with `default-features = false`, so the binary and the image compile no SQLite; an application that enables the store's `sqlite` can run a `Mesh` on a `SqliteStore`) and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.6.
+The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.4.3](https://github.com/datumesh-com/datumesh-spec): since 0.2.1, licence inheritance and `declarations` in the key document): cell envelopes (SPEC 5.5), batches, slices as JSON pages or Arrow streams, receipts, descriptors, manifests, blobs, lineage, search, verification, jobs for long evaluations, the key and mesh documents (SPEC 9.2, 9.6), bindings (SPEC 9.7), versions (SPEC 9.8), cross-mesh resolution of names under other hosts, and a store-less client for other meshes (`client`). The library is the router and the operations behind it; the binary `datumesh-mesh` serves it. It runs [`datumesh-engine`](https://crates.io/crates/datumesh-engine) 0.4.1 with the formula runtime of [`datumesh-formula`](https://crates.io/crates/datumesh-formula) 0.2.0 on [`datumesh-store`](https://crates.io/crates/datumesh-store) 0.4.0 (PostgreSQL: the store with `default-features = false`, so the binary and the image compile no SQLite; an application that enables the store's `sqlite` can run a `Mesh` on a `SqliteStore`) and [`datumesh-core`](https://crates.io/crates/datumesh-core) 0.3.7.
 
 ## Example
 
 ```toml
 [dependencies]
-datumesh-http = "0.2.0"
+datumesh-http = "0.2.1"
 datumesh-store = "0.4.0"
-datumesh-core = { version = "0.3.6", features = ["sign"] }
+datumesh-core = { version = "0.3.7", features = ["sign"] }
 ```
 
 A mesh for `mesh.example.com` on a fresh database: its key document in the store, a stored function and one value, then the envelope of the cell asked as a call and as a cell URI (the same bytes):
@@ -119,11 +119,11 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_TRUST_PROXY` | off | the client IP from the last `X-Forwarded-For` entry (behind Caddy) |
 | `DATUMESH_CROSS_MESH`, `DATUMESH_CROSS_MESH_HOSTS`, `DATUMESH_PEER_TIMEOUT_MS`, `DATUMESH_PEERS` | on, every host, 10000, none | cross-mesh resolution; the hosts it may fetch from (comma-separated: others are `not_covered`); its time limit; `host=origin` pairs overriding `https://<host>` (tests, private networks) |
 | `DATUMESH_TTL_KEY_DOC`, `DATUMESH_TTL_MESH_DOC`, `DATUMESH_TTL_BINDING`, `DATUMESH_TTL_CURRENT`, `DATUMESH_LATEST_MAX_AGE`, `DATUMESH_JOB_TTL` | 300, 300, 60, 60, 10, 300 | seconds |
-| `DATUMESH_LICENCE`, `DATUMESH_FUEL` | `CC-BY-4.0`, 10,000,000 | the engine's (the licence of the receipts it signs; fuel per request) |
+| `DATUMESH_LICENCE`, `DATUMESH_FUEL` | `CC-BY-4.0`, 10,000,000 | the engine's (the mesh's own licence: since 0.2.1, that of a computed receipt with no inputs, the others inheriting theirs (SPEC 8.5); fuel per request) |
 | `DATUMESH_MIGRATE` | off | apply the store's schema at start |
 | `RUST_LOG`, `DATUMESH_LOG_FORMAT` | `info`, `json` | logs (`text` for plain lines) |
 
-The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh publish-stored <file.jsonl>` (stored functions, formula functions and their cells, blobs included, signed with `DATUMESH_KEY_FILE` as `DATUMESH_HOST`; idempotent; the format is in the `publish` module's documentation); `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh import-vectors <dir>` (the spec vectors' cells into the store: `deploy/README.md`); `datumesh-mesh openapi`; `datumesh-mesh health`. The test deployment (compose with Caddy, backups, the restore drill, the resource check, the smoke suite) is in `deploy/`.
+The command's other uses: `datumesh-mesh migrate`; `datumesh-mesh publish-stored <file.jsonl>` (stored functions, formula functions and their cells, blobs included, signed with `DATUMESH_KEY_FILE` as `DATUMESH_HOST`; idempotent; the format is in the `publish` module's documentation); `datumesh-mesh keygen --out <file> [--publish] [--valid-from <instant>]` (a new key, mode 0600; `--publish` adds it to the host's key document, rotating the current key out at `--valid-from`); `datumesh-mesh declare --fn <name> --licence <licence> --valid-from <instant> [--valid-to <instant>]` (since 0.2.1: a declaration, SPEC 9.2, in the key document of `DATUMESH_HOST` in the store, which the mesh serves: `<name>`, a function under that host, may be computed over inputs under the restricted `<licence>`; idempotent; `--valid-to` closes an open entry, entries are never removed; a mesh that serves declarations is unverifiable by clients on core < 0.3.7, datumesh < 0.4.3 or @datumesh/verify < 0.4.3); `datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <n>]` (the key is written to `--out`, mode 0600, and never printed); `datumesh-mesh import-vectors <dir>` (the spec vectors' cells into the store: `deploy/README.md`); `datumesh-mesh openapi`; `datumesh-mesh health`. The test deployment (compose with Caddy, backups, the restore drill, the resource check, the smoke suite) is in `deploy/`.
 
 ## Docker
 

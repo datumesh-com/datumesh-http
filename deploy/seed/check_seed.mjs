@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The seed checks' JavaScript part: one verse of each corpus (and edition) fetched over HTTPS,
 // its envelope checked and its receipt verified at `signed` with the blob content (SPEC 10.1
-// step 7.7) by @datumesh/verify 0.4.2, the blob from /blob/<sha256>.
+// step 7.7) by @datumesh/verify 0.4.3, the blob from /blob/<sha256>.
 //   node check_seed.mjs <base URL> <verses.json written by check_seed.py> <API key file>
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

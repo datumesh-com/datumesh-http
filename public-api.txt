@@ -102,6 +102,7 @@ pub fn datumesh_http::client::Client::keys_for_body(&self, &[u8]) -> datumesh_co
 pub fn datumesh_http::client::Client::manifest(&self, &str, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
 pub fn datumesh_http::client::Client::new(datumesh_http::client::ClientConfig) -> datumesh_http::client::Client
 pub fn datumesh_http::client::Client::parse_receipt(&[u8]) -> core::result::Result<datumesh_core::receipt::Receipt, datumesh_http::client::ClientError>
+pub fn datumesh_http::client::Client::publisher_key_document(&self, &str) -> core::result::Result<datumesh_core::keys::KeyDoc, datumesh_http::client::ClientError>
 pub fn datumesh_http::client::Client::receipt(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::client::ClientError>
 pub fn datumesh_http::client::Client::reference(&self, &str, &datumesh_core::model::Reference) -> core::result::Result<datumesh_http::client::Fetched, datumesh_http::client::ClientError>
 pub fn datumesh_http::client::Client::resolve(&self, &str) -> core::result::Result<datumesh_core::mesh::MeshDoc, datumesh_http::client::ClientError>
@@ -131,6 +132,8 @@ pub fn datumesh_http::client::ClientConfig::fmt(&self, &mut core::fmt::Formatter
 pub struct datumesh_http::client::ClientError
 pub datumesh_http::client::ClientError::code: datumesh_core::error::ErrorCode
 pub datumesh_http::client::ClientError::detail: alloc::string::String
+impl datumesh_http::client::ClientError
+pub fn datumesh_http::client::ClientError::foreign_detail(&self) -> core::option::Option<datumesh_core::envelope::ForeignDetail>
 impl core::clone::Clone for datumesh_http::client::ClientError
 pub fn datumesh_http::client::ClientError::clone(&self) -> Self
 impl core::error::Error for datumesh_http::client::ClientError
@@ -396,6 +399,7 @@ pub fn datumesh_http::foreign::Foreign::any_cells(&self) -> bool
 pub fn datumesh_http::foreign::Foreign::client(&self) -> &datumesh_http::client::Client
 pub fn datumesh_http::foreign::Foreign::ensure_cell(&self, &datumesh_core::model::Cell) -> core::result::Result<bool, datumesh_http::foreign::ForeignError>
 pub fn datumesh_http::foreign::Foreign::ensure_name(&self, &str) -> core::result::Result<(), datumesh_http::foreign::ForeignError>
+pub fn datumesh_http::foreign::Foreign::ensure_publisher(&self, &str) -> core::result::Result<(), datumesh_http::foreign::ForeignError>
 pub fn datumesh_http::foreign::Foreign::is_foreign(&self, &str) -> bool
 pub fn datumesh_http::foreign::Foreign::keys_for(&self, &str, bool) -> core::result::Result<datumesh_core::keys::KeyDoc, datumesh_http::foreign::ForeignError>
 pub fn datumesh_http::foreign::Foreign::mesh(&self, &str) -> core::result::Result<datumesh_core::mesh::MeshDoc, datumesh_http::foreign::ForeignError>
@@ -419,6 +423,20 @@ pub fn datumesh_http::foreign::host_of(&str) -> &str
 pub fn datumesh_http::foreign::pct(&str) -> alloc::string::String
 pub type datumesh_http::foreign::ForeignError = datumesh_http::client::ClientError
 pub mod datumesh_http::keydoc
+#[non_exhaustive] pub enum datumesh_http::keydoc::Declared
+pub datumesh_http::keydoc::Declared::Added
+pub datumesh_http::keydoc::Declared::Closed
+pub datumesh_http::keydoc::Declared::Unchanged
+impl core::clone::Clone for datumesh_http::keydoc::Declared
+pub fn datumesh_http::keydoc::Declared::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::keydoc::Declared
+impl core::cmp::PartialEq for datumesh_http::keydoc::Declared
+pub fn datumesh_http::keydoc::Declared::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::keydoc::Declared
+pub fn datumesh_http::keydoc::Declared::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_http::keydoc::Declared
+impl core::marker::StructuralPartialEq for datumesh_http::keydoc::Declared
+pub fn datumesh_http::keydoc::with_declaration(&str, &[u8], &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(alloc::vec::Vec<u8>, datumesh_http::keydoc::Declared), datumesh_core::error::Error>
 pub fn datumesh_http::keydoc::with_key(&str, core::option::Option<&[u8]>, &datumesh_core::sign::SigningKey, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_core::error::Error>
 pub mod datumesh_http::publish
 pub struct datumesh_http::publish::PublishError

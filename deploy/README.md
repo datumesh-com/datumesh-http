@@ -20,18 +20,19 @@ State and secrets are outside the repository, in `/root/datumesh-mesh-test` (`DA
 ## Setting up and running
 
 ```sh
-docker build -t datumesh-mesh:0.2.0-local .      # until GHCR has 0.2.0: DATUMESH_MESH_IMAGE=datumesh-mesh:0.2.0-local
+docker build -t datumesh-mesh:0.2.1-local .      # until GHCR has 0.2.1: DATUMESH_MESH_IMAGE=datumesh-mesh:0.2.1-local
 deploy/setup.sh                                   # directories, password, key (keygen --publish), API keys, import
 deploy/seed.sh                                    # the seed data (below): download, generate, publish-stored, checks
 CADDYFILE=Caddyfile.internal docker compose -p datumesh-mesh-test -f deploy/compose.yml up -d   # before DNS
 deploy/go_live.sh                                 # once the A record resolves: Let's Encrypt
 deploy/install_cron.sh                            # nightly backup 03:15 UTC, resource check every 15 minutes
+deploy/licences.sh                                # 0.2.1: the declarations and fx_cross_undeclared (once, after the image upgrade)
 deploy/smoke.sh [--local]                         # the HTTPS smoke suite (--local: before DNS, internal CA)
 deploy/restore_drill.sh                           # restore the newest dump next to the live mesh and compare
 ```
 
-`compose.yml` names the published image by digest; `DATUMESH_MESH_IMAGE` overrides it (0.2.0
-runs as `datumesh-mesh:0.2.0-local` until its image is on GHCR, then by digest). The other
+`compose.yml` names the published image by digest; `DATUMESH_MESH_IMAGE` overrides it (0.2.1
+runs as `datumesh-mesh:0.2.1-local` until its image is on GHCR, then by digest). The other
 scripts use the image of the running mesh container unless `DATUMESH_MESH_IMAGE` says otherwise.
 
 Configuration (in `compose.yml`): host `mesh-test.datumesh.com`; the vectors' hosts served as
@@ -79,7 +80,8 @@ publish-stored` (signed with the mesh's key; idempotent) from JSON lines that `s
 - `ecb/fx_rate(base, quote, date)` (EUR in USD, GBP, JPY, CHF, 30 weekdays to 2026-10-30,
   CC-BY-4.0, and one EUR/NOK cell under `https://mesh-test.datumesh.com/licences/restricted-test`,
   a page Caddy serves), `ecb/holiday(calendar, date)` (TARGET 2026, CC0-1.0) and the formula
-  `ecb/fx_cross(base, quote, date)`: synthetic, every summary says test data.
+  `ecb/fx_cross(base, quote, date)` (and, since 0.2.1, its undeclared twin
+  `ecb/fx_cross_undeclared`): synthetic, every summary says test data.
 - `scripture/verse_text(corpus, book, chapter, verse, edition)`: a `text/plain` blob of the
   source's bytes: `tanakh`/`uxlc` (UXLC 2.6, build 27.7, OSIS book keys), `nt`/`sblgnt` (SBLGNT
   v1.2, Faithlife/SBLGNT d7f35ad), `quran`/`uthmani` and `quran`/`simple` (Tanzil 1.1, XML;
@@ -91,9 +93,28 @@ publish-stored` (signed with the mesh's key; idempotent) from JSON lines that `s
 `seed/download.sh` fetches the sources into `$DATUMESH_DIR/seed/dl` and checks them against
 `seed/SOURCES`; the downloads stay out of the repository and are only read (never run).
 `seed.sh` then regenerates the `/find` catalog with the seed's functions, restarts the mesh, and
-runs `seed/check_seed.py` (Python datumesh 0.4.2) and `seed/check_seed.mjs` (@datumesh/verify
-0.4.2) over HTTPS: `status/seed-load.json` (rows, bytes, non-NFC counts, timings) and
+runs `seed/check_seed.py` (Python datumesh 0.4.3) and `seed/check_seed.mjs` (@datumesh/verify
+0.4.3) over HTTPS: `status/seed-load.json` (rows, bytes, non-NFC counts, timings) and
 `status/seed-check.json`. `seed.sh --checks` runs the checks only.
+
+## Licence inheritance (http 0.2.1, `licences.sh`)
+
+Since 0.2.1 (spec-0.4.3, SPEC 8.5) the mesh signs a computed receipt under the licence its
+inputs give, and answers `unlicensed` where the rule refuses. The key document of
+`mesh-test.datumesh.com` declares exactly two functions (`seed/declarations.py`): `ecb/fx_cross`
+over the restricted test licence (its EUR/NOK input) and `scripture/strip_niqqud` over the UXLC
+licence (`https://tanach.us/License.html`), each open-ended from its seed's bound instant. The
+seed also binds `ecb/fx_cross_undeclared`, defined like `fx_cross` and not declared: over the NOK
+cell it answers `unlicensed`.
+
+After the mesh runs the 0.2.1 image, `licences.sh` (once; idempotent) publishes the new ECB
+line, stores the two declarations with `datumesh-mesh declare`, regenerates the catalog and
+restarts the mesh; `smoke.sh` then checks the three cases (fx_cross over NOK: the restricted
+licence, entitled; fx_cross_undeclared over NOK: `unlicensed`; strip_niqqud: the UXLC licence,
+entitled). Computed receipts the mesh signed before 0.2.1 need no migration: the engine signs
+each again under the inherited licence (or refuses it) on its next request. The smoke and seed
+checks use datumesh 0.4.3 and @datumesh/verify 0.4.3: a key document with declarations is
+rejected by 0.4.2 (and by core < 0.3.7).
 
 ## Backups and the drill
 

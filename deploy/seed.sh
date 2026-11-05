@@ -3,8 +3,8 @@
 # seed/SOURCES) into $DATUMESH_DIR/seed/dl, generate the JSON lines and blobs into
 # $DATUMESH_DIR/seed/out (seed/scripture.py, seed/ecb.py, in python:3.13-slim), load them with
 # `datumesh-mesh publish-stored` (signed with the mesh's key; idempotent), then run the seed
-# checks over HTTPS (seed/check_seed.py with Python datumesh 0.4.2, seed/check_seed.mjs with
-# @datumesh/verify 0.4.2). Reports to $DATUMESH_DIR/status/seed-*.json. Nothing secret is printed.
+# checks over HTTPS (seed/check_seed.py with Python datumesh 0.4.3, seed/check_seed.mjs with
+# @datumesh/verify 0.4.3). Reports to $DATUMESH_DIR/status/seed-*.json. Nothing secret is printed.
 #
 #   deploy/seed.sh [--checks] [--local]   (--checks: the checks only, of what was loaded;
 #                                          --local: before DNS, Caddy's internal CA, as smoke.sh)
@@ -55,11 +55,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck disable=SC2086
 docker run --rm --name datumesh-mesh-test-seed-check-py $extra -v "$here/seed:/s:ro" -v "$dir/seed/out:/seed:ro" -v "$work:/out" \
   -v "$dir/secrets/tests.api-key:/key:ro" python:3.13-slim sh -c \
-  "pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.2 && python -I /s/check_seed.py $base /seed /key /out $ca > /out/seed-check.json" \
+  "pip install -q --root-user-action=ignore --disable-pip-version-check datumesh==0.4.3 && python -I /s/check_seed.py $base /seed /key /out $ca > /out/seed-check.json" \
   || { cp "$work/seed-check.json" "$dir/status/seed-check.json"; echo "seed checks failed: $dir/status/seed-check.json" >&2; exit 1; }
 # shellcheck disable=SC2086
 docker run --rm --name datumesh-mesh-test-seed-check-js $extra $nodeca -v "$here/seed:/s:ro" -v "$work:/out" -v "$dir/secrets/tests.api-key:/key:ro" \
-  node:22-slim sh -c "mkdir -p /tmp/x && cp /s/check_seed.mjs /tmp/x/ && cd /tmp/x && npm install -s --no-fund --no-audit @datumesh/verify@0.4.2 >/dev/null && node check_seed.mjs $base /out/verses.json /key" \
+  node:22-slim sh -c "mkdir -p /tmp/x && cp /s/check_seed.mjs /tmp/x/ && cd /tmp/x && npm install -s --no-fund --no-audit @datumesh/verify@0.4.3 >/dev/null && node check_seed.mjs $base /out/verses.json /key" \
   > "$work/js.json" || { cat "$work/js.json"; echo "javascript part failed" >&2; exit 1; }
 python3 -c "
 import json
