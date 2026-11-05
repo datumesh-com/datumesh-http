@@ -14,7 +14,10 @@ Writes <out dir>/ecb.jsonl under <host>/ecb:
   days), licence CC0-1.0;
 * fx_cross(base, quote, date) = fx_rate(base: "EUR", quote: quote, date: date) /
   fx_rate(base: "EUR", quote: base, date: date), a formula over the FX cells: over open cells
-  it can be evaluated anywhere, over the NOK cell it reads a restricted input (the gate's case).
+  it can be evaluated anywhere, over the NOK cell it reads a restricted input (the gate's case);
+* fx_cross_undeclared(base, quote, date), defined exactly like fx_cross (since http 0.2.1,
+  spec-0.4.3): the test mesh's key document declares the restricted test licence for fx_cross
+  only (seed/declarations.py), so over the NOK cell this one answers `unlicensed` (SPEC 8.5).
 """
 import datetime
 import json
@@ -80,8 +83,9 @@ while d.year == 2026:
                   "value": {"type": "boolean", "value": day in TARGET}, "tx": BOUND, "asof": BOUND, "licence": "CC0-1.0",
                   "summary": f"Synthetic test data: whether {day} is a TARGET closing day in the test mesh's calendar. Licence CC0-1.0."})
     d += datetime.timedelta(days=1)
-lines.append({"formula": f"{NS}/fx_cross", "bound": BOUND, "signature": fx_sig,
-              "source": f'{NS}/fx_rate(base: "EUR", quote: quote, date: date) / {NS}/fx_rate(base: "EUR", quote: base, date: date)'})
+for name in ("fx_cross", "fx_cross_undeclared"):
+    lines.append({"formula": f"{NS}/{name}", "bound": BOUND, "signature": fx_sig,
+                  "source": f'{NS}/fx_rate(base: "EUR", quote: quote, date: date) / {NS}/fx_rate(base: "EUR", quote: base, date: date)'})
 with open(os.path.join(out, "ecb.jsonl"), "w", encoding="utf-8") as f:
     for l in lines:
         f.write(json.dumps(l, sort_keys=True) + "\n")

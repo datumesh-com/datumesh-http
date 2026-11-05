@@ -44,11 +44,11 @@
 //! | `ok` | the engine's receipt; `trust` `primary` (signer's host is the namespace's, no inputs), `verified` (computed by this mesh), else `unverified` |
 //! | `stale` | the store or another mesh failed, and the mesh served a receipt for the cell before (`age_seconds` since) that answers the request |
 //! | `not_covered` | the name is not bound, the cell has no value; with `fault` when its evaluation faulted |
-//! | `unlicensed` | the configured policy names principals and the requester is not one; or the `Authorization` header is not a key of this mesh |
+//! | `unlicensed` | the configured policy names principals and the requester is not one; or the `Authorization` header is not a key of this mesh; or (since 0.2.1, spec-0.4.3) licence inheritance (SPEC 8.5) refuses the cell or a cell it reads (`EngineError::Unlicensed`) |
 //! | `payment_required` | the policy prices the function (a stub until 3.3) |
 //! | `rate_limited` | a rate limit refused the request (`retry_after_seconds`, `Retry-After`) |
 //! | `bad_request` | the request does not parse (every code of SPEC 5.4); `E_JOB_UNKNOWN` at a job URL |
-//! | `error` | the mesh failed: 503 for `E_INPUT_UNAVAILABLE`, `E_KEY_UNAVAILABLE`, `E_MESH_DOC`, `E_EVAL_UNAVAILABLE`; 500 otherwise |
+//! | `error` | the mesh failed: 503 for `E_INPUT_UNAVAILABLE`, `E_KEY_UNAVAILABLE`, `E_MESH_DOC`, `E_EVAL_UNAVAILABLE`; 502 with `detail` for `E_FOREIGN_UNAVAILABLE` (since 0.2.1: the key document of another mesh's function, which this mesh computes, gave no response); 500 otherwise |
 //! | `pending` | the answer took longer than the budget (1 s): poll `/jobs/<id>` |
 //!
 //! ## `Engine::get` as this crate uses it
@@ -60,8 +60,26 @@
 //! `EngineError::Invalid` with a code of SPEC 5.4 `bad_request`, with another code (a
 //! cross-mesh failure) `error` with that code; `NameUnresolved` `error` `E_FN_UNAVAILABLE`;
 //! `UndeclaredInput` `E_INPUT_UNDECLARED`; `Sign` its code (`E_TIME_ORDER`); `Store`
-//! `E_INPUT_UNAVAILABLE` (or `stale`); every other failure (`NoRuntime`, `Runtime`, `Cycle`,
+//! `E_INPUT_UNAVAILABLE` (or `stale`); `Unlicensed` (since 0.2.1) `unlicensed`; every other failure (`NoRuntime`, `Runtime`, `Cycle`,
 //! `DepthExceeded`, `BudgetExceeded`, `WorkExceeded`) `E_EVAL_UNAVAILABLE`.
+//!
+//! # Licence inheritance and declarations (spec-0.4.3, since 0.2.1)
+//!
+//! The engine (0.4.1) signs a computed receipt under the licence SPEC 8.5 gives over its input
+//! receipts' licences, and refuses a cell the rule refuses: the mesh answers `unlicensed`
+//! (403, no new code, the function hash echoed; never cached as immutable, since a declaration
+//! may come later). The declarations it reads are those of the key document of the host of
+//! the cell's namespace, from the store. For this mesh's own host, that is the document it
+//! serves at `/.well-known/datumesh.json` (the store's record, unchanged: a mesh without
+//! declarations serves 0.2.0's bytes); `datumesh-mesh declare` (`keydoc::with_declaration`)
+//! adds or closes an entry, and `keydoc::with_key` keeps them through a rotation. Before it
+//! computes another mesh's function, the mesh puts that publisher's key document in the store
+//! (`foreign::Foreign::ensure_publisher`, the key document cache's TTL); a publisher that gives
+//! no HTTP response then is `error` `E_FOREIGN_UNAVAILABLE` (502, with `detail`).
+//!
+//! A mesh that serves `declarations` is unverifiable by clients on core < 0.3.7 or datumesh
+//! < 0.4.3; publishers should wait for their consumers to upgrade before declaring. The same
+//! holds for @datumesh/verify < 0.4.3.
 //!
 //! # Pending and jobs
 //!

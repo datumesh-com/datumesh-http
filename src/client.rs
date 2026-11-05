@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
     check_answer, check_batch, check_slice_answer, format_reference, keys_from_response, lexical, parse_reference,
-    resolve_mesh, Answer, Batch, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Manifest, MeshDoc, Receipt, Reference,
-    Request, Retrieval, Slice, SliceRequest,
+    resolve_mesh, Answer, Batch, ErrorCode, ForeignDetail, FunctionDescriptor, KeyDoc, Keys, Manifest, MeshDoc,
+    Receipt, Reference, Request, Retrieval, Slice, SliceRequest,
 };
 
 use crate::foreign::KeyCache;
@@ -55,6 +55,42 @@ impl ClientError {
     pub(crate) fn unavailable(detail: impl Into<String>) -> ClientError {
         ClientError::new(ErrorCode::InputUnavailable, detail)
     }
+
+    /// `E_FOREIGN_UNAVAILABLE` (spec-0.4.3): no HTTP response came back from the other mesh.
+    /// `detail` starts with the envelope's `detail` name, then `": "` and why.
+    pub(crate) fn foreign(detail: ForeignDetail, why: impl std::fmt::Display) -> ClientError {
+        ClientError::new(ErrorCode::ForeignUnavailable, format!("{}: {why}", detail.as_str()))
+    }
+
+    /// For `E_FOREIGN_UNAVAILABLE` (spec-0.4.3), the envelope's `detail` (`offline`, `network`,
+    /// `dns`, `tls`, `timeout`, `refused`): the start of [`ClientError::detail`]. `None` for
+    /// every other code. Since 0.2.1.
+    pub fn foreign_detail(&self) -> Option<ForeignDetail> {
+        if self.code != ErrorCode::ForeignUnavailable {
+            return None;
+        }
+        ForeignDetail::from_name(self.detail.split(':').next().unwrap_or(""))
+    }
+}
+
+/// Why no HTTP response came back (spec-0.4.3's `detail` of `E_FOREIGN_UNAVAILABLE`), when the
+/// failure is one of those; `None` for a failure after a response began, or of another kind.
+fn transport_detail(e: &ureq::Error) -> Option<ForeignDetail> {
+    use std::io::ErrorKind;
+    Some(match e {
+        ureq::Error::HostNotFound => ForeignDetail::Dns,
+        ureq::Error::Timeout(_) => ForeignDetail::Timeout,
+        ureq::Error::Io(io) => match io.kind() {
+            ErrorKind::ConnectionRefused => ForeignDetail::Refused,
+            ErrorKind::TimedOut => ForeignDetail::Timeout,
+            _ => ForeignDetail::Network,
+        },
+        ureq::Error::ConnectionFailed => ForeignDetail::Network,
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) | ureq::Error::Pem(_) | ureq::Error::TlsRequired => {
+            ForeignDetail::Tls
+        }
+        _ => return None,
+    })
 }
 
 impl std::fmt::Display for ClientError {
@@ -219,11 +255,22 @@ impl Client {
     }
 
     fn request(&self, url: &str, post: Option<&[u8]>, limit: u64) -> Result<(u16, Vec<u8>), String> {
+        self.request_with_detail(url, post, limit).map_err(|(m, _)| m)
+    }
+
+    /// [`request`](Client::request), its failure with the `E_FOREIGN_UNAVAILABLE` detail when no
+    /// HTTP response came back.
+    fn request_with_detail(
+        &self,
+        url: &str,
+        post: Option<&[u8]>,
+        limit: u64,
+    ) -> Result<(u16, Vec<u8>), (String, Option<ForeignDetail>)> {
         let mut target = url.to_string();
         if let Some(rest) = url.strip_prefix("https://") {
             let host = rest.split(['/', '?']).next().unwrap_or("");
             if !self.allowed(host) {
-                return Err(format!("{host} is not an allowed host"));
+                return Err((format!("{host} is not an allowed host"), None));
             }
             if let Some(origin) = self.inner.cfg.peers.get(host) {
                 target = format!("{origin}{}", &rest[host.len()..]);
@@ -233,15 +280,28 @@ impl Client {
             None => self.inner.agent.get(&target).call(),
             Some(b) => self.inner.agent.post(&target).header("content-type", "application/json").send(b),
         };
-        let mut resp = resp.map_err(|e| format!("{url}: {e}"))?;
+        let mut resp = resp.map_err(|e| (format!("{url}: {e}"), transport_detail(&e)))?;
         let status = resp.status().as_u16();
-        let body = resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))?;
+        let body =
+            resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| (format!("{url}: {e}"), None))?;
         Ok((status, body))
     }
 
     /// The key document of `host` (SPEC 9.3), from the cache while it is fresh, else fetched;
     /// `refresh` fetches it again unless it was fetched within the refetch interval.
     pub fn key_document(&self, host: &str, refresh: bool) -> Result<KeyDoc, ClientError> {
+        self.key_document_with(host, refresh, false)
+    }
+
+    /// [`key_document`](Client::key_document) of a function's publisher, before this mesh
+    /// computes the function (its declarations, SPEC 8.5): a fetch that got no HTTP response
+    /// is `E_FOREIGN_UNAVAILABLE` (spec-0.4.3), its detail first in
+    /// [`ClientError::detail`] ([`ClientError::foreign_detail`]). Since 0.2.1.
+    pub fn publisher_key_document(&self, host: &str) -> Result<KeyDoc, ClientError> {
+        self.key_document_with(host, false, true)
+    }
+
+    fn key_document_with(&self, host: &str, refresh: bool, foreign: bool) -> Result<KeyDoc, ClientError> {
         if let Some((doc, _, at)) = self.inner.keys.get(host) {
             let age = at.elapsed();
             if (!refresh && age < self.inner.cfg.key_ttl) || (refresh && age < self.inner.cfg.key_refetch) {
@@ -250,7 +310,10 @@ impl Client {
         }
         self.check_host(host)?;
         let url = format!("https://{host}/.well-known/datumesh.json");
-        let (status, body) = self.get(&url, MAX_DOC).map_err(|e| ClientError::new(ErrorCode::KeyUnavailable, e))?;
+        let (status, body) = self.request_with_detail(&url, None, MAX_DOC).map_err(|(e, d)| match d {
+            Some(d) if foreign => ClientError::foreign(d, e),
+            _ => ClientError::new(ErrorCode::KeyUnavailable, e),
+        })?;
         let doc = keys_from_response(host, status, if status == 200 { Some(&body) } else { None })
             .map_err(|e| ClientError::new(e.code(), e.to_string()))?;
         self.inner.keys.insert(host, &body).map_err(|e| ClientError::new(e.code(), e.to_string()))?;

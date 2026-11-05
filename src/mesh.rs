@@ -729,6 +729,13 @@ impl Inner {
         if let Err(e) = self.foreign.prepare(&target.cell, stored, target.asof()) {
             return self.unavailable(target, e);
         }
+        // Since 0.2.1: before computing another mesh's function, its publisher's key document
+        // (its declarations, SPEC 8.5), fetched again after its TTL.
+        if !stored {
+            if let Err(e) = self.foreign.ensure_publisher(&target.cell.ns) {
+                return self.unavailable(target, e);
+            }
+        }
         let mut attempt = 0;
         loop {
             let r = self.engine.get_cell(&target.cell, Some(a));
@@ -781,9 +788,28 @@ impl Inner {
                     reply
                 }
                 Ok(_) => envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash)),
+                Err(EngineError::Unlicensed { cell_id, reason }) => {
+                    // Licence inheritance refuses the cell (SPEC 8.5, spec-0.4.3): `unlicensed`,
+                    // no new code. Not immutable: a declaration may come later.
+                    tracing::info!(target: "datumesh_http", cell_id = %cell_id, reason = reason.as_str(), "unlicensed");
+                    let a = envelope::with_fn_hash(datumesh_core::Answer::unlicensed(), Some(&target.bound.fn_hash));
+                    let cache =
+                        if private { Cache::Private } else { Cache::Public(self.config.ttl.latest_max_age.as_secs()) };
+                    envelope::answer_reply(&a, cache)
+                }
                 Err(e) => {
                     let (bad, code) = engine_code(&e);
                     tracing::info!(target: "datumesh_http", error = %e, code = code.as_str(), "engine");
+                    if code == ErrorCode::ForeignUnavailable {
+                        // A cross-mesh fetch inside the evaluation got no response (ForeignError::eval).
+                        let detail = match &e {
+                            EngineError::Invalid(c) => {
+                                c.detail().strip_prefix("cross-mesh: ").unwrap_or(c.detail()).to_string()
+                            }
+                            other => other.to_string(),
+                        };
+                        return self.unavailable(target, ForeignError { code, detail });
+                    }
                     if bad {
                         envelope::bad_request_reply(code)
                     } else if code == ErrorCode::InputUnavailable {
@@ -824,6 +850,10 @@ impl Inner {
                 let a = envelope::with_fn_hash(a, Some(&g.info.parsed.cell().fn_hash));
                 return envelope::answer_reply(&a, Cache::NoStore);
             }
+        }
+        if let Some(d) = e.foreign_detail() {
+            let a = envelope::with_fn_hash(datumesh_core::Answer::foreign_unavailable(d), Some(&target.bound.fn_hash));
+            return envelope::answer_reply(&a, Cache::NoStore);
         }
         envelope::error_answer_reply(e.code, Some(&target.bound.fn_hash))
     }

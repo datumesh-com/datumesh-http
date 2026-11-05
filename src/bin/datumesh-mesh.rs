@@ -7,6 +7,12 @@
 //!                                a new signing key (seed, mode 0600); --publish adds it to the
 //!                                key document of DATUMESH_HOST in the store (rotating the
 //!                                current key out at --valid-from, default now)
+//! datumesh-mesh declare --fn <name> --licence <licence> --valid-from <instant> [--valid-to <instant>]
+//!                                a declaration (SPEC 9.2, spec-0.4.3) in the key document of
+//!                                DATUMESH_HOST in the store: <name>, a function under that
+//!                                host, may be computed over inputs under the restricted
+//!                                <licence> (SPEC 8.5); idempotent; with --valid-to on an open
+//!                                entry, closes it (entries are never removed)
 //! datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <per minute>]
 //!                                a new API key: its hash appended to the keys file, the key
 //!                                itself written to --out (mode 0600), never printed
@@ -61,6 +67,7 @@ fn main() {
             println!("migrated");
         }
         Some("keygen") => keygen(&args),
+        Some("declare") => declare(&args),
         Some("publish-stored") => {
             let file = args.get(1).unwrap_or_else(|| fail("publish-stored <file.jsonl>"));
             let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
@@ -111,7 +118,7 @@ fn main() {
             println!("{}", datumesh_http::openapi().to_pretty_json().unwrap_or_default());
         }
         Some(other) => fail(format!(
-            "unknown command {other} (serve, migrate, keygen, apikey, publish-stored, import-vectors, openapi, health)"
+            "unknown command {other} (serve, migrate, keygen, declare, apikey, publish-stored, import-vectors, openapi, health)"
         )),
     }
 }
@@ -157,6 +164,31 @@ fn keygen(args: &[String]) {
         s.put_namespace(&host, &doc, &now).unwrap_or_else(|e| fail(e));
         println!("published in the key document of {host} from {from}");
     }
+}
+
+fn declare(args: &[String]) {
+    let name = arg(args, "--fn").unwrap_or_else(|| fail("--fn <function name>"));
+    let licence = arg(args, "--licence").unwrap_or_else(|| fail("--licence <licence>"));
+    let from = arg(args, "--valid-from").unwrap_or_else(|| fail("--valid-from <instant>"));
+    let to = arg(args, "--valid-to");
+    let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
+    let s = store(2);
+    let existing = s
+        .namespace(&host)
+        .unwrap_or_else(|e| fail(e))
+        .unwrap_or_else(|| fail(format!("the store holds no key document of {host}")))
+        .keydoc;
+    let (doc, what) = datumesh_http::keydoc::with_declaration(&host, &existing, &name, &licence, &from, to.as_deref())
+        .unwrap_or_else(|e| fail(e));
+    if what != datumesh_http::keydoc::Declared::Unchanged {
+        s.put_namespace(&host, &doc, &SystemClock.now()).unwrap_or_else(|e| fail(e));
+    }
+    let what = match what {
+        datumesh_http::keydoc::Declared::Added => "added",
+        datumesh_http::keydoc::Declared::Closed => "closed",
+        _ => "unchanged",
+    };
+    println!("{{\"declaration\":\"{what}\",\"fn\":\"{name}\",\"licence\":\"{licence}\"}}");
 }
 
 fn serve() {

@@ -508,6 +508,26 @@ impl Foreign {
             return Ok(());
         }
         self.keys_for(host, false)?;
+        self.store_key_document(host)
+    }
+
+    /// Before this mesh computes a function under a host it does not own (a formula of
+    /// another mesh, evaluated here): the publisher's key document, as cached (fetched again
+    /// after its TTL), put in the store, where the engine reads its declarations (SPEC 8.5,
+    /// spec-0.4.3). No HTTP response from the host is `E_FOREIGN_UNAVAILABLE`, its detail
+    /// first in the error's `detail` ([`ForeignError::foreign_detail`]). Nothing for a
+    /// namespace this mesh owns, or with cross-mesh resolution off. Since 0.2.1.
+    pub fn ensure_publisher(&self, ns: &str) -> Result<(), ForeignError> {
+        if !self.is_foreign(ns) {
+            return Ok(());
+        }
+        let host = host_of(ns);
+        self.counted(self.client.publisher_key_document(host))?;
+        self.store_key_document(host)
+    }
+
+    /// The cached key document of `host`, put in the store unless the store's is the same.
+    fn store_key_document(&self, host: &str) -> Result<(), ForeignError> {
         let bytes = self
             .client
             .key_document_bytes(host)
@@ -623,6 +643,8 @@ impl Runtime for CrossMesh {
         inputs: &mut dyn Inputs,
         budget: &mut Budget,
     ) -> Result<Scalar, EvalError> {
+        // Since 0.2.1: the publisher's declarations, for licence inheritance (SPEC 8.5).
+        self.foreign.ensure_publisher(&cell.ns).map_err(ForeignError::eval)?;
         for name in &descriptor.inputs {
             self.foreign.ensure_name(name).map_err(ForeignError::eval)?;
         }

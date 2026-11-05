@@ -116,8 +116,8 @@ async fn the_seed_under_licence_inheritance() {
     std::fs::write(dir.join("gen-1-1.txt"), text).unwrap();
     // The characters of the spec vector formula-eval/hebrew-consonantal, as scripture.py takes
     // them.
-    let vector = json::parse(&std::fs::read(spec_dir().join("vectors/formula-eval/hebrew-consonantal.json")).unwrap())
-        .unwrap();
+    let vector =
+        json::parse(&std::fs::read(spec_dir().join("vectors/formula-eval/hebrew-consonantal.json")).unwrap()).unwrap();
     let body = vector.get("world").and_then(|w| w.get("functions")).and_then(Value::as_object).unwrap()[0]
         .1
         .get("descriptor")
