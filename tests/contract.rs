@@ -213,9 +213,9 @@ async fn every_endpoint_and_outcome() {
         datumesh_core::Cell { ns: B.into(), fn_name: "rate".into(), fn_hash: fh, args: gbp }.id()
     };
     let r = a.get(&format!("/cell/{B}/rate?ccy=GBP&date=2026-03-01")).await;
-    assert_eq!(r.status, 503);
+    assert_eq!(r.status, 502);
     seen.envelope(&r, "error", &keys, &b_gbp_id, None, None);
-    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_INPUT_UNAVAILABLE"));
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_FOREIGN_UNAVAILABLE"));
 
     // rate_limited: a mesh allowing one request a minute.
     let tight = Node::start_with(

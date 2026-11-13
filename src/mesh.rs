@@ -383,6 +383,9 @@ impl Bindings for Inner {
         if self.foreign.is_foreign(fn_name) {
             if let Err(e) = self.foreign.ensure_name(fn_name) {
                 tracing::warn!(target: "datumesh_http", name = fn_name, detail = %e.detail, "cross-mesh binding");
+                // `Bindings::binding` answers a bare code: the detail of E_FOREIGN_UNAVAILABLE
+                // waits on this thread for `rejection`, which answers on the same thread.
+                FOREIGN_DETAIL.with(|d| d.set(e.foreign_detail()));
                 failed = Some(e.code);
             }
         }
@@ -403,6 +406,12 @@ impl Bindings for Inner {
             }
         }
     }
+}
+
+thread_local! {
+    /// Why the other mesh could not be reached, from the last cross-mesh name resolution on
+    /// this thread (see `Inner::binding` and `Inner::rejection`).
+    static FOREIGN_DETAIL: std::cell::Cell<Option<datumesh_core::ForeignDetail>> = const { std::cell::Cell::new(None) };
 }
 
 /// Latest answers by key: the receipt, the cell id and the asof answered at.
@@ -647,6 +656,11 @@ impl Inner {
             }
             Rejection::Error(ErrorCode::NameUnbound) => {
                 envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs())
+            }
+            Rejection::Error(ErrorCode::ForeignUnavailable) => {
+                // The other mesh could not be reached while resolving the name (spec-0.4.3).
+                let d = FOREIGN_DETAIL.with(|d| d.take()).unwrap_or(datumesh_core::ForeignDetail::Network);
+                envelope::answer_reply(&datumesh_core::Answer::foreign_unavailable(d), Cache::NoStore)
             }
             Rejection::Error(c) => envelope::error_reply(c),
         }

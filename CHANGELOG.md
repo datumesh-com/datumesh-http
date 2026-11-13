@@ -24,6 +24,20 @@ after 0.4.0, not yet made: this branch is built against the store's branch
   `valid`/`invalid`/`skipped`, `failures`, `suspended`, `suspended_now`, `reinstated`,
   `rotated`, and for an invalid host `code` and `detail`); exit 1 when any host is invalid.
   `DATUMESH_PEERS` maps a host to another origin, as for cross-mesh resolution.
+- **Every cross-mesh fetch that gets no HTTP response is `E_FOREIGN_UNAVAILABLE`** (502, with
+  core 0.3.7's `ForeignDetail`: `network`, `dns`, `tls`, `timeout`, `refused`), not only the
+  publisher's key-document refresh: key and mesh documents, bindings, descriptors, receipts,
+  manifests, blobs, cells, slices, batches and versions fetched from another mesh
+  (`Client`, so `foreign.rs`), and a name that cannot be resolved because its host cannot be
+  reached. A mesh that answers keeps its own outcome (`E_FN_UNAVAILABLE`, a bad status, ...).
+  A cell served before is still `stale`. The system resolver's "failed to lookup address
+  information" is `dns`. Changed: `Client::key_document` of an unreachable host was
+  `E_KEY_UNAVAILABLE`; `Client` methods that were `E_INPUT_UNAVAILABLE` for it are
+  `E_FOREIGN_UNAVAILABLE` (the error's `foreign_detail()` says why).
+- **A suspended namespace across meshes** stays `E_INPUT_UNAVAILABLE`, now behind one constant,
+  `foreign::NAMESPACE_SUSPENDED`: core 0.3.7's closed `ErrorCode` cannot express
+  `E_NAMESPACE_SUSPENDED` (a write refusal, spec-0.5.0); core's spec-0.5.0 release changes that
+  one line.
 - **Weekly re-check**: `deploy/validate.sh`, a cron entry (Sundays 04:30 UTC) installed by
   `deploy/install_cron.sh`.
 

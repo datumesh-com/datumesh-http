@@ -80,6 +80,8 @@ fn transport_detail(e: &ureq::Error) -> Option<ForeignDetail> {
     Some(match e {
         ureq::Error::HostNotFound => ForeignDetail::Dns,
         ureq::Error::Timeout(_) => ForeignDetail::Timeout,
+        // The system resolver's failure arrives as an I/O error, not `HostNotFound`.
+        ureq::Error::Io(io) if io.to_string().contains("failed to lookup address information") => ForeignDetail::Dns,
         ureq::Error::Io(io) => match io.kind() {
             ErrorKind::ConnectionRefused => ForeignDetail::Refused,
             ErrorKind::TimedOut => ForeignDetail::Timeout,
@@ -258,6 +260,18 @@ impl Client {
         self.request_with_detail(url, post, limit).map_err(|(m, _)| m)
     }
 
+    /// A request to another mesh whose failure is a [`ClientError`]: `E_FOREIGN_UNAVAILABLE`
+    /// (spec-0.4.3) with its detail (`offline`, `network`, `dns`, `tls`, `timeout`, `refused`)
+    /// when no HTTP response came back, `E_INPUT_UNAVAILABLE` for a failure after a response
+    /// began (a body that could not be read, a host not allowed). A mesh that answered, with
+    /// any status, is not this function's failure. Since the cross-mesh failure change.
+    fn fetch(&self, url: &str, post: Option<&[u8]>, limit: u64) -> Result<(u16, Vec<u8>), ClientError> {
+        self.request_with_detail(url, post, limit).map_err(|(m, d)| match d {
+            Some(d) => ClientError::foreign(d, m),
+            None => ClientError::unavailable(m),
+        })
+    }
+
     /// [`request`](Client::request), its failure with the `E_FOREIGN_UNAVAILABLE` detail when no
     /// HTTP response came back.
     fn request_with_detail(
@@ -290,7 +304,7 @@ impl Client {
     /// The key document of `host` (SPEC 9.3), from the cache while it is fresh, else fetched;
     /// `refresh` fetches it again unless it was fetched within the refetch interval.
     pub fn key_document(&self, host: &str, refresh: bool) -> Result<KeyDoc, ClientError> {
-        self.key_document_with(host, refresh, false)
+        self.key_document_with(host, refresh)
     }
 
     /// [`key_document`](Client::key_document) of a function's publisher, before this mesh
@@ -298,10 +312,10 @@ impl Client {
     /// is `E_FOREIGN_UNAVAILABLE` (spec-0.4.3), its detail first in
     /// [`ClientError::detail`] ([`ClientError::foreign_detail`]). Since 0.2.1.
     pub fn publisher_key_document(&self, host: &str) -> Result<KeyDoc, ClientError> {
-        self.key_document_with(host, false, true)
+        self.key_document_with(host, false)
     }
 
-    fn key_document_with(&self, host: &str, refresh: bool, foreign: bool) -> Result<KeyDoc, ClientError> {
+    fn key_document_with(&self, host: &str, refresh: bool) -> Result<KeyDoc, ClientError> {
         if let Some((doc, _, at)) = self.inner.keys.get(host) {
             let age = at.elapsed();
             if (!refresh && age < self.inner.cfg.key_ttl) || (refresh && age < self.inner.cfg.key_refetch) {
@@ -311,8 +325,8 @@ impl Client {
         self.check_host(host)?;
         let url = format!("https://{host}/.well-known/datumesh.json");
         let (status, body) = self.request_with_detail(&url, None, MAX_DOC).map_err(|(e, d)| match d {
-            Some(d) if foreign => ClientError::foreign(d, e),
-            _ => ClientError::new(ErrorCode::KeyUnavailable, e),
+            Some(d) => ClientError::foreign(d, e),
+            None => ClientError::new(ErrorCode::KeyUnavailable, e),
         })?;
         let doc = keys_from_response(host, status, if status == 200 { Some(&body) } else { None })
             .map_err(|e| ClientError::new(e.code(), e.to_string()))?;
@@ -333,20 +347,31 @@ impl Client {
             }
         }
         self.check_host(host)?;
-        let keys = self.get(&format!("https://{host}/.well-known/datumesh.json"), MAX_DOC);
-        let mesh = match &keys {
-            Ok((200, _)) => self.get(&format!("https://{host}/.well-known/datumesh-mesh.json"), MAX_DOC),
-            _ => Err(String::new()),
+        type Got = Result<(u16, Vec<u8>), (String, Option<ForeignDetail>)>;
+        let get = |path: &str| -> Got {
+            let url = format!("https://{host}/.well-known/{path}");
+            self.request_with_detail(&url, None, MAX_DOC)
         };
-        fn ret(r: &Result<(u16, Vec<u8>), String>) -> Retrieval<'_> {
+        let keys: Got = get("datumesh.json");
+        let mesh: Got = match &keys {
+            Ok((200, _)) => get("datumesh-mesh.json"),
+            _ => Err((String::new(), None)),
+        };
+        fn ret(r: &Got) -> Retrieval<'_> {
             match r {
                 Ok((s, b)) => Retrieval::Response { status: *s, body: Some(b.as_slice()) },
                 Err(_) => Retrieval::Failed,
             }
         }
         let resolved = resolve_mesh(host, ret(&keys), ret(&mesh)).map_err(|e| {
+            // No response from the host: E_FOREIGN_UNAVAILABLE with why.
+            for r in [&keys, &mesh] {
+                if let Err((why, Some(d))) = r {
+                    return ClientError::foreign(*d, why);
+                }
+            }
             let detail = match (&keys, &mesh) {
-                (Err(e), _) | (_, Err(e)) if !e.is_empty() => e.clone(),
+                (Err((e, _)), _) | (_, Err((e, _))) if !e.is_empty() => e.clone(),
                 _ => e.to_string(),
             };
             ClientError::new(e.code(), detail)
@@ -377,7 +402,7 @@ impl Client {
         if let Some(a) = asof {
             url.push_str(&format!("&asof={}", pct(a)));
         }
-        let (status, body) = self.get(&url, MAX_DOC).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_DOC)?;
         if status != 200 {
             return Err(ClientError::unavailable(format!("{url}: status {status}")));
         }
@@ -402,7 +427,7 @@ impl Client {
     /// The descriptor `fn_hash` names, from `host` (its hash checked).
     pub fn descriptor(&self, host: &str, fn_hash: &str) -> Result<Vec<u8>, ClientError> {
         let url = self.endpoint(host, "descriptor", &[("hash", fn_hash)])?;
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         if status != 200 {
             return Err(ClientError::new(ErrorCode::FnUnavailable, format!("{url}: status {status}")));
         }
@@ -473,7 +498,7 @@ impl Client {
     /// 10.1 steps 1-6) against its signer's key document.
     pub fn receipt(&self, host: &str, hash: &str) -> Result<Vec<u8>, ClientError> {
         let url = self.endpoint(host, "receipt", &[("hash", hash)])?;
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         if status != 200 {
             return Err(ClientError::unavailable(format!("{url}: status {status}")));
         }
@@ -493,7 +518,7 @@ impl Client {
     /// A slice manifest from `host` (its entry checked).
     pub fn manifest(&self, host: &str, slice_id: &str, members_hash: &str) -> Result<Vec<u8>, ClientError> {
         let url = self.endpoint(host, "manifest", &[("slice_id", slice_id), ("members_hash", members_hash)])?;
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         if status != 200 {
             return Err(ClientError::unavailable(format!("{url}: status {status}")));
         }
@@ -507,7 +532,7 @@ impl Client {
     /// Blob content by SHA-256 from `host` (its hash checked).
     pub fn blob(&self, host: &str, sha256: &str) -> Result<Vec<u8>, ClientError> {
         let url = self.endpoint(host, "blob", &[("sha256", sha256)])?;
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         if status != 200 {
             return Err(ClientError::unavailable(format!("{url}: status {status}")));
         }
@@ -521,7 +546,7 @@ impl Client {
     /// from `host`, checked against `request` (5.5; the host asked is added to it).
     pub fn cell(&self, host: &str, rest: &str, request: &Request) -> Result<Fetched, ClientError> {
         let url = self.endpoint(host, "cell", &[("cell", rest)])?;
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         let req =
             request.clone().with_mesh(host).map_err(|e| ClientError::new(ErrorCode::Envelope, format!("{e:?}")))?;
         let answer = self.checked(&body, |keys| check_answer(status, &body, keys, &req))?;
@@ -596,7 +621,7 @@ impl Client {
             }
             None => self.endpoint(host, "slice", &[("cell", rest)])?,
         };
-        let (status, body) = self.get(&url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(&url, None, MAX_BODY)?;
         let mut req = SliceRequest::new(slice.id(), r.asof.as_deref())
             .and_then(|q| q.with_mesh(host))
             .map_err(|e| ClientError::new(ErrorCode::Envelope, format!("{e:?}")))?;
@@ -620,7 +645,7 @@ impl Client {
     pub fn batch(&self, host: &str, items: &[String], requests: &[Request]) -> Result<Batch, ClientError> {
         let url = self.endpoint(host, "cells", &[])?;
         let body = Value::Array(items.iter().map(|i| Value::String(i.clone())).collect()).to_jcs();
-        let (status, resp) = self.request(&url, Some(&body), MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, resp) = self.fetch(&url, Some(&body), MAX_BODY)?;
         let reqs: Vec<Request> =
             requests.iter().map(|r| r.clone().with_mesh(host).unwrap_or_else(|_| r.clone())).collect();
         self.checked(&resp, |keys| check_batch(status, &resp, keys, &reqs))
@@ -634,7 +659,7 @@ impl Client {
 
     /// A page of the versions endpoint at `url` (a `next`).
     pub fn versions_at(&self, url: &str) -> Result<Versions, ClientError> {
-        let (status, body) = self.get(url, MAX_BODY).map_err(ClientError::unavailable)?;
+        let (status, body) = self.fetch(url, None, MAX_BODY)?;
         let v = json::parse(&body).map_err(|e| ClientError::unavailable(format!("{url}: {e}")))?;
         if status != 200 {
             let code = v

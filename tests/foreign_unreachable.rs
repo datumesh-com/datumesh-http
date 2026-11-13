@@ -49,7 +49,7 @@ fn paths(c: &Client, host: &str) -> Vec<(&'static str, Result<(), ClientError>)>
         ("blob", unit(c.blob(host, &hex64()))),
         ("cell", unit(c.cell(host, &rest, &req))),
         ("slice", unit(c.slice(host, &format!("{host}/price?item=*"), None))),
-        ("batch", unit(c.batch(host, &[rest.clone()], &[req.clone()]))),
+        ("batch", unit(c.batch(host, std::slice::from_ref(&rest), std::slice::from_ref(&req)))),
         ("versions", unit(c.versions(host, &rest))),
     ]
 }
@@ -85,7 +85,8 @@ async fn every_path_to_a_stopped_mesh_is_foreign_unavailable_refused() {
         let fresh_results = paths(&fresh, B);
         all_foreign(fresh_results, ForeignDetail::Refused);
         // The warm client's cached documents answer key_document and resolve; the rest fetch.
-        let rest: Vec<_> = paths(&w, B).into_iter().filter(|(n, _)| !matches!(*n, "key_document" | "resolve")).collect();
+        let rest: Vec<_> =
+            paths(&w, B).into_iter().filter(|(n, _)| !matches!(*n, "key_document" | "resolve")).collect();
         assert_eq!(rest.len(), 9);
         all_foreign(rest, ForeignDetail::Refused);
     })

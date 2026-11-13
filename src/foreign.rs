@@ -68,6 +68,23 @@ use crate::config::Config;
 /// A fetched version: the receipt bytes and the parsed receipt.
 type Version = (Vec<u8>, Box<Receipt>);
 
+/// The code of a cross-mesh import the store refused because the namespace is suspended
+/// (`datumesh_store::Error::NamespaceSuspended`: a write refusal, not a failure to reach the
+/// other mesh). core 0.3.7's `ErrorCode` is closed and cannot express `E_NAMESPACE_SUSPENDED`
+/// (spec-0.5.0), so it is `E_INPUT_UNAVAILABLE` for now. **core's spec-0.5.0 release switches
+/// this one line to `ErrorCode::NamespaceSuspended`.**
+pub(crate) const NAMESPACE_SUSPENDED: ErrorCode = ErrorCode::InputUnavailable;
+
+/// A store's refusal of an import `op` as a cross-mesh failure: a suspended namespace is
+/// [`NAMESPACE_SUSPENDED`], anything else `E_INPUT_UNAVAILABLE`.
+fn store_refusal(op: &str, e: datumesh_store::Error) -> ForeignError {
+    let code = match e {
+        datumesh_store::Error::NamespaceSuspended { .. } => NAMESPACE_SUSPENDED,
+        _ => ErrorCode::InputUnavailable,
+    };
+    ForeignError::new(code, format!("{op}: {e}"))
+}
+
 /// The most versions or bindings one walk imports.
 const MAX_WALK: usize = 10_000;
 
@@ -318,9 +335,7 @@ impl Foreign {
         }
         for (fn_hash, since) in chain.iter().rev() {
             self.import_descriptor(host, fn_hash)?;
-            self.store
-                .bind_name(name, fn_hash, since)
-                .map_err(|e| ForeignError::unavailable(format!("bind {name}: {e}")))?;
+            self.store.bind_name(name, fn_hash, since).map_err(|e| store_refusal(&format!("bind {name}"), e))?;
         }
         self.names
             .lock()
@@ -485,11 +500,8 @@ impl Foreign {
         let added = !chain.is_empty();
         for (bytes, r) in &chain {
             self.ensure_namespace(r.signer_host())?;
-            let h =
-                self.store.put_receipt(bytes).map_err(|e| ForeignError::unavailable(format!("put_receipt: {e}")))?;
-            self.store
-                .put_version(&id, r.tx(), &h)
-                .map_err(|e| ForeignError::unavailable(format!("put_version: {e}")))?;
+            let h = self.store.put_receipt(bytes).map_err(|e| store_refusal("put_receipt", e))?;
+            self.store.put_version(&id, r.tx(), &h).map_err(|e| store_refusal("put_version", e))?;
             self.imported.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if added {
