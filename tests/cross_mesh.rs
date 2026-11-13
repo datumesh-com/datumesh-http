@@ -156,8 +156,9 @@ async fn two_meshes() {
     b2.stop().await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let r = a.get(&format!("/cell/{A}/with_tax?item=washer")).await;
-    assert_eq!((r.status, r.outcome()), (503, "error".to_string()), "{}", r.text());
-    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_INPUT_UNAVAILABLE"));
+    assert_eq!((r.status, r.outcome()), (502, "error".to_string()), "{}", r.text());
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_FOREIGN_UNAVAILABLE"));
+    assert_eq!(r.json().get("detail").and_then(Value::as_str), Some("refused"));
     let r = a.get(&format!("/cell/{B}/price?item=washer")).await;
     assert_eq!(r.outcome(), "error", "{}", r.text());
     let r = a.get(&format!("/cell/{A}/with_tax?item=bolt")).await;
