@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased (branch step-1.5-domain-validation; no release)
+
+Domain validation (step 1.5). Needs `datumesh-store` with the namespace checks (a store release
+after 0.4.0, not yet made: this branch is built against the store's branch
+`step-1.5-namespace-validation`; `Cargo.toml` still says 0.4.0). Additions only.
+
+- **`domain` module.** `Validator::validate(store, host, now)` fetches
+  `https://<host>/.well-known/datumesh.json` and checks it with core 0.3.7's rules
+  (`key_document_from_response`, declarations included). Valid: `put_namespace` (so
+  `validated_at` is recorded and a rotation replaces the stored key document through the store's
+  normal path), then `record_namespace_success` (the failure count back to zero, a suspension
+  lifted). Invalid: `record_namespace_failure` with `SUSPEND_AFTER` = 2, so the second
+  consecutive failure suspends the namespace. `validate_all` does every namespace in the store;
+  the mesh's own namespaces are skipped (never suspended). `Outcome`, `Validation`.
+- **Suspension** refuses new writes under the namespace with the store's
+  `Error::NamespaceSuspended`: `put_receipt` of a receipt signed by the host, `put_version` of
+  such a receipt, `bind_name` under the host (so `define`, `publish-stored` and the import of a
+  foreign host's bindings and cells too). Reads, verification, the key document the mesh serves,
+  and receipts already stored are not affected. A cross-mesh import the store refuses is
+  `E_INPUT_UNAVAILABLE` (the closest existing code; a spec code for it is for spec-0.5.0).
+- **`datumesh-mesh validate <host> | --all`**: one JSON line per host (`host`, `outcome`
+  `valid`/`invalid`/`skipped`, `failures`, `suspended`, `suspended_now`, `reinstated`,
+  `rotated`, and for an invalid host `code` and `detail`); exit 1 when any host is invalid.
+  `DATUMESH_PEERS` maps a host to another origin, as for cross-mesh resolution.
+- **Weekly re-check**: `deploy/validate.sh`, a cron entry (Sundays 04:30 UTC) installed by
+  `deploy/install_cron.sh`.
+
 ## 0.2.1 (unreleased)
 
 For spec-0.4.3: licence inheritance and `declarations` in the key document. On

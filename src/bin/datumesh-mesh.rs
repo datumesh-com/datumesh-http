@@ -13,6 +13,15 @@
 //!                                host, may be computed over inputs under the restricted
 //!                                <licence> (SPEC 8.5); idempotent; with --valid-to on an open
 //!                                entry, closes it (entries are never removed)
+//! datumesh-mesh validate <host> | --all
+//!                                domain validation (`datumesh_http::domain`): fetch
+//!                                https://<host>/.well-known/datumesh.json (DATUMESH_PEERS maps a
+//!                                host to another origin), check it as SPEC 9.2 says and record
+//!                                the outcome in the store (a valid document replaces the stored
+//!                                one; the second consecutive failure suspends the namespace; the
+//!                                next success reinstates it); --all does every namespace in the
+//!                                store but the mesh's own. One JSON line per host; exit 1 when
+//!                                any host is invalid. The weekly re-check runs `validate --all`
 //! datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <per minute>]
 //!                                a new API key: its hash appended to the keys file, the key
 //!                                itself written to --out (mode 0600), never printed
@@ -67,6 +76,7 @@ fn main() {
             println!("migrated");
         }
         Some("keygen") => keygen(&args),
+        Some("validate") => validate(&args),
         Some("declare") => declare(&args),
         Some("publish-stored") => {
             let file = args.get(1).unwrap_or_else(|| fail("publish-stored <file.jsonl>"));
@@ -118,7 +128,7 @@ fn main() {
             println!("{}", datumesh_http::openapi().to_pretty_json().unwrap_or_default());
         }
         Some(other) => fail(format!(
-            "unknown command {other} (serve, migrate, keygen, declare, apikey, publish-stored, import-vectors, openapi, health)"
+            "unknown command {other} (serve, migrate, keygen, declare, validate, apikey, publish-stored, import-vectors, openapi, health)"
         )),
     }
 }
@@ -189,6 +199,33 @@ fn declare(args: &[String]) {
         _ => "unchanged",
     };
     println!("{{\"declaration\":\"{what}\",\"fn\":\"{name}\",\"licence\":\"{licence}\"}}");
+}
+
+fn validate(args: &[String]) {
+    let all = args.iter().any(|a| a == "--all");
+    let host = args.get(1).filter(|a| !a.starts_with("--")).cloned();
+    if all == host.is_some() {
+        fail("validate <host> | validate --all");
+    }
+    let config = Config::from_env().unwrap_or_else(|e| fail(e));
+    let mut cc = datumesh_http::client::ClientConfig::default();
+    cc.peers = config.peers.clone();
+    cc.timeout = config.peer_timeout;
+    let validator =
+        datumesh_http::domain::Validator::new(datumesh_http::client::Client::new(cc), config.namespaces.clone());
+    let s = store(2);
+    let now = SystemClock.now();
+    let results = match host {
+        Some(h) => validator.validate(&s, &h, &now).map(|v| vec![v]),
+        None => validator.validate_all(&s, &now),
+    }
+    .unwrap_or_else(|e| fail(e));
+    for v in &results {
+        println!("{}", String::from_utf8_lossy(&v.to_json()));
+    }
+    if results.iter().any(|v| v.failed()) {
+        std::process::exit(1);
+    }
 }
 
 fn serve() {

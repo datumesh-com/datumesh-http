@@ -67,7 +67,9 @@ impl Host {
                         r.extend_from_slice(&d);
                         r
                     }
-                    Serve::NotFound => b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
+                    Serve::NotFound => {
+                        b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec()
+                    }
                     Serve::Down => continue,
                 };
                 let _ = c.write_all(&reply);
@@ -194,10 +196,12 @@ fn removal_suspends_on_the_second_failure_not_the_first() {
     assert_eq!(ns.suspended_at, Some(t(2)));
     // New writes are refused, with the typed error (the store's, whatever the path).
     match f.store.bind_name(&format!("{H}/other"), &"0".repeat(64), "2026-04-01T00:00:00.000000Z") {
-        Err(Error::NamespaceSuspended { host, suspended_at }) => assert_eq!((host.as_str(), suspended_at.as_str()), (H, t(2).as_str())),
+        Err(Error::NamespaceSuspended { host, suspended_at }) => {
+            assert_eq!((host.as_str(), suspended_at.as_str()), (H, t(2).as_str()))
+        }
         r => panic!("{r:?}"),
     }
-    let e = publish(&f, &f.key, "2026-03-03T00:00:00.000000Z", "1.10").unwrap_err();
+    let e = publish(&f, &f.key, "2026-03-03T00:00:00.000000Z", "1.1").unwrap_err();
     assert!(e.contains("suspended"), "{e}");
     // A third failure keeps the first suspension's time.
     let v = check(&f, 3);
@@ -272,7 +276,7 @@ fn a_rotation_is_picked_up() {
     // A receipt signed with the new key is now stored; the old key's receipts still are.
     publish(&f, &f.key, "2026-03-01T00:00:00.000000Z", "1.08").expect("old key, before the rotation");
     // The new key's receipts need the key's own start: its function bound under the same name.
-    let p = publish(&f, &k2, "2026-07-01T00:00:00.000000Z", "1.20").unwrap();
+    let p = publish(&f, &k2, "2026-07-01T00:00:00.000000Z", "1.2").unwrap();
     assert_eq!(p.versions, 1, "{p:?}");
     // The same document again is not a rotation.
     let v = check(&f, 2);
@@ -320,7 +324,10 @@ fn existing_receipts_of_a_suspended_namespace_still_verify() {
     assert!(out.ok, "{:?}", out.error());
     assert_eq!(Receipt::from_json(&receipt).unwrap().hash(), version.receipt_hash);
     assert_eq!(f.store.put_receipt(&receipt).unwrap(), version.receipt_hash);
-    assert!(publish(&f, &f.key, "2026-03-01T00:00:00.000000Z", "1.08").is_ok_and(|p| p.versions == 0), "re-running a file changes nothing");
+    assert!(
+        publish(&f, &f.key, "2026-03-01T00:00:00.000000Z", "1.08").is_ok_and(|p| p.versions == 0),
+        "re-running a file changes nothing"
+    );
 }
 
 #[test]
@@ -330,7 +337,13 @@ fn validate_all_checks_every_namespace_but_the_meshs_own() {
     let own = Host::start(Serve::NotFound);
     let v = validator(&[(H, &f.host), ("calc.example.net", &other), (OWN, &own)], &[OWN]);
     f.store.put_namespace(H, &key_doc(H, &f.key), "2026-01-01T00:00:00.000000Z").unwrap();
-    f.store.put_namespace("calc.example.net", &key_doc("calc.example.net", &key_for("calc.example.net")), "2026-01-01T00:00:00.000000Z").unwrap();
+    f.store
+        .put_namespace(
+            "calc.example.net",
+            &key_doc("calc.example.net", &key_for("calc.example.net")),
+            "2026-01-01T00:00:00.000000Z",
+        )
+        .unwrap();
     f.store.put_namespace(OWN, &key_doc(OWN, &key_for(OWN)), "2026-01-01T00:00:00.000000Z").unwrap();
     f.host.set(Serve::NotFound);
     for n in 1..=3 {
@@ -393,7 +406,8 @@ fn the_validate_command() {
     f.host.set(Serve::NotFound);
     let out = run(&["validate", "--all"]);
     assert!(!out.status.success(), "a failed validation exits non-zero");
-    let v = datumesh_core::json::parse(String::from_utf8(out.stdout).unwrap().lines().next().unwrap().as_bytes()).unwrap();
+    let v =
+        datumesh_core::json::parse(String::from_utf8(out.stdout).unwrap().lines().next().unwrap().as_bytes()).unwrap();
     assert_eq!(v.get("outcome").and_then(Value::as_str), Some("invalid"));
     assert_eq!(v.get("code").and_then(Value::as_str), Some("E_KEY_UNAVAILABLE"));
     let out = run(&["validate", "--all"]);
@@ -405,4 +419,38 @@ fn the_validate_command() {
     assert!(f.store.namespace(H).unwrap().unwrap().suspended_at.is_none(), "reinstated");
     // No host and no --all: a usage error.
     assert!(!run(&["validate"]).status.success());
+}
+
+/// Another mesh's host suspended in this mesh's store: what it already imported is served,
+/// a cell it has not imported is `E_INPUT_UNAVAILABLE` (the closest existing code; the
+/// envelope carries no detail, the store's refusal is in the mesh's logs), and the next success makes it importable again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_suspended_foreign_namespace_is_not_imported_from() {
+    const A: &str = "mesh-a.example";
+    const B: &str = "mesh-b.example";
+    let sig = r#"{"args":{"item":{"type":"string","valid":false}},"order":["item"],"returns":{"type":"number","unit":"EUR"}}"#;
+    let b = Node::start(B, |_| {}).await;
+    b.stored(&format!("{B}/price"), sig);
+    for (item, v) in [("bolt", "100"), ("nut", "5")] {
+        b.put_value(&format!("{B}/price"), &args(&[("item", s(item))]), n(v), "2026-03-01T00:00:00.000000Z");
+    }
+    let b_base = b.base.clone();
+    let a = Node::start(A, |c| {
+        c.peers.insert(B.into(), b_base.clone());
+    })
+    .await;
+    let r = a.get(&format!("/cell/{B}/price?item=bolt")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
+    bl(|| assert!(a.store.record_namespace_failure(B, &now(), 1).unwrap().unwrap().suspended_at.is_some()));
+    // Imported before: still served. Not imported: refused while suspended.
+    let r = a.get(&format!("/cell/{B}/price?item=bolt")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
+    let r = a.get(&format!("/cell/{B}/price?item=nut")).await;
+    assert_eq!((r.status, r.outcome()), (503, "error".to_string()), "{}", r.text());
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_INPUT_UNAVAILABLE"));
+    bl(|| {
+        a.store.record_namespace_success(B, &plus(&now(), 1_000_000)).unwrap();
+    });
+    let r = a.get(&format!("/cell/{B}/price?item=nut")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
 }

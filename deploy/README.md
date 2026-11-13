@@ -13,7 +13,7 @@ State and secrets are outside the repository, in `/root/datumesh-mesh-test` (`DA
 | `secrets/` (0700, uid 10001) | `mesh.key` (the signing key, 0600), `api-keys` (hashes, 0600), `user.api-key` and `tests.api-key` (the keys themselves, 0600, never printed), `db.env` (the Postgres password and `DATABASE_URL`, root, 0600) |
 | `backups/` (0700) | nightly `pg_dump -Fc`, 14 kept |
 | `status/` | `resources.json` and `resources.txt` (the 15-minute check), `import.json`, `drill.json`, `smoke.json`, `vectors.json` |
-| `logs/` | `backup.log`, `resources.log` (cron) |
+| `logs/` | `backup.log`, `resources.log`, `validate.log` (cron) |
 | `bin/` | the scripts cron runs (copies, `install_cron.sh`) |
 | `catalog.json` | the `/find` catalog: the imported names |
 
@@ -25,7 +25,7 @@ deploy/setup.sh                                   # directories, password, key (
 deploy/seed.sh                                    # the seed data (below): download, generate, publish-stored, checks
 CADDYFILE=Caddyfile.internal docker compose -p datumesh-mesh-test -f deploy/compose.yml up -d   # before DNS
 deploy/go_live.sh                                 # once the A record resolves: Let's Encrypt
-deploy/install_cron.sh                            # nightly backup 03:15 UTC, resource check every 15 minutes
+deploy/install_cron.sh                            # nightly backup 03:15 UTC, resource check every 15 minutes, domain re-check Sundays 04:30 UTC
 deploy/licences.sh                                # 0.2.1: the declarations and fx_cross_undeclared (once, after the image upgrade)
 deploy/smoke.sh [--local]                         # the HTTPS smoke suite (--local: before DNS, internal CA)
 deploy/restore_drill.sh                           # restore the newest dump next to the live mesh and compare
@@ -125,6 +125,21 @@ network of its own, no port), and `drill.py` sends the same requests to both mes
 stored cell of the vectors as of its receipt's asof, the documents, the bindings, and, once the
 seed is loaded, every ECB cell, every tenth scripture cell and a hundred blobs): every answer
 must be identical byte for byte. The containers and the network are removed after.
+
+## The domain re-check
+
+`validate.sh` (cron, Sundays 04:30 UTC; `validate.sh <host>` by hand) runs `datumesh-mesh
+validate --all` in a one-off container of the mesh image (needs an image with the `validate`
+command, after 0.2.1): every namespace in the store except the mesh's own is fetched from its
+host (`https://<host>/.well-known/datumesh.json`) and checked. A valid document replaces the
+stored one (a rotation is picked up); the second consecutive failure suspends the namespace
+(new writes under it are refused, reads and existing receipts are not affected); the next
+success reinstates it. One JSON line per host goes to `logs/validate.log`; exit 1 when any host
+is invalid. The mesh's own namespaces (`DATUMESH_NAMESPACES`, here including the vectors'
+example hosts) are never validated or suspended. The container joins the frontend network too:
+the backend one has no route out. Cron, not an in-process timer: it is the pattern the
+deployment already uses for periodic work (the backup, the resource check), a weekly job
+needs no scheduler inside the server, and a failed run is visible in a log and an exit code.
 
 ## The resource check
 
