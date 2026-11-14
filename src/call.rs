@@ -17,7 +17,7 @@
 //!   `datumesh_formula::call::parse_call` in 5.8's order and codes, written as its cell URI and
 //!   resolved as above: a call and its URI are one request.
 //!
-//!   Since 0.3.0 (spec-0.5.0, 5.8, 16.3, 16.7) the call is also a **method call**
+//!   Since 0.2.2 (spec-0.5.0, 5.8, 16.3, 16.7) the call is also a **method call**
 //!   (`N(keys).m(args)`, the same request as the plain read `N/m(keys, args)`), takes **unquoted
 //!   values** by the position's type, **labels** (`N[label]`, through the class's `lookup`), the
 //!   `asof` **default** (the call's `asof`, or the mesh's now, in the cell URI) and a **bare name**

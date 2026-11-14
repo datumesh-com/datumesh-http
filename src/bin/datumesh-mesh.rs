@@ -26,7 +26,7 @@
 //!                                a new API key: its hash appended to the keys file, the key
 //!                                itself written to --out (mode 0600), never printed
 //! datumesh-mesh publish-stored <file.jsonl>
-//!                                stored functions and cells signed with the mesh's key
+//!                                stored functions, classes and cells signed with the mesh's key
 //!                                (DATUMESH_HOST, DATUMESH_KEY_FILE): `datumesh_http::publish`
 //! datumesh-mesh import-vectors <dir>
 //!                                the spec's vectors' key documents, descriptors, receipts,

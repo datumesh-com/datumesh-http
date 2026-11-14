@@ -1085,7 +1085,7 @@ impl Mesh {
     /// object id, a cell id or a short id (12 hex digits). A class or an object: the body is a
     /// `describe-class` or `describe-object` document, `200`; an id the mesh does not know, `404`;
     /// a short id naming more than one object or cell the mesh knows, `400` with
-    /// `E_SHORT_ID_AMBIGUOUS`. A class hash is not an id (9.6). Blocking. Since 0.3.0.
+    /// `E_SHORT_ID_AMBIGUOUS`. A class hash is not an id (9.6). Blocking. Since 0.2.2.
     pub fn describe(&self, id: &str) -> Reply {
         self.inner.describe(id)
     }

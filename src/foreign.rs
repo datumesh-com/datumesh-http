@@ -71,7 +71,7 @@ type Version = (Vec<u8>, Box<Receipt>);
 /// The code of a cross-mesh import the store refused because the namespace is suspended
 /// (`datumesh_store::Error::NamespaceSuspended`: a write refusal, not a failure to reach the
 /// other mesh). It is `not_covered` with this `error` (9.9, 5.5), never an `error` envelope
-/// (since 0.3.0, spec-0.5.0).
+/// (since 0.2.2, spec-0.5.0).
 pub(crate) const NAMESPACE_SUSPENDED: ErrorCode = ErrorCode::NamespaceSuspended;
 
 /// A store's refusal of an import `op` as a cross-mesh failure: a suspended namespace is

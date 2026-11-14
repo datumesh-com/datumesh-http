@@ -11,7 +11,7 @@
 //!   (its callees as bound at `bound`) and published (`put_descriptor`, `bind_name` from
 //!   `bound`) unless the name is already bound to that function; its cells are evaluated on
 //!   demand by the mesh;
-//! * a class (since 0.3.0, spec-0.5.0, 16.2): `{"class": "<ns>/<name>", "descriptor": {...as
+//! * a class (since 0.2.2, spec-0.5.0, 16.2): `{"class": "<ns>/<name>", "descriptor": {...as
 //!   written...}, "bound": "<instant>"}`: defined with the formula crate's `define_class` (core's
 //!   rules: the class is under one of the mesh's own namespaces, else `E_CLASS_OWNER`; the method
 //!   functions are those bound as of `bound`), `put_class`, and `bind_class` from `bound` unless the
@@ -44,7 +44,7 @@ use datumesh_store::Store;
 pub struct Published {
     /// Functions newly bound (stored and formula).
     pub functions: usize,
-    /// Classes newly bound (since 0.3.0).
+    /// Classes newly bound (since 0.2.2).
     pub classes: usize,
     /// Cell lines read.
     pub cells: usize,
@@ -80,7 +80,7 @@ fn s(v: &str) -> Value {
 }
 
 /// A store as the callees of a definition: a name's binding as of an instant, with its
-/// descriptor; a class name's binding (since 0.3.0); the classes and functions known by hash.
+/// descriptor; a class name's binding (since 0.2.2); the classes and functions known by hash.
 struct StoreCallees<'a, S: Store + ?Sized>(&'a S);
 
 impl<S: Store + ?Sized> datumesh_formula::definition::Callees for StoreCallees<'_, S> {
@@ -135,7 +135,7 @@ pub fn publish_stored<S: Store + ?Sized>(
 
 /// As [`publish_stored`], for a mesh that owns the namespaces (hosts) `owned` (`Config::namespaces`):
 /// a class line is accepted for a class under one of them, and refused with `E_CLASS_OWNER` (in the
-/// [`PublishError::detail`]) under any other. Since 0.3.0.
+/// [`PublishError::detail`]) under any other. Since 0.2.2.
 pub fn publish_stored_in<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,

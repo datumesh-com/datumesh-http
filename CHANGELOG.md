@@ -1,10 +1,64 @@
 # Changelog
 
-## Unreleased (branch step-1.5-domain-validation; no release)
+## 0.2.2 (unreleased; no release yet)
 
-Domain validation (step 1.5). Needs `datumesh-store` with the namespace checks (a store release
-after 0.4.0, not yet made: this branch is built against the store's branch
-`step-1.5-namespace-validation`; `Cargo.toml` still says 0.4.0). Additions only.
+For spec-0.5.0 (`c8896ad`): classes, describe, `resolved`, `E_NAMESPACE_SUSPENDED`; with the
+domain validation (step 1.5) and the `E_FOREIGN_UNAVAILABLE` fetch codes of this branch.
+On `datumesh-core` 0.3.8, `datumesh-store` 0.4.1 (the namespace checks and classes),
+`datumesh-engine` 0.4.2 and `datumesh-formula` 0.3.0 (all four unpublished: the branch is built
+against local patches; `Cargo.toml` names the minima). **Additions only** (`cargo public-api`
+against 0.2.1: 59 lines added, none removed or changed: `API-CHANGES-0.2.2.md`), so a patch
+release; none of formula's types is in the public API.
+
+- **Classes in the mesh (16).** `publish-stored` takes a class line, `{"class": "<ns>/<name>",
+  "descriptor": {...}, "bound": "<instant>"}`: defined with formula's `define_class` (the
+  owner rule: the class is under one of the mesh's own namespaces, else `E_CLASS_OWNER`),
+  then `put_class` and `bind_class` from `bound` (the methods are bound with it), unless the
+  name is already bound to that class. Function lines take `classes`, `default` and
+  `key_normalisation` in their signatures; the order is method functions, classes, the
+  formulas that dispatch. `publish::publish_stored_in(store, key, host, owned, path)`;
+  `Published::classes`. `vectors::import` imports a vector world's classes (and skips
+  `invalid/formula-eval-class-dispatch-rebound`, which no store can load).
+- **`/bindings` (9.7)** answers a class name with `class_hash` in place of `fn_hash`; a method
+  `N/m` answers as a function.
+- **Requests by call form (5.8, 16.3, 16.7).** At `/cell` and `/cells` a call is a method call
+  (`N(keys).m(args)`, the same cell and receipt as the plain read), takes unquoted values by
+  the position's type, labels (`N[label]`, through the class's `lookup`), the `asof` default
+  (the call's, or the mesh's now, written in the cell URI) and bare names through the alias
+  map. `call::Bindings` gains the provided methods `class`, `lookup` and `aliases_tx`;
+  `Target::resolved`. A key not canonical under its rule is `bad_request`
+  `E_KEY_NORMALISATION`, a malformed encoding `E_KEY_ENCODING` (`envelope::CALL_CODES`;
+  `BAD_REQUEST_CODES` stays the 5.4 set).
+- **`resolved` (5.5)** is in the envelope of every outcome that may carry it (`ok`, `stale`,
+  `not_covered`, `unlicensed`, `payment_required`, `error`) whenever something was resolved
+  (`envelope::with_resolved`); a plain or pinned call of a full name and a cell URI have none.
+  An `@alias` call or a pinned alias now carries it. `aliases_tx` is absent on the mesh (its
+  alias map has no snapshot).
+- **describe (16.8, 9.6).** `GET /describe/{id}`, listed in the mesh document: `{id}` is a class
+  name (`describe-class`: the flattened descriptor and the method table, `args` and `returns`
+  from the method functions; no `description`, a function descriptor has none), an object's key
+  encoding (`describe-object`, the keys checked against the class), an object id, a cell id (the
+  object whose method cell it is) or a short id; never a class hash (404). Known objects are
+  those of a class bound now that have a recorded cell of one of its stored methods (the
+  store's slice reads with every argument open), kept in an in-memory index built on the first
+  describe or short-id request and again when a stored version is announced
+  (`Mesh::stored_version_added`), when a class is heard of, or after 30 s. A short id matching
+  more than one object or cell is `bad_request` `E_SHORT_ID_AMBIGUOUS` (400). `Mesh::describe`.
+  **Limits:** the store cannot list its classes or report its latest transaction time, so the
+  index covers the classes the mesh has heard of (a stored version announced under them, a
+  request or describe that resolved them, the classes of the configured aliases) and is
+  rebuilt on a timer for versions another process adds; a class published by another process
+  and never named is not covered until then. `same_as` is not emitted. `/cell/{id}` by cell id
+  is not served.
+- **`E_NAMESPACE_SUSPENDED` across meshes (9.9, 5.5).** A cross-mesh import the store refuses
+  because the namespace is suspended is `not_covered` with that `error` (404, never an `error`
+  envelope); `is_error_code` refuses it, the class codes and `CALL_CODES`.
+- **Faults.** `E_FORMULA_KEY` and `E_FORMULA_DISPATCH_KEY` are `not_covered` with `fault`
+  (engine 0.4.2; a guard test). `super` reads go through the engine's pinned reads
+  (`foreign::Through` forwards `Inputs::read_pinned`).
+- **`shadows` (16.9)** is never emitted: the test mesh has no reference classes.
+
+Domain validation (step 1.5), as before:
 
 - **`domain` module.** `Validator::validate(store, host, now)` fetches
   `https://<host>/.well-known/datumesh.json` and checks it with core 0.3.7's rules
@@ -19,7 +73,7 @@ after 0.4.0, not yet made: this branch is built against the store's branch
   such a receipt, `bind_name` under the host (so `define`, `publish-stored` and the import of a
   foreign host's bindings and cells too). Reads, verification, the key document the mesh serves,
   and receipts already stored are not affected. A cross-mesh import the store refuses is
-  `E_INPUT_UNAVAILABLE` (the closest existing code; a spec code for it is for spec-0.5.0).
+  `not_covered` with `E_NAMESPACE_SUSPENDED` (spec-0.5.0).
 - **`datumesh-mesh validate <host> | --all`**: one JSON line per host (`host`, `outcome`
   `valid`/`invalid`/`skipped`, `failures`, `suspended`, `suspended_now`, `reinstated`,
   `rotated`, and for an invalid host `code` and `detail`); exit 1 when any host is invalid.
@@ -34,10 +88,8 @@ after 0.4.0, not yet made: this branch is built against the store's branch
   information" is `dns`. Changed: `Client::key_document` of an unreachable host was
   `E_KEY_UNAVAILABLE`; `Client` methods that were `E_INPUT_UNAVAILABLE` for it are
   `E_FOREIGN_UNAVAILABLE` (the error's `foreign_detail()` says why).
-- **A suspended namespace across meshes** stays `E_INPUT_UNAVAILABLE`, now behind one constant,
-  `foreign::NAMESPACE_SUSPENDED`: core 0.3.7's closed `ErrorCode` cannot express
-  `E_NAMESPACE_SUSPENDED` (a write refusal, spec-0.5.0); core's spec-0.5.0 release changes that
-  one line.
+- **A suspended namespace across meshes** is `E_NAMESPACE_SUSPENDED` (see above; it was
+  `E_INPUT_UNAVAILABLE` behind `foreign::NAMESPACE_SUSPENDED` until core 0.3.8).
 - **Weekly re-check**: `deploy/validate.sh`, a cron entry (Sundays 04:30 UTC) installed by
   `deploy/install_cron.sh`.
 

@@ -56,11 +56,20 @@ impl core::clone::Clone for datumesh_http::call::Bound
 pub fn datumesh_http::call::Bound::clone(&self) -> Self
 impl core::fmt::Debug for datumesh_http::call::Bound
 pub fn datumesh_http::call::Bound::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datumesh_http::call::BoundClass
+pub datumesh_http::call::BoundClass::class_hash: alloc::string::String
+pub datumesh_http::call::BoundClass::descriptor: alloc::rcs::arc::Arc<datumesh_core::class::ClassDescriptor>
+pub datumesh_http::call::BoundClass::since: alloc::string::String
+impl core::clone::Clone for datumesh_http::call::BoundClass
+pub fn datumesh_http::call::BoundClass::clone(&self) -> Self
+impl core::fmt::Debug for datumesh_http::call::BoundClass
+pub fn datumesh_http::call::BoundClass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datumesh_http::call::Target
 pub datumesh_http::call::Target::bound: alloc::rcs::arc::Arc<datumesh_http::call::Bound>
 pub datumesh_http::call::Target::cell: datumesh_core::model::Cell
 pub datumesh_http::call::Target::pin: core::option::Option<alloc::string::String>
 pub datumesh_http::call::Target::reference: datumesh_core::model::CellRef
+pub datumesh_http::call::Target::resolved: core::option::Option<datumesh_core::envelope::Resolved>
 pub datumesh_http::call::Target::uri: alloc::string::String
 impl datumesh_http::call::Target
 pub fn datumesh_http::call::Target::asof(&self) -> core::option::Option<&str>
@@ -76,8 +85,11 @@ impl core::fmt::Debug for datumesh_http::call::Target
 pub fn datumesh_http::call::Target::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait datumesh_http::call::Bindings
 pub fn datumesh_http::call::Bindings::alias(&self, &str) -> core::option::Option<alloc::string::String>
+pub fn datumesh_http::call::Bindings::aliases_tx(&self) -> core::option::Option<alloc::string::String>
 pub fn datumesh_http::call::Bindings::binding(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::cached(&self, &str, &str) -> core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Target>>
+pub fn datumesh_http::call::Bindings::class(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::BoundClass>>, datumesh_core::error::ErrorCode>
+pub fn datumesh_http::call::Bindings::lookup(&self, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::pinned(&self, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::remember(&self, &str, &alloc::rcs::arc::Arc<datumesh_http::call::Target>)
 pub fn datumesh_http::call::format_pinned(&datumesh_core::model::Reference) -> alloc::string::String
@@ -405,6 +417,7 @@ impl core::fmt::Debug for datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::Reply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::envelope::Reply
 pub const datumesh_http::envelope::BAD_REQUEST_CODES: &[datumesh_core::error::ErrorCode]
+pub const datumesh_http::envelope::CALL_CODES: &[datumesh_core::error::ErrorCode]
 pub const datumesh_http::envelope::JSON: &str
 pub fn datumesh_http::envelope::answer_reply(&datumesh_core::answer::Answer, datumesh_http::envelope::Cache) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::bad_request(datumesh_core::error::ErrorCode) -> alloc::vec::Vec<u8>
@@ -427,6 +440,7 @@ pub fn datumesh_http::envelope::trust_label_of(&datumesh_core::receipt::Receipt,
 pub fn datumesh_http::envelope::trust_of(&datumesh_core::receipt::Receipt, &str) -> datumesh_core::envelope::Trust
 pub fn datumesh_http::envelope::unlicensed() -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::with_fn_hash(datumesh_core::answer::Answer, core::option::Option<&str>) -> datumesh_core::answer::Answer
+pub fn datumesh_http::envelope::with_resolved(datumesh_http::envelope::Reply, &datumesh_core::envelope::Resolved) -> datumesh_http::envelope::Reply
 pub mod datumesh_http::foreign
 pub struct datumesh_http::foreign::CrossMesh
 impl datumesh_http::foreign::CrossMesh
@@ -499,6 +513,7 @@ impl core::marker::StructuralPartialEq for datumesh_http::publish::PublishError
 pub datumesh_http::publish::Published::blob_bytes: u64
 pub datumesh_http::publish::Published::blobs: usize
 pub datumesh_http::publish::Published::cells: usize
+pub datumesh_http::publish::Published::classes: usize
 pub datumesh_http::publish::Published::functions: usize
 pub datumesh_http::publish::Published::receipts: usize
 pub datumesh_http::publish::Published::versions: usize
@@ -513,6 +528,7 @@ impl core::fmt::Debug for datumesh_http::publish::Published
 pub fn datumesh_http::publish::Published::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::publish::Published
 pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_in<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::receipt_json(&datumesh_core::receipt::Receipt) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::slice
 pub const datumesh_http::slice::ARROW: &str
@@ -570,6 +586,7 @@ pub fn datumesh_http::Mesh::cell(&self, &str, core::option::Option<&datumesh_htt
 pub fn datumesh_http::Mesh::cells(&self, &[alloc::string::String], core::option::Option<&datumesh_http::apikeys::Principal>) -> alloc::vec::Vec<datumesh_http::envelope::Reply>
 pub fn datumesh_http::Mesh::clear_memo(&self)
 pub fn datumesh_http::Mesh::config(&self) -> &datumesh_http::config::Config
+pub fn datumesh_http::Mesh::describe(&self, &str) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::Mesh::engine(&self) -> &alloc::rcs::arc::Arc<datumesh_engine::engine::Engine>
 pub fn datumesh_http::Mesh::foreign(&self) -> &datumesh_http::foreign::Foreign
 pub fn datumesh_http::Mesh::host_of(&str) -> &str
