@@ -2,7 +2,7 @@
 //! document (`datumesh serve` advertising `http://127.0.0.1:<port>`). `https://` for any
 //! host; `http://` only for a mesh whose host is unrooted (under `.invalid`, SPEC 2.5) and
 //! only on the loopback hosts; an optional port; no path, query, fragment or trailing slash;
-//! a typed error when the mesh is built. Unset, the mesh document is 0.1.2's, byte for byte.
+//! a typed error when the mesh is built. Unset, the mesh document is 0.1.2's, byte for byte, plus the `describe` endpoint of 0.3.0.
 //! The key document and `host` never change.
 
 mod common;
@@ -61,12 +61,14 @@ fn refused_for(db: &TestDb, host: &str, base: &str) -> BaseUrlError {
 const LOOPBACK: [&str; 5] =
     ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"];
 
-/// The mesh document of 0.1.2 for `A`, byte for byte.
-const DOC_0_1_2: &str = concat!(
+/// The mesh document of 0.3.0 for `A`, byte for byte: 0.1.2's, with the `describe` endpoint
+/// (spec-0.5.0, 9.6; `describe` sorts before `descriptor`).
+const DOC_0_3_0: &str = concat!(
     r#"{"bindings":"https://mesh-a.example/bindings","endpoints":{"#,
     r#""blob":"https://mesh-a.example/blob/{sha256}","#,
     r#""cell":"https://mesh-a.example/cell/{cell}","#,
     r#""cells":"https://mesh-a.example/cells","#,
+    r#""describe":"https://mesh-a.example/describe/{id}","#,
     r#""descriptor":"https://mesh-a.example/descriptor/{hash}","#,
     r#""explain":"https://mesh-a.example/explain/{cell}","#,
     r#""find":"https://mesh-a.example/find","#,
@@ -85,8 +87,8 @@ async fn default_unchanged() {
     let a = Node::start(A, |_| {}).await;
     let md = a.get("/.well-known/datumesh-mesh.json").await;
     assert_eq!(md.status, 200);
-    assert_eq!(md.text(), DOC_0_1_2);
-    assert_eq!(a.mesh.mesh_document(), DOC_0_1_2.as_bytes());
+    assert_eq!(md.text(), DOC_0_3_0);
+    assert_eq!(a.mesh.mesh_document(), DOC_0_3_0.as_bytes());
     assert_eq!(a.mesh.config().origin(), format!("https://{A}"));
     assert_eq!(a.mesh.config().mesh_document_base(), format!("https://{A}"));
     // From the environment: unset is unset.
@@ -123,7 +125,7 @@ async fn unrooted_loopback_http_accepted() {
     .await;
     let md = a.get("/.well-known/datumesh-mesh.json").await;
     assert_eq!(md.status, 200);
-    let expected = DOC_0_1_2
+    let expected = DOC_0_3_0
         .replace(&format!("https://{A}/"), &format!("{base}/"))
         .replace(&format!(r#""host":"{A}""#), &format!(r#""host":"{U}""#));
     assert_eq!(md.text(), expected);
