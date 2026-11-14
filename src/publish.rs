@@ -16,8 +16,7 @@
 //!   rules: the class is under one of the mesh's own namespaces, else `E_CLASS_OWNER`; the method
 //!   functions are those bound as of `bound`), `put_class`, and `bind_class` from `bound` unless the
 //!   name is already bound to that class hash. Method functions come first in the file (or in an
-//!   earlier one), `bound` later than theirs. STUB (0.3.0 tests first): [`publish_stored_in`] stops
-//!   at a class line.
+//!   earlier one), `bound` later than theirs.
 //! * a cell: `{"cell": {"fn": "<ns>/<name>", "args": {<name>: <typed scalar>}}, "value": <typed
 //!   scalar> or {"blob": "<file>", "media_type": "<type>"}, "tx", "asof", "issued"?, "licence",
 //!   "summary"}`: a blob's file (relative to the JSON lines file) is put with `put_blob` and the
@@ -35,7 +34,8 @@ use std::io::BufRead;
 use std::path::Path;
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Arg, Args, Cell, FunctionDescriptor, ReceiptBuilder, Scalar, SigningKey, Type};
+use datumesh_core::{Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, ReceiptBuilder, Scalar, SigningKey, Type};
+use datumesh_formula::definition::ClassCallee;
 use datumesh_store::Store;
 
 /// What a run put.
@@ -80,7 +80,7 @@ fn s(v: &str) -> Value {
 }
 
 /// A store as the callees of a definition: a name's binding as of an instant, with its
-/// descriptor.
+/// descriptor; a class name's binding (since 0.3.0); the classes and functions known by hash.
 struct StoreCallees<'a, S: Store + ?Sized>(&'a S);
 
 impl<S: Store + ?Sized> datumesh_formula::definition::Callees for StoreCallees<'_, S> {
@@ -89,6 +89,27 @@ impl<S: Store + ?Sized> datumesh_formula::definition::Callees for StoreCallees<'
         let bytes = self.0.descriptor(&b.fn_hash).ok_or_else(|| format!("descriptor {} is not stored", b.fn_hash))?;
         let descriptor = json::parse(&bytes).map_err(|e| e.to_string())?;
         Ok(Some(datumesh_formula::definition::Callee { fn_hash: b.fn_hash, start: b.tx, descriptor }))
+    }
+
+    fn bound_class(&self, name: &str, at: &str) -> Result<Option<ClassCallee>, String> {
+        let Some(b) = self.0.resolve_class_binding(name, at).map_err(|e| e.to_string())? else { return Ok(None) };
+        let bytes = self
+            .0
+            .class(&b.class_hash)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("class {} is not stored", b.class_hash))?;
+        let descriptor = ClassDescriptor::from_json(&bytes).map_err(|e| e.to_string())?;
+        Ok(Some(ClassCallee { class_hash: b.class_hash, start: b.tx, descriptor }))
+    }
+
+    fn class_descriptor(&self, class_hash: &str) -> Result<Option<ClassDescriptor>, String> {
+        let Some(bytes) = self.0.class(class_hash).map_err(|e| e.to_string())? else { return Ok(None) };
+        ClassDescriptor::from_json(&bytes).map(Some).map_err(|e| e.to_string())
+    }
+
+    fn function_descriptor(&self, fn_hash: &str) -> Result<Option<Value>, String> {
+        let Some(bytes) = self.0.descriptor(fn_hash) else { return Ok(None) };
+        json::parse(&bytes).map(Some).map_err(|e| e.to_string())
     }
 }
 
@@ -122,7 +143,6 @@ pub fn publish_stored_in<S: Store + ?Sized>(
     owned: &[String],
     path: &Path,
 ) -> Result<Published, PublishError> {
-    let _ = owned;
     let file =
         std::fs::File::open(path).map_err(|e| PublishError { line: 0, detail: format!("{}: {e}", path.display()) })?;
     let base = path.parent().unwrap_or(Path::new("."));
@@ -152,8 +172,35 @@ pub fn publish_stored_in<S: Store + ?Sized>(
             continue;
         }
         let v = json::parse(line.as_bytes()).map_err(|e| err(e.to_string()))?;
-        if v.get("class").is_some() {
-            todo!("STUB (0.3.0 tests first): publish-stored class lines (CONTRACT-http-0.3.0-classes.md, item 2)");
+        if let Some(name) = v.get("class").and_then(Value::as_str) {
+            let descriptor = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
+            let bound = v.get("bound").and_then(Value::as_str).ok_or_else(|| err("a class without bound".into()))?;
+            // 16.2 step 1: the class is under one of the mesh's own namespaces. Core checks that the
+            // class's namespace is the definer's; a host the mesh does not own is defined by the mesh's
+            // host, which no class name under it has, so core answers E_CLASS_OWNER.
+            let host_of_name = name.split('/').next().unwrap_or("");
+            let definer = if owned.iter().any(|o| o == host_of_name) {
+                name.rsplit_once('/').map(|(ns, _)| ns).unwrap_or("")
+            } else {
+                host
+            };
+            let def = datumesh_formula::definition::define_class(
+                name,
+                &descriptor.to_jcs(),
+                definer,
+                &StoreCallees(store),
+                bound,
+            )
+            .map_err(|e| err(format!("define {name}: {e}")))?;
+            let bound_hash = store.put_class(&def.bytes).map_err(|e| err(e.to_string()))?;
+            match store.resolve_class(name, "9999-12-31T23:59:59.999999Z").map_err(|e| err(e.to_string()))? {
+                Some(h) if h == bound_hash => {}
+                _ => {
+                    store.bind_class(name, &bound_hash, bound).map_err(|e| err(format!("bind {name}: {e}")))?;
+                    out.classes += 1;
+                }
+            }
+            continue;
         }
         if let Some(name) = v.get("function").and_then(Value::as_str) {
             let sig = v.get("signature").ok_or_else(|| err("a function without a signature".into()))?;

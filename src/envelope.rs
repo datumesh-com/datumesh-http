@@ -212,7 +212,14 @@ pub fn is_request_code(code: ErrorCode) -> bool {
 /// Whether `code` may be an `error` envelope's `error`: any code of 10.2 but `E_ENVELOPE` and
 /// the request codes `E_JOB_UNKNOWN`, `E_SLICE_AT_CELL` and `E_NAME_UNBOUND`.
 pub fn is_error_code(code: ErrorCode) -> bool {
-    !matches!(code, ErrorCode::Envelope | ErrorCode::JobUnknown | ErrorCode::SliceAtCell | ErrorCode::NameUnbound)
+    !matches!(
+        code,
+        ErrorCode::Envelope
+            | ErrorCode::JobUnknown
+            | ErrorCode::SliceAtCell
+            | ErrorCode::NameUnbound
+            | ErrorCode::NamespaceSuspended
+    )
 }
 
 /// The HTTP status of an `error` envelope with `code`: 503 when something the mesh depends on

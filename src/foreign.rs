@@ -70,10 +70,9 @@ type Version = (Vec<u8>, Box<Receipt>);
 
 /// The code of a cross-mesh import the store refused because the namespace is suspended
 /// (`datumesh_store::Error::NamespaceSuspended`: a write refusal, not a failure to reach the
-/// other mesh). core 0.3.7's `ErrorCode` is closed and cannot express `E_NAMESPACE_SUSPENDED`
-/// (spec-0.5.0), so it is `E_INPUT_UNAVAILABLE` for now. **core's spec-0.5.0 release switches
-/// this one line to `ErrorCode::NamespaceSuspended`.**
-pub(crate) const NAMESPACE_SUSPENDED: ErrorCode = ErrorCode::InputUnavailable;
+/// other mesh). It is `not_covered` with this `error` (9.9, 5.5), never an `error` envelope
+/// (since 0.3.0, spec-0.5.0).
+pub(crate) const NAMESPACE_SUSPENDED: ErrorCode = ErrorCode::NamespaceSuspended;
 
 /// A store's refusal of an import `op` as a cross-mesh failure: a suspended namespace is
 /// [`NAMESPACE_SUSPENDED`], anything else `E_INPUT_UNAVAILABLE`.
@@ -728,6 +727,12 @@ impl Inputs for Through<'_> {
     fn read_versions(&mut self, fn_name: &str, args: &Args, from: &str, to: &str) -> Result<Vec<Input>, EvalError> {
         self.pre(fn_name, args, None)?;
         self.inner.read_versions(fn_name, args, from, to)
+    }
+
+    fn read_pinned(&mut self, fn_name: &str, fn_hash: &str, args: &Args) -> Result<Input, EvalError> {
+        // A pinned read (`super`, 16.3) resolves no name: nothing to fetch by name first. The cell it
+        // reads is the engine's own (a foreign mesh's cell is read through its own namespace).
+        self.inner.read_pinned(fn_name, fn_hash, args)
     }
 
     fn binding(&mut self, fn_name: &str, at: Option<&str>) -> Result<Option<FnBinding>, EvalError> {

@@ -152,6 +152,9 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     let mut versions: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new(); // cell id -> (tx, hash, fn_hash)
     let (mut receipts, mut refused, mut manifests) = (0usize, Vec::new(), 0usize);
     let mut blobs = 0usize;
+    // Classes a vector world defines: name -> (bound, canonical descriptor bytes); a vector that cannot
+    // be loaded through a store (its class names a method hash the world lacks, by design) is skipped.
+    let mut classes: BTreeMap<String, (String, Vec<u8>)> = BTreeMap::new();
     let put_descriptor = |d: &Value, descriptors: &mut BTreeMap<String, String>| -> Option<String> {
         let fd = FunctionDescriptor::from_value(d).ok()?;
         let h = store.put_descriptor(&fd.canonical()).ok()?;
@@ -203,6 +206,7 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
                 }
             }
             "formula-eval" | "excel" => {
+                let rebound = id == "invalid/formula-eval-class-dispatch-rebound";
                 // Every vector's functions (so a pinned request evaluates it), bound by name
                 // from the valid ones only; an excel vector's function is its printed body
                 // under its signature (SPEC 11), known by hash only.
@@ -231,6 +235,13 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
                         to.entry(name.clone()).or_default().push((b.to_string(), h));
                     }
                 }
+                if !rebound {
+                    for (name, c) in w.get("classes").and_then(Value::as_object).unwrap_or(&[]) {
+                        if let (Some(d), Some(b)) = (c.get("descriptor"), c.get("bound").and_then(Value::as_str)) {
+                            classes.entry(name.clone()).or_insert_with(|| (b.to_string(), d.to_jcs()));
+                        }
+                    }
+                }
                 if let Some(Value::Array(rs)) = w.get("receipts") {
                     for r in rs {
                         put_receipt(&r.to_jcs(), &format!("{id} world"), &mut versions);
@@ -245,6 +256,20 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     // vectors bind to several functions keeps the first (one name means one function at a
     // time) and the others are reported.
     let (mut bound, mut skipped) = (0usize, Vec::new());
+    // A class's methods are bound by `bind_class` (in one transaction with the class, at the same
+    // instant a vector binds the function): leave those names to it.
+    let json_of = |b: &[u8]| json::parse(b).unwrap_or(Value::Null);
+    let mut by_class: BTreeSet<(String, String)> = BTreeSet::new();
+    for (cname, (_, bytes)) in &classes {
+        for (m, h) in json_of(bytes).get("methods").and_then(Value::as_object).unwrap_or(&[]) {
+            if let Some(h) = h.as_str() {
+                by_class.insert((format!("{cname}/{m}"), h.to_string()));
+            }
+        }
+    }
+    let method_names: BTreeSet<&String> = by_class.iter().map(|(n, _)| n).collect();
+    bindings.retain(|n, _| !method_names.contains(n));
+    invalid_bindings.retain(|n, _| !method_names.contains(n));
     for (name, cs) in invalid_bindings {
         bindings.entry(name).or_insert(cs);
     }
@@ -264,6 +289,32 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
             _ => skipped.push(format!("{name}: already bound otherwise")),
         }
     }
+    // Classes, after the functions: `put_class` (a parent first: retried until no more are stored) and
+    // `bind_class` from `bound` (it binds the methods too).
+    let mut classes_bound = 0usize;
+    let mut pending: Vec<(String, String, Vec<u8>)> = classes.into_iter().map(|(n, (b, d))| (n, b, d)).collect();
+    loop {
+        let before = pending.len();
+        pending.retain(|(name, since, bytes)| {
+            let Ok(h) = store.put_class(bytes) else { return true };
+            match store.resolve_class(name, "9999-12-31T23:59:59.999999Z") {
+                Ok(Some(b)) if b == h => return false,
+                Ok(None) => {}
+                _ => return true,
+            }
+            match store.bind_class(name, &h, since) {
+                Ok(()) => {
+                    classes_bound += 1;
+                    false
+                }
+                Err(_) => true,
+            }
+        });
+        if pending.is_empty() || pending.len() == before {
+            break;
+        }
+    }
+    skipped.extend(pending.iter().map(|(n, _, _)| format!("{n}: class not stored or bound")));
     // Versions of stored functions' cells, in tx order (a second receipt at one tx is not a
     // version).
     let mut stored_versions = 0usize;
@@ -286,6 +337,7 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     Value::Object(vec![
         ("bindings".into(), num(bound)),
         ("blobs".into(), num(blobs)),
+        ("classes".into(), num(classes_bound)),
         ("bindings_skipped".into(), Value::Array(skipped.iter().map(|x| s(x)).collect())),
         ("descriptors".into(), num(descriptors.len())),
         ("manifests".into(), num(manifests)),

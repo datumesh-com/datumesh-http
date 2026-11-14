@@ -83,13 +83,15 @@ fn main() {
             let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
             let key_file = std::env::var("DATUMESH_KEY_FILE").unwrap_or_else(|_| fail("DATUMESH_KEY_FILE is not set"));
             let key = read_key(&key_file);
+            // The mesh's own namespaces (DATUMESH_NAMESPACES): the owners of the classes it defines.
+            let owned = Config::from_env().unwrap_or_else(|e| fail(e)).namespaces;
             let s = store(4);
             let t = std::time::Instant::now();
-            let p = datumesh_http::publish::publish_stored(&s, &key, &host, std::path::Path::new(file))
+            let p = datumesh_http::publish::publish_stored_in(&s, &key, &host, &owned, std::path::Path::new(file))
                 .unwrap_or_else(|e| fail(e));
             println!(
-                "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",
-                p.blob_bytes, p.blobs, p.cells, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
+                "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"classes\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",
+                p.blob_bytes, p.blobs, p.cells, p.classes, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
             );
         }
         Some("import-vectors") => {

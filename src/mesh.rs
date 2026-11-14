@@ -856,6 +856,13 @@ impl Inner {
     /// it served for the cell, when it has one that answers the request; else `error`.
     fn unavailable(&self, target: &Target, e: ForeignError) -> Reply {
         tracing::info!(target: "datumesh_http", code = e.code.as_str(), detail = %e.detail, "unavailable");
+        // A suspended namespace (9.9, 5.5): the import is refused, so `not_covered` with its error,
+        // and not the last receipt served (a cell served before is served as before, not imported).
+        if e.code == crate::foreign::NAMESPACE_SUSPENDED {
+            if let Ok(a) = datumesh_core::Answer::not_covered().with_error(ErrorCode::NamespaceSuspended) {
+                return envelope::answer_reply(&envelope::with_fn_hash(a, Some(&target.bound.fn_hash)), Cache::NoStore);
+            }
+        }
         let lg = self.last_good.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(g) = lg.get(&last_good_key(target)) {
             if target.asof().is_none_or(|a| g.info.asof.as_str() <= a) {

@@ -1109,17 +1109,24 @@ async fn bindings(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: R
                 if !inner.config.owns(crate::foreign::host_of(&n)) {
                     continue;
                 }
-                match inner.store.resolve_binding(&n, &at) {
-                    Ok(Some(b)) => out.push((
-                        n,
-                        Value::Object(vec![
-                            ("fn_hash".into(), Value::String(b.fn_hash)),
-                            ("since".into(), Value::String(b.tx)),
-                        ]),
-                    )),
-                    Ok(None) => {}
+                // A class name is answered with its class hash (9.7, spec-0.5.0); any other name
+                // with the function it means.
+                let found = match inner.store.resolve_class_binding(&n, &at) {
+                    Ok(Some(c)) => ("class_hash", c.class_hash, c.tx),
+                    Ok(None) => match inner.store.resolve_binding(&n, &at) {
+                        Ok(Some(b)) => ("fn_hash", b.fn_hash, b.tx),
+                        Ok(None) => continue,
+                        Err(_) => return None,
+                    },
                     Err(_) => return None,
-                }
+                };
+                out.push((
+                    n,
+                    Value::Object(vec![
+                        (found.0.into(), Value::String(found.1)),
+                        ("since".into(), Value::String(found.2)),
+                    ]),
+                ));
             }
             Some(Value::Object(vec![("asof".into(), Value::String(at)), ("bindings".into(), Value::Object(out))]))
         })
