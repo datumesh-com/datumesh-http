@@ -171,6 +171,7 @@ impl MeshBuilder {
             latest: Latest::new(),
             targets: Targets::new(),
             slices: Mutex::new(Vec::new()),
+            known: Mutex::new(crate::describe::Index::default()),
             started: Instant::now(),
             config,
         };
@@ -215,6 +216,8 @@ pub(crate) struct Inner {
     targets: Targets,
     #[allow(clippy::type_complexity)]
     pub(crate) slices: Mutex<Vec<(String, String, Arc<Vec<datumesh_store::SliceValue>>)>>,
+    /// The index of the objects the mesh knows (describe, short ids).
+    pub(crate) known: Mutex<crate::describe::Index>,
     pub(crate) started: Instant,
 }
 
@@ -383,16 +386,11 @@ impl Bindings for Inner {
     }
 
     fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
-        let store_failed = |e: datumesh_store::Error| {
-            tracing::warn!(target: "datumesh_http", error = %e, "resolve_class_binding");
-            ErrorCode::InputUnavailable
-        };
-        let Some(b) = self.store.resolve_class_binding(name, asof).map_err(store_failed)? else { return Ok(None) };
-        let Some(bytes) = self.store.class(&b.class_hash).map_err(store_failed)? else {
-            return Err(ErrorCode::InputUnavailable);
-        };
-        let d = datumesh_core::ClassDescriptor::from_json(&bytes).map_err(|_| ErrorCode::InputUnavailable)?;
-        Ok(Some(Arc::new(call::BoundClass { class_hash: b.class_hash, since: b.tx, descriptor: Arc::new(d) })))
+        let c = self.class_binding(name, asof)?;
+        if c.is_some() {
+            self.hear_of_class(name);
+        }
+        Ok(c)
     }
 
     /// The mesh's configured alias map has no snapshot.
@@ -643,6 +641,7 @@ impl Inner {
         self.engine.stored_version_added(cell_id);
         self.latest.forget(cell_id);
         self.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.known.lock().unwrap_or_else(|p| p.into_inner()).announce(cell_id);
     }
 
     /// The receipt's hash, asof, trust and `ok` envelope (cached by its bytes).
@@ -1082,14 +1081,13 @@ impl Mesh {
         call::resolve(rest, &now, &self.inner.config.aliases, &*self.inner, slice)
     }
 
-    /// The describe answer (SPEC 16.8, 9.6) for `id`: a class name, a class hash, an object's key
-    /// encoding, an object id or a short id (12 hex digits). A class or an object: the body is a
+    /// The describe answer (SPEC 16.8, 9.6) for `id`: a class name, an object's key encoding, an
+    /// object id, a cell id or a short id (12 hex digits). A class or an object: the body is a
     /// `describe-class` or `describe-object` document, `200`; an id the mesh does not know, `404`;
-    /// a short id naming more than one object the mesh knows, `400` with `E_SHORT_ID_AMBIGUOUS`.
-    /// Blocking. Since 0.3.0. STUB (0.3.0 tests first).
+    /// a short id naming more than one object or cell the mesh knows, `400` with
+    /// `E_SHORT_ID_AMBIGUOUS`. A class hash is not an id (9.6). Blocking. Since 0.3.0.
     pub fn describe(&self, id: &str) -> Reply {
-        let _ = id;
-        todo!("STUB (0.3.0 tests first): describe (CONTRACT-http-0.3.0-classes.md, items 5 and 6)")
+        self.inner.describe(id)
     }
 
     /// Verifies a receipt (SPEC 10.1) with the mesh's keys; at level `recomputed` with the
@@ -1158,6 +1156,7 @@ impl Mesh {
             ("blob", format!("{o}/blob/{{sha256}}")),
             ("cell", format!("{o}/cell/{{cell}}")),
             ("cells", format!("{o}/cells")),
+            ("describe", format!("{o}/describe/{{id}}")),
             ("descriptor", format!("{o}/descriptor/{{hash}}")),
             ("explain", format!("{o}/explain/{{cell}}")),
             ("find", format!("{o}/find")),
@@ -1205,6 +1204,23 @@ impl Mesh {
     /// How long the mesh has run.
     pub fn uptime(&self) -> Duration {
         self.inner.started.elapsed()
+    }
+}
+
+impl Inner {
+    /// The class `name` is bound to as of `asof`, with its flattened descriptor (not noted for the
+    /// describe index: see [`Bindings::class`]).
+    pub(crate) fn class_binding(&self, name: &str, asof: &str) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
+        let store_failed = |e: datumesh_store::Error| {
+            tracing::warn!(target: "datumesh_http", error = %e, "resolve_class_binding");
+            ErrorCode::InputUnavailable
+        };
+        let Some(b) = self.store.resolve_class_binding(name, asof).map_err(store_failed)? else { return Ok(None) };
+        let Some(bytes) = self.store.class(&b.class_hash).map_err(store_failed)? else {
+            return Err(ErrorCode::InputUnavailable);
+        };
+        let d = datumesh_core::ClassDescriptor::from_json(&bytes).map_err(|_| ErrorCode::InputUnavailable)?;
+        Ok(Some(Arc::new(call::BoundClass { class_hash: b.class_hash, since: b.tx, descriptor: Arc::new(d) })))
     }
 }
 

@@ -198,6 +198,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         key_document,
         mesh_document,
         bindings,
+        describe,
         health,
         metrics,
         openapi_json
@@ -1326,13 +1327,18 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     resp
 }
 
-/// describe (SPEC 16.8): a class or an object. STUB (0.3.0 tests first): the handler calls
-/// [`Mesh::describe`], which is `todo!()`; no OpenAPI annotation yet.
+/// describe (SPEC 16.8): a class or an object, by class name, key encoding, object id, cell id or
+/// short id (`{id}`, percent-encoded as a path).
+#[utoipa::path(get, path = "/describe/{id}",
+    params(("id" = String, Path, description = "A class name, an object's key encoding, an object id, a cell id or a short id (12 hex digits).")),
+    responses((status = 200, description = "A describe-class or describe-object document (SPEC 16.8)", content_type = "application/json"), (status = 400, description = "`E_KEY_ENCODING`, `E_KEY_NORMALISATION` or `E_SHORT_ID_AMBIGUOUS`", content_type = "application/json"), (status = 404, description = "An id the mesh does not know", content_type = "application/json")))]
 async fn describe(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
     if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
     }
-    let id = rest_of(&uri, "/describe/");
+    let Some(id) = crate::call::url_decode(uri.path().strip_prefix("/describe/").unwrap_or("")) else {
+        return to_response(envelope::bad_request_reply(ErrorCode::CanonPercent));
+    };
     let inner = mesh.inner.clone();
     match inner.pool.clone().run(move || mesh.describe(&id)).await {
         Some(r) => to_response(r),

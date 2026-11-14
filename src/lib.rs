@@ -143,6 +143,7 @@ pub mod apikeys;
 pub mod call;
 pub mod client;
 pub mod config;
+mod describe;
 pub mod domain;
 pub mod envelope;
 pub mod foreign;
