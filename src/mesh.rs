@@ -1021,6 +1021,16 @@ impl Mesh {
         call::resolve(rest, &now, &self.inner.config.aliases, &*self.inner, slice)
     }
 
+    /// The describe answer (SPEC 16.8, 9.6) for `id`: a class name, a class hash, an object's key
+    /// encoding, an object id or a short id (12 hex digits). A class or an object: the body is a
+    /// `describe-class` or `describe-object` document, `200`; an id the mesh does not know, `404`;
+    /// a short id naming more than one object the mesh knows, `400` with `E_SHORT_ID_AMBIGUOUS`.
+    /// Blocking. Since 0.3.0. STUB (0.3.0 tests first).
+    pub fn describe(&self, id: &str) -> Reply {
+        let _ = id;
+        todo!("STUB (0.3.0 tests first): describe (CONTRACT-http-0.3.0-classes.md, items 5 and 6)")
+    }
+
     /// Verifies a receipt (SPEC 10.1) with the mesh's keys; at level `recomputed` with the
     /// engine as the resolver unless `signed_only`; `blob` is content for step 7.7.
     pub fn verify(&self, receipt: &[u8], signed_only: bool, blob: Option<&[u8]>) -> Verified {

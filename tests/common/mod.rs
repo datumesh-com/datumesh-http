@@ -19,6 +19,8 @@ use datumesh_http::{Config, Mesh, MeshBuilder};
 use datumesh_store::pg_unstable::postgres::{Config as PgConfig, NoTls};
 use datumesh_store::{migrate, PgStore, PoolOptions, Store};
 
+pub mod world;
+
 pub use datumesh_core::Resolver;
 pub use datumesh_store::Store as _;
 
@@ -429,6 +431,24 @@ impl Drop for Node {
     }
 }
 
+/// The JSON of an envelope (or of a batch item) without its `resolved` member (spec-0.5.0, 5.5:
+/// what an alias, a method or a default resolved), so that the answers to a call and to the cell
+/// URI it denotes can be compared: they are the same but for it.
+pub fn without_resolved(v: &Value) -> Vec<u8> {
+    fn strip(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .filter(|(k, _)| k != "resolved")
+                    .map(|(k, x)| (k.clone(), if k == "envelope" { strip(x) } else { x.clone() }))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    strip(v).to_jcs()
+}
+
 /// A receipt's JSON (payload members and `sig`).
 pub fn receipt_json(r: &Receipt) -> Vec<u8> {
     let mut members = vec![("sig".to_string(), Value::String(r.sig().to_string()))];
@@ -466,6 +486,9 @@ pub fn check_pinned(
 pub struct Schemas {
     pub envelope: jsonschema::Validator,
     pub mesh: jsonschema::Validator,
+    /// `describe-class.schema.json` and `describe-object.schema.json` (spec-0.5.0).
+    pub describe_class: jsonschema::Validator,
+    pub describe_object: jsonschema::Validator,
 }
 
 pub fn spec_dir() -> std::path::PathBuf {
@@ -490,7 +513,19 @@ pub fn schemas() -> Schemas {
         opts = opts.with_resource(id, jsonschema::Resource::from_contents(v.clone()).unwrap());
     }
     let mesh = opts.build(&docs["mesh.schema.json"]).unwrap();
-    Schemas { envelope, mesh }
+    let mut opts = jsonschema::options();
+    for v in docs.values() {
+        let id = v.get("$id").and_then(|x| x.as_str()).unwrap().to_string();
+        opts = opts.with_resource(id, jsonschema::Resource::from_contents(v.clone()).unwrap());
+    }
+    let describe_class = opts.build(&docs["describe-class.schema.json"]).unwrap();
+    let mut opts = jsonschema::options();
+    for v in docs.values() {
+        let id = v.get("$id").and_then(|x| x.as_str()).unwrap().to_string();
+        opts = opts.with_resource(id, jsonschema::Resource::from_contents(v.clone()).unwrap());
+    }
+    let describe_object = opts.build(&docs["describe-object.schema.json"]).unwrap();
+    Schemas { envelope, mesh, describe_class, describe_object }
 }
 
 impl Schemas {
@@ -501,6 +536,23 @@ impl Schemas {
         let errors: Vec<String> =
             self.envelope.iter_errors(&v).map(|e| format!("{e} at {}", e.instance_path)).collect();
         assert!(errors.is_empty(), "envelope fails the schema: {errors:?}\n{}", String::from_utf8_lossy(body));
+    }
+}
+
+impl Schemas {
+    /// Asserts that `body` is a describe answer (16.8) by the spec's schema for its `kind`.
+    #[track_caller]
+    pub fn assert_describe(&self, body: &[u8]) {
+        let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let schema = match v.get("kind").and_then(|k| k.as_str()) {
+            Some("class") => &self.describe_class,
+            Some("object") => &self.describe_object,
+            other => {
+                panic!("a describe answer has kind class or object, not {other:?}: {}", String::from_utf8_lossy(body))
+            }
+        };
+        let errors: Vec<String> = schema.iter_errors(&v).map(|e| format!("{e} at {}", e.instance_path)).collect();
+        assert!(errors.is_empty(), "describe answer fails the schema: {errors:?}\n{}", String::from_utf8_lossy(body));
     }
 }
 

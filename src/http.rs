@@ -1319,6 +1319,20 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     resp
 }
 
+/// describe (SPEC 16.8): a class or an object. STUB (0.3.0 tests first): the handler calls
+/// [`Mesh::describe`], which is `todo!()`; no OpenAPI annotation yet.
+async fn describe(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let id = rest_of(&uri, "/describe/");
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || mesh.describe(&id)).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 async fn fallback() -> Response {
     not_found("endpoint")
 }
@@ -1343,6 +1357,7 @@ impl Mesh {
             .route("/.well-known/datumesh.json", get(key_document))
             .route("/.well-known/datumesh-mesh.json", get(mesh_document))
             .route("/bindings", get(bindings))
+            .route("/describe/{*id}", get(describe))
             .route("/health", get(health))
             .route("/metrics", get(metrics))
             .route("/openapi.json", get(openapi_json))

@@ -422,8 +422,9 @@ fn the_validate_command() {
 }
 
 /// Another mesh's host suspended in this mesh's store: what it already imported is served,
-/// a cell it has not imported is `E_INPUT_UNAVAILABLE` (the closest existing code; the
-/// envelope carries no detail, the store's refusal is in the mesh's logs), and the next success makes it importable again.
+/// a cell it has not imported is `not_covered` with `E_NAMESPACE_SUSPENDED` (spec-0.5.0, 9.9: the
+/// mesh has no receipt for it, by policy; never an `error` envelope), and the next success makes it
+/// importable again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_suspended_foreign_namespace_is_not_imported_from() {
     const A: &str = "mesh-a.example";
@@ -445,9 +446,15 @@ async fn a_suspended_foreign_namespace_is_not_imported_from() {
     // Imported before: still served. Not imported: refused while suspended.
     let r = a.get(&format!("/cell/{B}/price?item=bolt")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
+    // spec-0.5.0 (9.9, 5.5): a refused cross-mesh import is `not_covered` with E_NAMESPACE_SUSPENDED,
+    // never an `error` envelope (it was E_INPUT_UNAVAILABLE, 503, behind a placeholder).
     let r = a.get(&format!("/cell/{B}/price?item=nut")).await;
-    assert_eq!((r.status, r.outcome()), (503, "error".to_string()), "{}", r.text());
-    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_INPUT_UNAVAILABLE"));
+    assert_eq!((r.status, r.outcome()), (404, "not_covered".to_string()), "{}", r.text());
+    assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_NAMESPACE_SUSPENDED"), "{}", r.text());
+    assert!(r.json().get("receipt").is_none() && r.json().get("fault").is_none());
+    // A client checks it as it checks any envelope (core 0.3.8 accepts the code for not_covered only).
+    let id = b.cell_id(&format!("{B}/price"), &args(&[("item", s("nut"))]));
+    assert_eq!(common::check(&r, &a.keys(), &id, None, None), Ok("not_covered".to_string()), "{}", r.text());
     bl(|| {
         a.store.record_namespace_success(B, &plus(&now(), 1_000_000)).unwrap();
     });

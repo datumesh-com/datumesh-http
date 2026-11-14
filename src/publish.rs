@@ -11,6 +11,13 @@
 //!   (its callees as bound at `bound`) and published (`put_descriptor`, `bind_name` from
 //!   `bound`) unless the name is already bound to that function; its cells are evaluated on
 //!   demand by the mesh;
+//! * a class (since 0.3.0, spec-0.5.0, 16.2): `{"class": "<ns>/<name>", "descriptor": {...as
+//!   written...}, "bound": "<instant>"}`: defined with the formula crate's `define_class` (core's
+//!   rules: the class is under one of the mesh's own namespaces, else `E_CLASS_OWNER`; the method
+//!   functions are those bound as of `bound`), `put_class`, and `bind_class` from `bound` unless the
+//!   name is already bound to that class hash. Method functions come first in the file (or in an
+//!   earlier one), `bound` later than theirs. STUB (0.3.0 tests first): [`publish_stored_in`] stops
+//!   at a class line.
 //! * a cell: `{"cell": {"fn": "<ns>/<name>", "args": {<name>: <typed scalar>}}, "value": <typed
 //!   scalar> or {"blob": "<file>", "media_type": "<type>"}, "tx", "asof", "issued"?, "licence",
 //!   "summary"}`: a blob's file (relative to the JSON lines file) is put with `put_blob` and the
@@ -37,6 +44,8 @@ use datumesh_store::Store;
 pub struct Published {
     /// Functions newly bound (stored and formula).
     pub functions: usize,
+    /// Classes newly bound (since 0.3.0).
+    pub classes: usize,
     /// Cell lines read.
     pub cells: usize,
     /// Receipts stored (new or already there).
@@ -93,13 +102,27 @@ pub fn receipt_json(r: &datumesh_core::Receipt) -> Vec<u8> {
 }
 
 /// Publishes the file at `path` into `store` as the mesh `host` signing with `key` (see the
-/// module documentation).
+/// module documentation). The mesh's own namespaces are `host` alone: see [`publish_stored_in`].
 pub fn publish_stored<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
     path: &Path,
 ) -> Result<Published, PublishError> {
+    publish_stored_in(store, key, host, &[host.to_string()], path)
+}
+
+/// As [`publish_stored`], for a mesh that owns the namespaces (hosts) `owned` (`Config::namespaces`):
+/// a class line is accepted for a class under one of them, and refused with `E_CLASS_OWNER` (in the
+/// [`PublishError::detail`]) under any other. Since 0.3.0.
+pub fn publish_stored_in<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    path: &Path,
+) -> Result<Published, PublishError> {
+    let _ = owned;
     let file =
         std::fs::File::open(path).map_err(|e| PublishError { line: 0, detail: format!("{}: {e}", path.display()) })?;
     let base = path.parent().unwrap_or(Path::new("."));
@@ -129,6 +152,9 @@ pub fn publish_stored<S: Store + ?Sized>(
             continue;
         }
         let v = json::parse(line.as_bytes()).map_err(|e| err(e.to_string()))?;
+        if v.get("class").is_some() {
+            todo!("STUB (0.3.0 tests first): publish-stored class lines (CONTRACT-http-0.3.0-classes.md, item 2)");
+        }
         if let Some(name) = v.get("function").and_then(Value::as_str) {
             let sig = v.get("signature").ok_or_else(|| err("a function without a signature".into()))?;
             let bound = v.get("bound").and_then(Value::as_str).ok_or_else(|| err("a function without bound".into()))?;

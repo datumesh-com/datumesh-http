@@ -31,7 +31,8 @@ use std::sync::Arc;
 
 use datumesh_core::json::Value;
 use datumesh_core::{
-    format_reference, lexical, parse_reference, Arg, Cell, CellRef, ErrorCode, FunctionDescriptor, Reference,
+    format_reference, lexical, parse_reference, Arg, Cell, CellRef, ClassDescriptor, ErrorCode, FunctionDescriptor,
+    Reference, Resolved,
 };
 
 /// A function bound to a name as of an instant.
@@ -53,6 +54,18 @@ impl Bound {
         let signature = Arc::new(descriptor.signature.to_value());
         Bound { fn_hash: fn_hash.into(), since: since.into(), descriptor, signature }
     }
+}
+
+/// A class name's binding as of an instant (spec-0.5.0, 9.7): the class hash and the
+/// flattened descriptor. STUB (0.3.0 tests first): nothing returns one yet.
+#[derive(Clone, Debug)]
+pub struct BoundClass {
+    /// The class hash.
+    pub class_hash: String,
+    /// When the binding began.
+    pub since: String,
+    /// The flattened class descriptor.
+    pub descriptor: Arc<ClassDescriptor>,
 }
 
 /// Where names are looked up: the mesh's store (and, for names under other hosts, the
@@ -86,6 +99,28 @@ pub trait Bindings {
         let _ = alias;
         None
     }
+
+    /// The class `name` is bound to as of `asof` (spec-0.5.0, 9.7, 16.3); `Ok(None)` when it is
+    /// not a class (a function name, or unbound). Provided: none. STUB (0.3.0 tests first).
+    fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<BoundClass>>, ErrorCode> {
+        let _ = (name, asof);
+        Ok(None)
+    }
+
+    /// The instant of the alias snapshot [`Bindings::alias`] answers from, for `resolved.aliases_tx`
+    /// (16.7); `None` when there is none (the configured map has no snapshot). Provided: none.
+    /// STUB (0.3.0 tests first).
+    fn aliases_tx(&self) -> Option<String> {
+        None
+    }
+
+    /// The key encoding the lookup method of class `class` maps `label` to as of `asof`
+    /// (16.7, D93): the value of the cell `<class>/<lookup>(label: ...)`. `Ok(None)` when the
+    /// class has no lookup or the cell has no value. Provided: none. STUB (0.3.0 tests first).
+    fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        let _ = (class, label, asof);
+        Ok(None)
+    }
 }
 
 /// A request resolved to its cell (or slice, at `/slice`).
@@ -103,6 +138,10 @@ pub struct Target {
     pub bound: Arc<Bound>,
     /// The pin (spec-0.4.2): the function hash the request named, if it named one.
     pub pin: Option<String>,
+    /// What the request resolved (spec-0.5.0, 5.5, 16.7): an alias, a method, a default or a
+    /// label; none for a plain or pinned call of a full name and for a cell URI. STUB (0.3.0
+    /// tests first): always none.
+    pub resolved: Option<Resolved>,
 }
 
 impl Target {
@@ -305,6 +344,7 @@ pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) 
         key: std::sync::OnceLock::new(),
         bound,
         pin,
+        resolved: None,
     });
     bindings.remember(rest, &t);
     Ok(t)
