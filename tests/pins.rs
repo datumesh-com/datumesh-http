@@ -62,7 +62,10 @@ async fn pinned_requests() {
         enc(&format!("@fx@{old}(\"USD\", 2026-03-01)")),
     ] {
         let r = a.get(&format!("/cell/{c}")).await;
-        assert_eq!(r.body, by_uri.body, "{c}: {}", r.text());
+        // The alias form says what it resolved (spec-0.5.0, 16.7: a pinned alias is a resolution
+        // too, and `resolved.call` the pinned full call); but for `resolved` it is the URI's answer.
+        assert_eq!(without_resolved(&r.json()), without_resolved(&by_uri.json()), "{c}: {}", r.text());
+        assert_eq!(r.json().get("resolved").is_some(), c.starts_with("@fx"), "{c}: {}", r.text());
     }
     // With an asof: the pin before asof in the URI.
     let r = a.get(&format!("/cell/{rate}?ccy=USD&date=2026-03-01&fn_hash={old}&asof={T2}")).await;

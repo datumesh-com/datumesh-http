@@ -75,12 +75,22 @@ async fn call_and_uri_are_one_request() {
         for c in calls {
             let r = a.get(&format!("/cell/{c}")).await;
             assert_eq!(r.status, base.status, "{c}: {}", r.text());
-            assert_eq!(r.body, base.body, "{c} and {uri} differ:\n{}\n{}", r.text(), base.text());
+            // Since spec-0.5.0 an answer to a call that used an alias says so in `resolved` (5.5,
+            // 16.7: every alias is a resolution); but for that member it is the URI's answer.
+            assert_eq!(
+                without_resolved(&r.json()),
+                without_resolved(&base.json()),
+                "{c} and {uri} differ:\n{}\n{}",
+                r.text(),
+                base.text()
+            );
+            assert_eq!(r.json().get("resolved").is_some(), c.starts_with('@'), "{c}: {}", r.text());
+            assert!(base.json().get("resolved").is_none(), "{uri}: {}", base.text());
             // The canonical link names the asof answered for (now, at each request).
             let strip = |l: Option<String>| l.map(|l| l.split("&asof=").next().unwrap_or("").to_string());
             assert_eq!(strip(r.header("link")), strip(base.header("link")));
             assert_eq!(r.header("cache-control"), base.header("cache-control"));
-            let text = r.text();
+            let text = String::from_utf8(without_resolved(&r.json())).unwrap();
             assert!(
                 !text.contains('@') && !text.contains("\"fx\"") && !text.contains("twice"),
                 "a short name in {text}"
@@ -108,22 +118,26 @@ async fn call_and_uri_are_one_request() {
     let Value::Array(items) = r.json() else { panic!("{}", r.text()) };
     let mut i = 0;
     for (_, cs) in &groups {
-        let first = items[i].to_jcs();
+        let first = without_resolved(&items[i]);
         for k in 0..cs.len() {
-            assert_eq!(items[i + 1 + k].to_jcs(), first);
+            assert_eq!(without_resolved(&items[i + 1 + k]), first);
         }
         i += 1 + cs.len();
     }
 
-    // Calls that are not accepted in 0.1.0, and what they give.
+    // Calls that are not accepted, and what they give. (Since spec-0.5.0 (5.8) an unquoted token is
+    // a value read by the type of its position, so `rate(USD, 2026-03-01)` is the call of 0.2.1's
+    // first group, not E_PARSE_URI: tests/classes_requests.rs has the unquoted forms.)
     for (c, code) in [
-        (enc(&format!("{A}/rate(USD, 2026-03-01)")), "E_PARSE_URI"), // a key literal (15.15)
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01).spot(1)")), "E_PARSE_URI"), // a method
-        (enc(&format!("{A}/rate(\"USD\", 2026-03-01 + 1)")), "E_PARSE_URI"), // an expression
-        (enc(&format!("{A}/rate(\"USD\", 2026-03-01, 3)")), "E_ARG_UNKNOWN"), // a positional past order (5.8)
+        (enc(&format!("{A}/rate(\"USD\", 2026-03-01 + 1)")), "E_PARSE_URI"),     // an expression
+        (enc(&format!("{A}/rate(\"USD\", 2026-03-01, 3)")), "E_ARG_UNKNOWN"),    // a positional past order (5.8)
         (enc(&format!("{A}/rate(\"USD\")")), "E_ARG_MISSING"),
         (enc(&format!("{A}/rate(\"USD\", date: 2026-03-01, zzz: 1)")), "E_ARG_UNKNOWN"),
-        (enc(&format!("{A}/rate(1, 2026-03-01)")), "E_CANON_TYPE"),
+        // (A number in a string position is that string since spec-0.5.0; a quoted string in a date
+        // position, or a word, is the wrong kind.)
+        (enc(&format!("{A}/rate(\"USD\", \"2026-03-01\")")), "E_CANON_TYPE"),
+        (enc(&format!("{A}/rate(USD, nodate)")), "E_CANON_TYPE"),
         (enc(&format!("{A}/rate(\"Zu\u{308}rich\", 2026-03-01)")), "E_CANON_STRING"),
         (enc(&format!("{A}/rate(\"USD\", *)")), "E_SLICE_AT_CELL"),
         (enc(&format!("{A}/rate(\"USD\", 2026-03-01)")) + "?asof=yesterday", "E_CANON_INSTANT"),
