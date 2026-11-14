@@ -140,16 +140,16 @@ async fn describe_a_class() {
     assert_eq!(cons.get("args").map(Value::to_jcs), Some(b"{}".to_vec()));
 }
 
-/// A class by its class hash gives the answer of its name; a hash or a name the mesh does not hold
-/// is `404`.
+/// `{id}` is a class name, a cell id, an object id or a short id (SPEC 9.6); a class hash is none of
+/// them, so it names no class (it is looked up as a cell or object id and found nowhere: `404`). A
+/// name the mesh does not hold is `404` too. (Coordinator's correction: this test asked for
+/// describe by class hash, which the spec does not give.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn describe_a_class_by_hash() {
+async fn describe_a_class_by_hash_is_not_a_form() {
     let (a, w) = mesh().await;
-    for (name, hash) in [(&w.verse, &w.verse_hash), (&w.pair, &w.pair_hash), (&w.named, &w.named_hash)] {
-        let by_name = a.get(&describe_path(name)).await;
-        let by_hash = a.get(&describe_path(hash)).await;
-        assert_eq!(by_hash.status, 200, "{name}: {}", by_hash.text());
-        assert_eq!(by_hash.body, by_name.body, "{name}: the answer of a class by its hash is the answer by its name");
+    for hash in [&w.verse_hash, &w.pair_hash, &w.named_hash] {
+        let r = a.get(&describe_path(hash)).await;
+        assert_eq!(r.status, 404, "{hash}: {}", r.text());
     }
     for id in [format!("{A}/ecb/nothing"), "ab".repeat(32), format!("{}/rate", w.pair), "nonsense".to_string()] {
         let r = a.get(&describe_path(&id)).await;
