@@ -17,9 +17,14 @@
 //!   `datumesh_formula::call::parse_call` in 5.8's order and codes, written as its cell URI and
 //!   resolved as above: a call and its URI are one request.
 //!
-//!   Not accepted (reserved by SPEC 15.15 for classes, 1.3b): method chaining
-//!   (`f(...).g(...)`), key literals (`EUR`, `1M`) and class-typed keys; nor expressions,
-//!   ranges or units: `E_PARSE_URI`.
+//!   Since 0.3.0 (spec-0.5.0, 5.8, 16.3, 16.7) the call is also a **method call**
+//!   (`N(keys).m(args)`, the same request as the plain read `N/m(keys, args)`), takes **unquoted
+//!   values** by the position's type, **labels** (`N[label]`, through the class's `lookup`), the
+//!   `asof` **default** (the call's `asof`, or the mesh's now, in the cell URI) and a **bare name**
+//!   through the alias map. What it resolved is [`Target::resolved`], the answer's `resolved`
+//!   (5.5). A key not canonical under its normalisation is `E_KEY_NORMALISATION`, a malformed
+//!   encoding `E_KEY_ENCODING` (both `bad_request`). Not accepted: expressions, ranges or units
+//!   (`E_PARSE_URI`).
 //!
 //! An unbound name (or alias) is `not_covered` with `E_NAME_UNBOUND`
 //! ([`Rejection::Error`]`(ErrorCode::NameUnbound)`, which the mesh answers so); a pin no
@@ -57,7 +62,7 @@ impl Bound {
 }
 
 /// A class name's binding as of an instant (spec-0.5.0, 9.7): the class hash and the
-/// flattened descriptor. STUB (0.3.0 tests first): nothing returns one yet.
+/// flattened descriptor.
 #[derive(Clone, Debug)]
 pub struct BoundClass {
     /// The class hash.
@@ -101,7 +106,7 @@ pub trait Bindings {
     }
 
     /// The class `name` is bound to as of `asof` (spec-0.5.0, 9.7, 16.3); `Ok(None)` when it is
-    /// not a class (a function name, or unbound). Provided: none. STUB (0.3.0 tests first).
+    /// not a class (a function name, or unbound). Provided: none.
     fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<BoundClass>>, ErrorCode> {
         let _ = (name, asof);
         Ok(None)
@@ -109,14 +114,13 @@ pub trait Bindings {
 
     /// The instant of the alias snapshot [`Bindings::alias`] answers from, for `resolved.aliases_tx`
     /// (16.7); `None` when there is none (the configured map has no snapshot). Provided: none.
-    /// STUB (0.3.0 tests first).
     fn aliases_tx(&self) -> Option<String> {
         None
     }
 
     /// The key encoding the lookup method of class `class` maps `label` to as of `asof`
     /// (16.7, D93): the value of the cell `<class>/<lookup>(label: ...)`. `Ok(None)` when the
-    /// class has no lookup or the cell has no value. Provided: none. STUB (0.3.0 tests first).
+    /// class has no lookup or the cell has no value. Provided: none.
     fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
         let _ = (class, label, asof);
         Ok(None)
@@ -139,8 +143,7 @@ pub struct Target {
     /// The pin (spec-0.4.2): the function hash the request named, if it named one.
     pub pin: Option<String>,
     /// What the request resolved (spec-0.5.0, 5.5, 16.7): an alias, a method, a default or a
-    /// label; none for a plain or pinned call of a full name and for a cell URI. STUB (0.3.0
-    /// tests first): always none.
+    /// label; none for a plain or pinned call of a full name and for a cell URI.
     pub resolved: Option<Resolved>,
 }
 
@@ -392,6 +395,21 @@ impl datumesh_formula::call::CallEnv for Env<'_> {
             Err(c) => Err(c.as_str().to_string()),
         }
     }
+    fn bound_class(&self, name: &str, asof: Option<&str>) -> Result<Option<ClassDescriptor>, String> {
+        match self.bindings.class(name, asof.unwrap_or(self.now)) {
+            Ok(c) => Ok(c.map(|c| (*c.descriptor).clone())),
+            Err(c) => Err(c.as_str().to_string()),
+        }
+    }
+    fn aliases_tx(&self) -> Result<Option<String>, String> {
+        Ok(self.bindings.aliases_tx())
+    }
+    fn now(&self) -> Result<Option<String>, String> {
+        Ok(Some(self.now.to_string()))
+    }
+    fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, String> {
+        self.bindings.lookup(class, label, asof).map_err(|c| c.as_str().to_string())
+    }
 }
 
 /// Resolves a call (SPEC 5.8).
@@ -428,7 +446,17 @@ pub fn resolve_call(
     if !slice && call.cell.args.values().any(|a| matches!(a, Arg::Slice)) {
         return Err(Rejection::BadRequest(ErrorCode::SliceAtCell));
     }
-    resolve_uri(&uri["cell://".len()..], now, bindings, slice)
+    let target = resolve_uri(&uri["cell://".len()..], now, bindings, slice)?;
+    match call.resolved {
+        // The target may come from the cache: the clone carries what this request resolved, and is
+        // not cached.
+        Some(r) => {
+            let mut t = (*target).clone();
+            t.resolved = Some(r);
+            Ok(Arc::new(t))
+        }
+        None => Ok(target),
+    }
 }
 
 /// The URI of a reference with its pin (core's `format_reference`).

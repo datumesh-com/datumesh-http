@@ -344,6 +344,18 @@ impl Bindings for Memo<'_> {
         Bindings::alias(self.inner, alias)
     }
 
+    fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
+        Bindings::class(self.inner, name, asof)
+    }
+
+    fn aliases_tx(&self) -> Option<String> {
+        Bindings::aliases_tx(self.inner)
+    }
+
+    fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        Bindings::lookup(self.inner, class, label, asof)
+    }
+
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
         self.inner.targets.get(fn_hash, rest)
     }
@@ -368,6 +380,43 @@ impl Bindings for Inner {
 
     fn alias(&self, alias: &str) -> Option<String> {
         self.config.aliases.get(alias).cloned()
+    }
+
+    fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
+        let store_failed = |e: datumesh_store::Error| {
+            tracing::warn!(target: "datumesh_http", error = %e, "resolve_class_binding");
+            ErrorCode::InputUnavailable
+        };
+        let Some(b) = self.store.resolve_class_binding(name, asof).map_err(store_failed)? else { return Ok(None) };
+        let Some(bytes) = self.store.class(&b.class_hash).map_err(store_failed)? else {
+            return Err(ErrorCode::InputUnavailable);
+        };
+        let d = datumesh_core::ClassDescriptor::from_json(&bytes).map_err(|_| ErrorCode::InputUnavailable)?;
+        Ok(Some(Arc::new(call::BoundClass { class_hash: b.class_hash, since: b.tx, descriptor: Arc::new(d) })))
+    }
+
+    /// The mesh's configured alias map has no snapshot.
+    fn aliases_tx(&self) -> Option<String> {
+        None
+    }
+
+    fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        let Some(c) = Bindings::class(self, class, asof)? else { return Ok(None) };
+        let Some(method) = &c.descriptor.lookup else { return Ok(None) };
+        let name = format!("{class}/{method}");
+        let Some(b) = Bindings::binding(self, &name, asof)? else { return Ok(None) };
+        let (ns, fn_name) = name.rsplit_once('/').unwrap_or((&name, ""));
+        let mut args = datumesh_core::Args::new();
+        args.insert("label".into(), datumesh_core::Arg::Value(datumesh_core::Scalar::String(label.to_string())));
+        let cell = datumesh_core::Cell { ns: ns.into(), fn_name: fn_name.into(), fn_hash: b.fn_hash.clone(), args };
+        match self.engine.get_cell(&cell, Some(asof)) {
+            Ok(Answer::Receipt(bytes)) => match Receipt::from_json(&bytes).map(|r| r.value().clone()) {
+                Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
+                _ => Ok(None),
+            },
+            Err(EngineError::Store(_)) => Err(ErrorCode::InputUnavailable),
+            _ => Ok(None),
+        }
     }
 
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
@@ -722,10 +771,15 @@ impl Inner {
         };
         on_target(&target);
         let (refused, private) = self.policy(&target, principal);
-        if let Some(r) = refused {
-            return r;
+        let reply = match refused {
+            Some(r) => r,
+            None => self.answer_target(&target, now, private, link),
+        };
+        // What the request resolved is per request: the answers are built from cached bytes.
+        match &target.resolved {
+            Some(r) => envelope::with_resolved(reply, r),
+            None => reply,
         }
-        self.answer_target(&target, now, private, link)
     }
 
     /// Answers a resolved target as of its asof (or `now`).

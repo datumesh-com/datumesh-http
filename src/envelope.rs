@@ -104,6 +104,28 @@ fn object(members: Vec<(&str, Value)>) -> Value {
     Value::Object(members.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
+/// `reply` with the `resolved` member (5.5, 16.7) when its envelope may carry one (`ok`, `stale`,
+/// `not_covered`, `unlicensed`, `payment_required`, `error`); any other reply as it is. The member
+/// is core's (`Answer::with_resolved`), written where JCS puts it.
+pub fn with_resolved(mut reply: Reply, resolved: &datumesh_core::Resolved) -> Reply {
+    if !matches!(
+        reply.outcome_str(),
+        Some("ok" | "stale" | "not_covered" | "unlicensed" | "payment_required" | "error")
+    ) {
+        return reply;
+    }
+    let Ok(Value::Object(mut members)) = json::parse(&reply.body) else { return reply };
+    let member = datumesh_core::Answer::not_covered()
+        .with_resolved(resolved.clone())
+        .ok()
+        .and_then(|a| a.to_value().get("resolved").cloned());
+    let Some(member) = member else { return reply };
+    members.retain(|(k, _)| k != "resolved");
+    members.push(("resolved".into(), member));
+    reply.body = Value::Object(members).to_jcs().into();
+    reply
+}
+
 /// The canonical bytes of an envelope.
 fn bytes(v: Value) -> Vec<u8> {
     v.to_jcs()
@@ -203,14 +225,22 @@ pub const BAD_REQUEST_CODES: &[ErrorCode] = &[
     ErrorCode::ArgMissing,
 ];
 
-/// Whether `code` may be a `bad_request`'s `error` at `/cell` (the parse codes, and
-/// `E_SLICE_AT_CELL`).
+/// The codes a `bad_request` may carry besides [`BAD_REQUEST_CODES`] since spec-0.5.0: a key not
+/// canonical under its normalisation (16.4), a malformed key encoding (16.5) and an ambiguous
+/// short id (16.8).
+pub const CALL_CODES: &[ErrorCode] =
+    &[ErrorCode::KeyNormalisation, ErrorCode::KeyEncoding, ErrorCode::ShortIdAmbiguous];
+
+/// Whether `code` may be a `bad_request`'s `error` at `/cell` (the parse codes of
+/// [`BAD_REQUEST_CODES`] and [`CALL_CODES`], and `E_SLICE_AT_CELL`).
 pub fn is_request_code(code: ErrorCode) -> bool {
-    BAD_REQUEST_CODES.contains(&code) || code == ErrorCode::SliceAtCell
+    BAD_REQUEST_CODES.contains(&code) || CALL_CODES.contains(&code) || code == ErrorCode::SliceAtCell
 }
 
 /// Whether `code` may be an `error` envelope's `error`: any code of 10.2 but `E_ENVELOPE` and
-/// the request codes `E_JOB_UNKNOWN`, `E_SLICE_AT_CELL` and `E_NAME_UNBOUND`.
+/// the request codes `E_JOB_UNKNOWN`, `E_SLICE_AT_CELL` and `E_NAME_UNBOUND`, and the codes of
+/// spec-0.5.0 no `error` envelope carries (5.5): `E_NAMESPACE_SUSPENDED`, the class codes and
+/// [`CALL_CODES`].
 pub fn is_error_code(code: ErrorCode) -> bool {
     !matches!(
         code,
@@ -219,6 +249,17 @@ pub fn is_error_code(code: ErrorCode) -> bool {
             | ErrorCode::SliceAtCell
             | ErrorCode::NameUnbound
             | ErrorCode::NamespaceSuspended
+            | ErrorCode::ClassMember
+            | ErrorCode::ClassParent
+            | ErrorCode::ClassInherit
+            | ErrorCode::ClassOverride
+            | ErrorCode::ClassFinal
+            | ErrorCode::ClassMethod
+            | ErrorCode::ClassInterface
+            | ErrorCode::ClassOwner
+            | ErrorCode::KeyNormalisation
+            | ErrorCode::KeyEncoding
+            | ErrorCode::ShortIdAmbiguous
     )
 }
 
