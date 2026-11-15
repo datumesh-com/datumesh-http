@@ -5,15 +5,12 @@
 
 use std::collections::BTreeMap;
 
-use curve25519_dalek::edwards::EdwardsPoint;
-use curve25519_dalek::scalar::{clamp_integer, Scalar};
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
     keys_from_response, lexical::to_hex, verify, verify_ed25519, FunctionDescriptor, Keys, Receipt, SigningKey,
 };
 use datumesh_engine::Clock;
 use datumesh_store::Store;
-use sha2::{Digest, Sha512};
 
 /// After every binding.
 const END: &str = "9999-12-31T23:59:59.999999Z";
@@ -141,33 +138,12 @@ pub fn manifest_bytes(namespace: &str, names: &[(String, String)], receipts: &[S
     .to_jcs()
 }
 
-/// Ed25519 (RFC 8032 section 5.1.6) over `message` with the key of `seed`: the signature `R || S`.
-/// The public key and key id are those of `SigningKey::from_seed(seed)`.
+/// Ed25519 (RFC 8032) over `message` with the key of `seed`, by `ed25519-dalek`: the signature
+/// `R || S`. The public key and key id are those of `SigningKey::from_seed(seed)`; the import
+/// verifies with core's `verify_ed25519`, the strict rules of receipt verification.
 fn sign(seed: &[u8; 32], message: &[u8]) -> [u8; 64] {
-    let h = Sha512::digest(seed);
-    let mut lower = [0u8; 32];
-    lower.copy_from_slice(&h[..32]);
-    let mut prefix = [0u8; 32];
-    prefix.copy_from_slice(&h[32..]);
-    let a = Scalar::from_bytes_mod_order(clamp_integer(lower));
-    let public = EdwardsPoint::mul_base(&a).compress().to_bytes();
-    let wide = |parts: &[&[u8]]| {
-        let mut h = Sha512::new();
-        for p in parts {
-            h.update(p);
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&h.finalize());
-        Scalar::from_bytes_mod_order_wide(&out)
-    };
-    let r = wide(&[&prefix, message]);
-    let r_bytes = EdwardsPoint::mul_base(&r).compress().to_bytes();
-    let k = wide(&[&r_bytes, &public, message]);
-    let sum = r + k * a;
-    let mut sig = [0u8; 64];
-    sig[..32].copy_from_slice(&r_bytes);
-    sig[32..].copy_from_slice(sum.as_bytes());
-    sig
+    use ed25519_dalek::Signer;
+    ed25519_dalek::SigningKey::from_bytes(seed).sign(message).to_bytes()
 }
 
 /// Builds a bundle 1 (see the module documentation): `descriptors` (each a canonical function
