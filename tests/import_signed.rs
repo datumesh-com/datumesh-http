@@ -10,7 +10,7 @@ use std::sync::Arc;
 use common::lite::*;
 use common::*;
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Cell, FunctionDescriptor, Receipt, ReceiptBuilder, SigningKey};
+use datumesh_core::{Cell, FunctionDescriptor, Receipt, ReceiptBuilder};
 use datumesh_http::bundle::{self, BundleError};
 use datumesh_http::{Config, Mesh};
 use datumesh_store::Store;
@@ -66,16 +66,16 @@ fn hash_of(r: &[u8]) -> String {
 
 /// A bundle of `ns`: the descriptor, `names` bound to its hash, `receipts` (put in ascending order
 /// of their hashes), the manifest signed by `key`.
-fn make(ns: &str, names: &[&str], mut receipts: Vec<Vec<u8>>, key: &SigningKey) -> Vec<u8> {
+fn make(ns: &str, names: &[&str], mut receipts: Vec<Vec<u8>>, seed: &[u8; 32]) -> Vec<u8> {
     receipts.sort_by_key(|r| hash_of(r));
     let mut names: Vec<(String, String)> = names.iter().map(|n| (n.to_string(), fn_hash())).collect();
     names.sort();
-    bundle::build(ns, vec![function().canonical()], names, receipts, key).unwrap()
+    bundle::build(ns, vec![function().canonical()], names, receipts, seed).unwrap()
 }
 
 /// The bundle B, with its receipt's `tx` given.
 fn bundle_b_at(tx: &str) -> Vec<u8> {
-    make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", tx, &[])], &key_for(HOST))
+    make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", tx, &[])], &seed_for(HOST))
 }
 
 fn bundle_b() -> Vec<u8> {
@@ -144,7 +144,7 @@ fn a_namespace_that_is_not_owned() {
     let lite = Lite::new("import-3");
     let other = "other.example/scratch";
     let name = "other.example/scratch/level";
-    let b = make(other, &[name], vec![receipt(other, "2026-11-14", "42", TX, &[])], &key_for(HOST));
+    let b = make(other, &[name], vec![receipt(other, "2026-11-14", "42", TX, &[])], &seed_for(HOST));
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::NotOwned(_)), "{e:?}");
     nothing_written(&lite, name, other, &["2026-11-14"]);
@@ -154,7 +154,7 @@ fn a_namespace_that_is_not_owned() {
 #[test]
 fn a_manifest_signed_by_a_fresh_key() {
     let lite = Lite::new("import-4");
-    let fresh = SigningKey::from_seed(&datumesh_core::sha256(b"datumesh-http test key: fresh"));
+    let fresh = datumesh_core::sha256(b"datumesh-http test key: fresh");
     let b = make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", TX, &[])], &fresh);
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::Manifest(_)), "{e:?}");
@@ -169,7 +169,7 @@ fn a_tampered_receipt() {
     let good = String::from_utf8(receipt(NS, "2026-11-14", "42", TX, &[])).unwrap();
     let bad = good.replace("\"42\"", "\"43\"");
     assert_ne!(good, bad);
-    let b = make(NS, &[LEVEL], vec![bad.into_bytes()], &key_for(HOST));
+    let b = make(NS, &[LEVEL], vec![bad.into_bytes()], &seed_for(HOST));
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::Receipt(_)), "{e:?}");
     nothing_written(&lite, LEVEL, NS, &["2026-11-14"]);
@@ -180,7 +180,7 @@ fn a_tampered_receipt() {
 fn a_receipt_from_the_future() {
     let lite = Lite::new("import-6");
     let b =
-        make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", "2026-11-15T12:00:00.000001Z", &[])], &key_for(HOST));
+        make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", "2026-11-15T12:00:00.000001Z", &[])], &seed_for(HOST));
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::TxInFuture { .. }), "{e:?}");
     nothing_written(&lite, LEVEL, NS, &["2026-11-14"]);
@@ -191,7 +191,7 @@ fn a_receipt_from_the_future() {
 fn a_computed_receipt() {
     let lite = Lite::new("import-7");
     let input = "ab".repeat(32);
-    let b = make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", TX, &[&input])], &key_for(HOST));
+    let b = make(NS, &[LEVEL], vec![receipt(NS, "2026-11-14", "42", TX, &[&input])], &seed_for(HOST));
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::Receipt(_)), "{e:?}");
     nothing_written(&lite, LEVEL, NS, &["2026-11-14"]);
@@ -201,7 +201,7 @@ fn a_computed_receipt() {
 #[test]
 fn format_errors() {
     let lite = Lite::new("import-8");
-    let two = make(NS, &[LEVEL, OTHER], vec![receipt(NS, "2026-11-14", "42", TX, &[])], &key_for(HOST));
+    let two = make(NS, &[LEVEL, OTHER], vec![receipt(NS, "2026-11-14", "42", TX, &[])], &seed_for(HOST));
     // Sanity: the two-name bundle is fine as built.
     let ordered = edit(&two, |_| {});
     assert!(import(&lite, &ordered).is_ok());
@@ -238,7 +238,7 @@ fn all_or_nothing() {
     let lite = Lite::new("import-9");
     let first = receipt(NS, "2026-11-14", "42", TX, &[]);
     let second = String::from_utf8(receipt(NS, "2026-11-13", "41", TX, &[])).unwrap().replace("\"41\"", "\"43\"");
-    let b = make(NS, &[LEVEL], vec![first, second.into_bytes()], &key_for(HOST));
+    let b = make(NS, &[LEVEL], vec![first, second.into_bytes()], &seed_for(HOST));
     let e = import(&lite, &b).unwrap_err();
     assert!(matches!(e, BundleError::Receipt(_)), "{e:?}");
     nothing_written(&lite, LEVEL, NS, &["2026-11-14", "2026-11-13"]);

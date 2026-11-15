@@ -96,7 +96,13 @@ impl Drop for TestDb {
 
 /// The test key of a host.
 pub fn key_for(host: &str) -> SigningKey {
-    SigningKey::from_seed(&datumesh_core::sha256(format!("datumesh-http test key: {host}").as_bytes()))
+    SigningKey::from_seed(&seed_for(host))
+}
+
+/// The seed of [`key_for`]`(host)`: what `bundle::build` signs with.
+#[allow(dead_code)]
+pub fn seed_for(host: &str) -> [u8; 32] {
+    datumesh_core::sha256(format!("datumesh-http test key: {host}").as_bytes())
 }
 
 /// The key document of `host` publishing `key` from 2000 on.
