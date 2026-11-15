@@ -15,11 +15,10 @@ use datumesh_http::bundle::{self, BundleError};
 use datumesh_http::{Config, Mesh};
 use datumesh_store::Store;
 
-const NS: &str = "mesh-test.datumesh.com/scratch-1-8b";
-const LEVEL: &str = "mesh-test.datumesh.com/scratch-1-8b/level";
-const OTHER: &str = "mesh-test.datumesh.com/scratch-1-8b/other";
+const NS: &str = "mesh-test.datumesh.com/scratch_1_8b";
+const LEVEL: &str = "mesh-test.datumesh.com/scratch_1_8b/level";
+const OTHER: &str = "mesh-test.datumesh.com/scratch_1_8b/other";
 const TX: &str = "2026-11-15T11:00:00.000000Z";
-const ASOF: &str = "2026-11-14T00:00:00.000000Z";
 const DESCRIPTOR: &str = r#"{"code":{"body":"","lang":"stored"},"inputs":[],"signature":{"args":{"day":{"type":"date","valid":true}},"order":["day"],"returns":{"type":"number","unit":"1"}}}"#;
 
 fn function() -> FunctionDescriptor {
@@ -38,7 +37,7 @@ fn cell_id(ns: &str, day: &str) -> String {
     Cell { ns: ns.into(), fn_name: "level".into(), fn_hash: fn_hash(), args: day_args(day) }.id()
 }
 
-/// A receipt of `level(day: <day>)` under `ns`, value number `value`, `tx` = issued, signed by K as
+/// A receipt of `level(day: <day>)` under `ns`, value number `value`, `tx` = asof = issued (SPEC 8), signed by K as
 /// publisher `ns`; `inputs` makes it a computed receipt.
 fn receipt(ns: &str, day: &str, value: &str, tx: &str, inputs: &[&str]) -> Vec<u8> {
     let cell = Cell { ns: ns.into(), fn_name: "level".into(), fn_hash: fn_hash(), args: day_args(day) };
@@ -47,7 +46,7 @@ fn receipt(ns: &str, day: &str, value: &str, tx: &str, inputs: &[&str]) -> Vec<u
         .cell(cell)
         .value(n(value))
         .valid(day_args(day))
-        .asof(ASOF)
+        .asof(tx)
         .tx(tx)
         .issued(tx)
         .publisher(ns)
