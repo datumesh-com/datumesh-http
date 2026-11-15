@@ -6,7 +6,7 @@ The [Datumesh](https://datumesh.com) engine behind HTTPS ([spec-0.5.0](https://g
 
 ```toml
 [dependencies]
-datumesh-http = "0.2.2"
+datumesh-http = "0.3.0"
 datumesh-store = "0.4.2"
 datumesh-core = { version = "0.3.8", features = ["sign"] }
 ```
