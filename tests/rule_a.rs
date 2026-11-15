@@ -236,3 +236,23 @@ fn import_vectors_refuses_owned_names() {
     let got = datumesh_http::vectors::import_in(&*lite.store, &spec, &t, HOST, &owned).unwrap();
     assert_eq!(got.to_jcs(), want.to_jcs());
 }
+
+/// 11. A namespace bound by an ordinary publish (no backfill, the clock before the start), then a
+///     `--backfill` file under the same namespace binding a new name, with a fresh log path that has
+///     no earlier line: `Backfill`; nothing is written and the log stays empty. (The store's
+///     `has_bindings_under` sees the namespace; the operator log does not.)
+#[test]
+fn backfill_is_refused_under_a_namespace_bound_by_an_ordinary_publish() {
+    let lite = Lite::new("rule-a-11");
+    let f = write(&lite, "f.jsonl", &[function_line(LEVEL, None)]);
+    run(&lite, &f, &opts(NOW)).unwrap();
+    assert_eq!(lite.bound_tx(LEVEL).as_deref(), Some(NOW));
+
+    let log = lite.path("fresh.log");
+    let other = format!("{NS}/other");
+    let g = write(&lite, "g.jsonl", &[function_line(&other, Some("2026-09-01T00:00:00.000000Z"))]);
+    let e = run(&lite, &g, &backfill(NOW, &log)).unwrap_err();
+    assert!(matches!(e.kind, PublishErrorKind::Backfill(_)), "{e}");
+    assert!(unbound(&lite, &other));
+    assert!(std::fs::read_to_string(&log).map(|t| t.is_empty()).unwrap_or(true), "the log stays empty");
+}

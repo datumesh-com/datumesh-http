@@ -268,6 +268,238 @@ fn the_cli_prints_imported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const LATER_NOW: &str = "2026-11-15T12:00:05.000000Z";
+const GET_AT: &str = "2026-11-15T12:00:10.000000Z";
+const FIRST_DAY: &str = "0001-01-01T00:00:00.000000Z";
+
+fn mesh_at(lite: &Lite, clock: &'static str) -> Mesh {
+    let shared: Arc<dyn Store + Send + Sync> = lite.store.clone();
+    Mesh::builder(Config::new(HOST), shared)
+        .signing_key(lite.key.clone())
+        .clock(Arc::new(FixedClock(clock)))
+        .build()
+        .unwrap()
+}
+
+/// The outcome of a mesh `get` of `level(day: 2026-11-14)` at the clock `GET_AT`.
+fn outcome(lite: &Lite) -> String {
+    let reply = mesh_at(lite, GET_AT).cell(&format!("{LEVEL}?day=2026-11-14"), None);
+    let env = json::parse(&reply.body).unwrap();
+    env.get("outcome").and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// H5 1. Stopped after the n-th write (n in 1..=3): nothing is answerable (the name is unbound), and
+///    a re-run at a later clock completes the import: the binding is the re-run's, one version, `ok`.
+#[test]
+fn a_stopped_import_is_completed_by_a_rerun() {
+    for n in 1..=3 {
+        let lite = Lite::new(&format!("import-h5-{n}"));
+        let owned: Vec<String> = Vec::new();
+        let e =
+            bundle::import_signed_with(&*lite.store, HOST, &owned, &FixedClock(NOW), &bundle_b(), Some(n)).unwrap_err();
+        assert!(matches!(e, BundleError::Stopped(m) if m == n), "n = {n}: {e:?}");
+        assert_ne!(outcome(&lite), "ok", "n = {n}: the name is unbound, so nothing is answered");
+
+        let i = bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock(LATER_NOW), &bundle_b())
+            .unwrap_or_else(|e| panic!("n = {n}: {e:?}"));
+        assert_eq!(i.bound_at, LATER_NOW);
+        assert_eq!(lite.bound_tx(LEVEL).as_deref(), Some(LATER_NOW), "n = {n}");
+        let id = cell_id(NS, "2026-11-14");
+        assert_eq!(lite.store.versions(&id, FIRST_DAY, END).unwrap().len(), 1, "n = {n}");
+        assert_eq!(outcome(&lite), "ok", "n = {n}");
+    }
+}
+
+/// H5 2. Stopped after the 4th write (everything written): the re-run binds and versions nothing, and
+///    the binding's tx is the first run's.
+#[test]
+fn a_rerun_after_everything_was_written_changes_nothing() {
+    let lite = Lite::new("import-h5-4");
+    let owned: Vec<String> = Vec::new();
+    let e = bundle::import_signed_with(&*lite.store, HOST, &owned, &FixedClock(NOW), &bundle_b(), Some(4)).unwrap_err();
+    assert!(matches!(e, BundleError::Stopped(4)), "{e:?}");
+    let again = bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock(LATER_NOW), &bundle_b()).unwrap();
+    assert_eq!((again.functions_bound, again.versions), (0, 0), "{again:?}");
+    assert_eq!(lite.bound_tx(LEVEL).as_deref(), Some(NOW));
+}
+
+// ---------------------------------------------------------------------------------------------
+// R1: refusals no test covered
+
+/// A receipt of `fn_name` with the function hash `fh`, signed by `key` as signer host `signer`.
+fn receipt_with(fn_name: &str, fh: &str, signer: &str, key: &datumesh_core::SigningKey) -> Vec<u8> {
+    let cell = Cell { ns: NS.into(), fn_name: fn_name.into(), fn_hash: fh.into(), args: day_args("2026-11-14") };
+    let r = ReceiptBuilder::new()
+        .cell(cell)
+        .value(n("42"))
+        .valid(day_args("2026-11-14"))
+        .asof(TX)
+        .tx(TX)
+        .issued(TX)
+        .publisher(NS)
+        .signer_host(signer)
+        .licence("CC0-1.0")
+        .summary("test")
+        .sign(key)
+        .unwrap();
+    receipt_json(&r)
+}
+
+fn import_owned(lite: &Lite, owned: &[&str], bytes: &[u8]) -> Result<bundle::Imported, BundleError> {
+    let owned: Vec<String> = owned.iter().map(|o| o.to_string()).collect();
+    bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock(NOW), bytes)
+}
+
+fn refused_with(lite: &Lite, bytes: &[u8], is: impl Fn(&BundleError) -> bool) {
+    let e = import(lite, bytes).unwrap_err();
+    assert!(is(&e), "{e:?}");
+    nothing_written(lite, LEVEL, NS, &["2026-11-14"]);
+}
+
+/// R1.1. An owned host whose key document is not in the store is `Manifest`.
+#[test]
+fn an_owned_host_without_a_key_document() {
+    let lite = Lite::new("import-r1-1");
+    let other = "other.example/ns";
+    let name = "other.example/ns/level";
+    let b = make(other, &[name], vec![receipt(other, "2026-11-14", "42", TX, &[])], &seed_for("other.example"));
+    let e = import_owned(&lite, &["other.example"], &b).unwrap_err();
+    assert!(matches!(e, BundleError::Manifest(_)), "{e:?}");
+    nothing_written(&lite, name, other, &["2026-11-14"]);
+}
+
+/// R1.2. The manifest key is in the key document, but its window does not hold now (`valid_to`
+///    before the clock) is `Manifest`.
+#[test]
+fn a_key_whose_window_has_closed() {
+    let lite = Lite::new("import-r1-2");
+    let closed = "2026-11-15T00:00:00.000000Z";
+    let successor = datumesh_core::SigningKey::from_seed(&datumesh_core::sha256(b"datumesh-http test key: successor"));
+    let existing = key_doc_from(K_FROM);
+    let doc = datumesh_http::keydoc::with_key(HOST, Some(&existing), &successor, closed).unwrap();
+    assert!(String::from_utf8_lossy(&doc).contains(&format!(r#""valid_to":"{closed}""#)));
+    lite.store.put_namespace(HOST, &doc, closed).unwrap();
+    refused_with(&lite, &bundle_b(), |e| matches!(e, BundleError::Manifest(_)));
+}
+
+/// R1.3. A valid bundle whose `names` gain an entry after signing is `Manifest`.
+#[test]
+fn names_added_after_signing() {
+    let lite = Lite::new("import-r1-3");
+    let b = edit(&bundle_b(), |m| {
+        for (k, v) in m.iter_mut() {
+            if k == "names" {
+                if let Value::Array(a) = v {
+                    let entry = format!(r#"{{"fn_hash":"{}","name":"{OTHER}"}}"#, fn_hash());
+                    a.push(json::parse(entry.as_bytes()).unwrap());
+                }
+            }
+        }
+    });
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Manifest(_)));
+    assert!(lite.store.resolve_name(OTHER, END).unwrap().is_none());
+}
+
+/// R1.4. A descriptor that is not canonical (members out of JCS order) is `Descriptor`. (The bundle's
+///    bytes are edited as text, so that the members are out of order as the importer reads them.)
+#[test]
+fn a_descriptor_that_is_not_canonical() {
+    let lite = Lite::new("import-r1-4");
+    let text = String::from_utf8(bundle_b()).unwrap();
+    let from = r#""code":{"body":"","lang":"stored"},"inputs":[],"#;
+    let to = r#""inputs":[],"code":{"body":"","lang":"stored"},"#;
+    assert!(text.contains(from));
+    let b = text.replace(from, to).into_bytes();
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Descriptor(_)));
+}
+
+/// R1.5. A name whose `fn_hash` is neither among the bundle's descriptors nor stored is `Descriptor`.
+#[test]
+fn a_name_without_a_descriptor() {
+    let lite = Lite::new("import-r1-5");
+    let b = bundle::build(NS, vec![], vec![(LEVEL.to_string(), fn_hash())], vec![], &seed_for(HOST)).unwrap();
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Descriptor(_)));
+}
+
+/// R1.6. A receipt of a function not among `names` is `Receipt`.
+#[test]
+fn a_receipt_of_an_unnamed_function() {
+    let lite = Lite::new("import-r1-6");
+    let b = make(NS, &[LEVEL], vec![receipt_with("other", &fn_hash(), HOST, &key_for(HOST))], &seed_for(HOST));
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Receipt(_)));
+}
+
+/// R1.7. A receipt whose `cell.fn_hash` differs from its name's `fn_hash` is `Receipt`.
+#[test]
+fn a_receipt_of_another_function_hash() {
+    let lite = Lite::new("import-r1-7");
+    let b = make(NS, &[LEVEL], vec![receipt_with("level", &"ab".repeat(32), HOST, &key_for(HOST))], &seed_for(HOST));
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Receipt(_)));
+}
+
+/// R1.8. A receipt signed by another host's key (signer host `other.example`) is `Receipt`.
+#[test]
+fn a_receipt_signed_by_another_host() {
+    let lite = Lite::new("import-r1-8");
+    let r = receipt_with("level", &fn_hash(), "other.example", &key_for("other.example"));
+    let b = make(NS, &[LEVEL], vec![r], &seed_for(HOST));
+    refused_with(&lite, &b, |e| matches!(e, BundleError::Receipt(_)));
+}
+
+/// R1.9. A name already bound to another hash from a start at or after the clock is `Bind`.
+#[test]
+fn a_name_bound_from_the_future() {
+    let lite = Lite::new("import-r1-9");
+    let other = "{\"code\":{\"body\":\"\",\"lang\":\"stored\"},\"inputs\":[],\"signature\":{\"args\":{\"day\":{\"type\":\"date\",\"valid\":true}},\"order\":[\"day\"],\"returns\":{\"type\":\"number\",\"unit\":\"EUR\"}}}";
+    let h = lite
+        .store
+        .put_descriptor(FunctionDescriptor::from_json(other.as_bytes()).unwrap().canonical().as_slice())
+        .unwrap();
+    assert_ne!(h, fn_hash());
+    let from = "2026-11-15T13:00:00.000000Z";
+    lite.store.bind_name(LEVEL, &h, from).unwrap();
+    let e = import(&lite, &bundle_b()).unwrap_err();
+    assert!(matches!(e, BundleError::Bind(_)), "{e:?}");
+    assert_eq!(lite.store.resolve_name(LEVEL, END).unwrap().as_deref(), Some(h.as_str()));
+    assert_eq!(lite.bound_tx(LEVEL).as_deref(), Some(from));
+    assert!(lite.store.descriptor(&fn_hash()).is_none(), "the descriptor is stored");
+    assert!(lite.store.latest(&cell_id(NS, "2026-11-14")).unwrap().is_none());
+}
+
+/// R1.10. An extra top-level member, a manifest signature that is not hex: `Format`. A receipt that
+///    does not parse: an error, and nothing is written.
+#[test]
+fn malformed_bundles() {
+    let lite = Lite::new("import-r1-10");
+    let extra = edit(&bundle_b(), |m| m.push(("extra".to_string(), json::parse(b"1").unwrap())));
+    refused_with(&lite, &extra, |e| matches!(e, BundleError::Format(_)));
+
+    let not_hex = edit(&bundle_b(), |m| {
+        for (k, v) in m.iter_mut() {
+            if k == "manifest" {
+                if let Value::Object(mm) = v {
+                    for (mk, mv) in mm.iter_mut() {
+                        if mk == "signature" {
+                            *mv = Value::String("not hex at all".into());
+                        }
+                    }
+                }
+            }
+        }
+    });
+    refused_with(&lite, &not_hex, |e| matches!(e, BundleError::Format(_)));
+
+    let junk = edit(&bundle_b(), |m| {
+        for (k, v) in m.iter_mut() {
+            if k == "receipts" {
+                *v = json::parse(br#"[{"junk":1}]"#).unwrap();
+            }
+        }
+    });
+    assert!(import(&lite, &junk).is_err());
+    nothing_written(&lite, LEVEL, NS, &["2026-11-14"]);
+}
+
 fn key_doc_from(from: &str) -> Vec<u8> {
     datumesh_http::keydoc::with_key(HOST, None, &key_for(HOST), from).unwrap()
 }
