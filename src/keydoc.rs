@@ -5,6 +5,8 @@ use datumesh_core::json::{self, Value};
 use datumesh_core::{
     key_document_from_response, keys_from_response, Declaration, Declarations, Error, KeyDocument, SigningKey,
 };
+use datumesh_engine::Clock;
+use datumesh_store::Store;
 
 /// The key document of `host` publishing `key` from `valid_from`, after the keys of
 /// `existing` (a document already published for `host`, if any): rotation as SPEC 9.5 says,
@@ -137,4 +139,82 @@ pub fn with_declaration(
         _ => Vec::new(),
     };
     Ok((document(host, keys, Some(declarations.to_value()))?, what))
+}
+
+/// Why [`declare_at`] refused a declaration.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum DeclareError {
+    /// An explicit `valid_from` earlier than the mesh clock (rule A, CONTRACT-1.8b H1).
+    StartBeforeNow {
+        /// The function.
+        fn_name: String,
+        /// The `valid_from`.
+        start: String,
+        /// The mesh clock.
+        now: String,
+    },
+    /// A `valid_to` earlier than the mesh clock (rule A).
+    EndBeforeNow {
+        /// The function.
+        fn_name: String,
+        /// The `valid_to`.
+        end: String,
+        /// The mesh clock.
+        now: String,
+    },
+    /// The key document refuses the declaration (SPEC 9.2, as [`with_declaration`] says).
+    Key(Error),
+    /// The store refused: no key document of the host, or a write failed.
+    Store(String),
+}
+
+impl std::fmt::Display for DeclareError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeclareError::StartBeforeNow { fn_name, start, now } => {
+                write!(f, "declaration start {start} of {fn_name} is earlier than the mesh clock {now} (rule A)")
+            }
+            DeclareError::EndBeforeNow { fn_name, end, now } => {
+                write!(f, "declaration end {end} of {fn_name} is earlier than the mesh clock {now} (rule A)")
+            }
+            DeclareError::Key(e) => write!(f, "{e}"),
+            DeclareError::Store(e) => f.write_str(e),
+        }
+    }
+}
+
+impl std::error::Error for DeclareError {}
+
+/// As [`with_declaration`], for the store's key document of `host` (since CONTRACT-1.8b H1): the
+/// declaration is written with `put_namespace` at the clock's now. Rule A: an explicit
+/// `valid_from` or `valid_to` earlier than the clock's now is refused, with nothing written; with
+/// no `valid_from` it is now. The document is read from `store`, which must hold one.
+pub fn declare_at<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    fn_name: &str,
+    licence: &str,
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+    clock: &dyn Clock,
+) -> Result<Declared, DeclareError> {
+    let now = clock.now();
+    if let Some(start) = valid_from.filter(|f| *f < now.as_str()) {
+        return Err(DeclareError::StartBeforeNow { fn_name: fn_name.into(), start: start.into(), now });
+    }
+    if let Some(end) = valid_to.filter(|t| *t < now.as_str()) {
+        return Err(DeclareError::EndBeforeNow { fn_name: fn_name.into(), end: end.into(), now });
+    }
+    let existing = store
+        .namespace(host)
+        .map_err(|e| DeclareError::Store(e.to_string()))?
+        .ok_or_else(|| DeclareError::Store(format!("the store holds no key document of {host}")))?
+        .keydoc;
+    let from = valid_from.unwrap_or(now.as_str());
+    let (doc, what) = with_declaration(host, &existing, fn_name, licence, from, valid_to).map_err(DeclareError::Key)?;
+    if what != Declared::Unchanged {
+        store.put_namespace(host, &doc, &now).map_err(|e| DeclareError::Store(e.to_string()))?;
+    }
+    Ok(what)
 }

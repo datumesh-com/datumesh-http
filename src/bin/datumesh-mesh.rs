@@ -7,12 +7,14 @@
 //!                                a new signing key (seed, mode 0600); --publish adds it to the
 //!                                key document of DATUMESH_HOST in the store (rotating the
 //!                                current key out at --valid-from, default now)
-//! datumesh-mesh declare --fn <name> --licence <licence> --valid-from <instant> [--valid-to <instant>]
+//! datumesh-mesh declare --fn <name> --licence <licence> [--valid-from <instant>] [--valid-to <instant>]
 //!                                a declaration (SPEC 9.2, spec-0.4.3) in the key document of
 //!                                DATUMESH_HOST in the store: <name>, a function under that
 //!                                host, may be computed over inputs under the restricted
-//!                                <licence> (SPEC 8.5); idempotent; with --valid-to on an open
-//!                                entry, closes it (entries are never removed)
+//!                                <licence> (SPEC 8.5); --valid-from defaults to now; idempotent;
+//!                                with --valid-to on an open entry, closes it (entries are never
+//!                                removed); a --valid-from or --valid-to earlier than now is refused
+//!                                (rule A, exit 1)
 //! datumesh-mesh validate <host> | --all
 //!                                domain validation (`datumesh_http::domain`): fetch
 //!                                https://<host>/.well-known/datumesh.json (DATUMESH_PEERS maps a
@@ -25,12 +27,23 @@
 //! datumesh-mesh apikey --principal <id> --keys-file <file> --out <file> [--limit <per minute>]
 //!                                a new API key: its hash appended to the keys file, the key
 //!                                itself written to --out (mode 0600), never printed
-//! datumesh-mesh publish-stored <file.jsonl>
+//! datumesh-mesh publish-stored <file.jsonl> [--backfill]
 //!                                stored functions, classes and cells signed with the mesh's key
-//!                                (DATUMESH_HOST, DATUMESH_KEY_FILE): `datumesh_http::publish`
+//!                                (DATUMESH_HOST, DATUMESH_KEY_FILE): `datumesh_http::publish`.
+//!                                No binding may start before now (rule A); --backfill lifts that
+//!                                for a file whose names and namespaces have no bindings yet, and
+//!                                needs DATUMESH_BACKFILL_LOG (the operator log, mode 0600, one
+//!                                JCS line appended per run that writes)
 //! datumesh-mesh import-vectors <dir>
 //!                                the spec's vectors' key documents, descriptors, receipts,
-//!                                manifests, name bindings and versions into the store
+//!                                manifests, name bindings and versions into the store; refused
+//!                                as a whole when a name it would bind is under DATUMESH_HOST or
+//!                                DATUMESH_NAMESPACES (the mesh's own)
+//! datumesh-mesh import-signed <bundle.json>
+//!                                a bundle 1 (`datumesh_http::bundle`, docs/bundle-1.md): its
+//!                                descriptors, names and receipts, checked and written when every
+//!                                check passes; prints the result as one JCS line (exit 1 with the
+//!                                refusal on stderr). The owned namespaces are DATUMESH_NAMESPACES
 //! datumesh-mesh openapi          print the OpenAPI document
 //! datumesh-mesh health [url]     exit 0 when GET <url> (default http://127.0.0.1:8080/health,
 //!                                or DATUMESH_LISTEN's) answers 200: a container health check
@@ -79,25 +92,46 @@ fn main() {
         Some("validate") => validate(&args),
         Some("declare") => declare(&args),
         Some("publish-stored") => {
-            let file = args.get(1).unwrap_or_else(|| fail("publish-stored <file.jsonl>"));
+            let file = args.get(1).unwrap_or_else(|| fail("publish-stored <file.jsonl> [--backfill]"));
             let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
             let key_file = std::env::var("DATUMESH_KEY_FILE").unwrap_or_else(|_| fail("DATUMESH_KEY_FILE is not set"));
             let key = read_key(&key_file);
             // The mesh's own namespaces (DATUMESH_NAMESPACES): the owners of the classes it defines.
             let owned = Config::from_env().unwrap_or_else(|e| fail(e)).namespaces;
+            let backfill = if args.iter().any(|a| a == "--backfill") {
+                let log = std::env::var("DATUMESH_BACKFILL_LOG")
+                    .unwrap_or_else(|_| fail("--backfill needs DATUMESH_BACKFILL_LOG"));
+                Some(PathBuf::from(log))
+            } else {
+                None
+            };
+            let opts = datumesh_http::publish::PublishOptions { clock: Arc::new(SystemClock), backfill };
             let s = store(4);
             let t = std::time::Instant::now();
-            let p = datumesh_http::publish::publish_stored_in(&s, &key, &host, &owned, std::path::Path::new(file))
+            let p = datumesh_http::publish::publish_stored_with(&s, &key, &host, &owned, std::path::Path::new(file), &opts)
                 .unwrap_or_else(|e| fail(e));
             println!(
                 "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"classes\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",
                 p.blob_bytes, p.blobs, p.cells, p.classes, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
             );
         }
+        Some("import-signed") => {
+            let file = args.get(1).unwrap_or_else(|| fail("import-signed <bundle.json>"));
+            let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
+            let owned = Config::from_env().unwrap_or_else(|e| fail(e)).namespaces;
+            let bytes = std::fs::read(file).unwrap_or_else(|e| fail(format!("{file}: {e}")));
+            let s = store(2);
+            let i = datumesh_http::bundle::import_signed(&s, &host, &owned, &SystemClock, &bytes)
+                .unwrap_or_else(|e| fail(e));
+            println!("{}", String::from_utf8_lossy(&i.to_jcs()));
+        }
         Some("import-vectors") => {
             let dir = args.get(1).unwrap_or_else(|| fail("import-vectors <spec vectors directory>"));
             let s = store(4);
-            let report = datumesh_http::vectors::import(&s, std::path::Path::new(dir), &SystemClock.now());
+            let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
+            let owned = Config::from_env().unwrap_or_else(|e| fail(e)).namespaces;
+            let report = datumesh_http::vectors::import_in(&s, std::path::Path::new(dir), &SystemClock.now(), &host, &owned)
+                .unwrap_or_else(|e| fail(e));
             println!("{}", String::from_utf8_lossy(&report.to_jcs()));
         }
         Some("apikey") => {
@@ -130,7 +164,7 @@ fn main() {
             println!("{}", datumesh_http::openapi().to_pretty_json().unwrap_or_default());
         }
         Some(other) => fail(format!(
-            "unknown command {other} (serve, migrate, keygen, declare, validate, apikey, publish-stored, import-vectors, openapi, health)"
+            "unknown command {other} (serve, migrate, keygen, declare, validate, apikey, publish-stored, import-signed, import-vectors, openapi, health)"
         )),
     }
 }
@@ -181,20 +215,13 @@ fn keygen(args: &[String]) {
 fn declare(args: &[String]) {
     let name = arg(args, "--fn").unwrap_or_else(|| fail("--fn <function name>"));
     let licence = arg(args, "--licence").unwrap_or_else(|| fail("--licence <licence>"));
-    let from = arg(args, "--valid-from").unwrap_or_else(|| fail("--valid-from <instant>"));
+    let from = arg(args, "--valid-from");
     let to = arg(args, "--valid-to");
     let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
     let s = store(2);
-    let existing = s
-        .namespace(&host)
-        .unwrap_or_else(|e| fail(e))
-        .unwrap_or_else(|| fail(format!("the store holds no key document of {host}")))
-        .keydoc;
-    let (doc, what) = datumesh_http::keydoc::with_declaration(&host, &existing, &name, &licence, &from, to.as_deref())
-        .unwrap_or_else(|e| fail(e));
-    if what != datumesh_http::keydoc::Declared::Unchanged {
-        s.put_namespace(&host, &doc, &SystemClock.now()).unwrap_or_else(|e| fail(e));
-    }
+    let what =
+        datumesh_http::keydoc::declare_at(&s, &host, &name, &licence, from.as_deref(), to.as_deref(), &SystemClock)
+            .unwrap_or_else(|e| fail(e));
     let what = match what {
         datumesh_http::keydoc::Declared::Added => "added",
         datumesh_http::keydoc::Declared::Closed => "closed",

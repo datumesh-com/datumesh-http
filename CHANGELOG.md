@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0 (unreleased; no release yet)
+
+For CONTRACT-1.8b (item 9): rule A, `--backfill` with its operator log, `import-signed` and bundle 1, and
+Windows resolver errors. `cargo public-api` against 0.2.2 shows additions only (`public-api.txt`),
+but `publish::PublishError` gains the public field `kind`, and a binding or declaration that starts
+before the clock is now refused where it used to bind (see below): a minor release, not a patch.
+
+- **Rule A (CONTRACT-1.8b H1).** No binding (a name's, a class's or a class method's) and no
+  declaration (`valid_from`, `valid_to`) starts earlier than the mesh clock. A start left out is
+  now. `publish::publish_stored_with(store, key, host, owned, path, &PublishOptions)`, where
+  `PublishOptions { clock, backfill }`; `PublishOptions::system()`. The run reads the file in two
+  passes: the first works out the binds and checks their starts, and nothing is written unless
+  every check passes. `PublishError` gains `kind: PublishErrorKind` (`Line`, `StartBeforeNow`,
+  `Backfill`, `OwnedVectorName`). `keydoc::declare_at` (typed `DeclareError`). `datumesh-mesh
+  declare`: `--valid-from` is optional.
+- **`--backfill` (H1).** `publish-stored <file> --backfill` with `DATUMESH_BACKFILL_LOG` (mode 0600,
+  one JCS line per run that writes: `{"at","namespaces","starts"}`). Starts are not checked, but
+  a backfill is refused when a name it would bind has a binding, or a namespace it would write
+  under is in the log. Interim: store 0.4.1 cannot list the bindings under a namespace. Store 0.4.2's
+  `has_bindings_under` replaces the log check.
+- **`import-vectors` (H1).** `vectors::import_in(store, dir, now, host, owned)`: refused as a whole,
+  before any write, when a name it would bind is under the mesh's own namespaces
+  (`PublishErrorKind::OwnedVectorName`). `vectors::import` is unchanged.
+- **Bundle 1 and `import-signed` (H2).** `datumesh_http::bundle`: `build` (signed with the
+  32-byte seed: RFC 8032 Ed25519 with curve25519-dalek and sha2, now direct dependencies),
+  `manifest_bytes`, `import_signed` (checks in contract order, `BundleError`, `Imported`). Writes
+  run descriptors, then receipts and versions, then the bindings last, so a crash leaves nothing
+  answerable and a re-run completes the import. `docs/bundle-1.md`. The `datumesh-mesh
+  import-signed <file>` command prints the result as one JCS line.
+- **Windows resolver errors are `dns` (H3).** `client::transport_detail`: the Windows resolver codes
+  11001 to 11004, and the text "No such host is known", are `dns` (they were `network`).
+
 ## 0.2.2 (unreleased; no release yet)
 
 For spec-0.5.0 (`c8896ad`): classes, describe, `resolved`, `E_NAMESPACE_SUSPENDED`; with the

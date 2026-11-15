@@ -15,6 +15,8 @@ use datumesh_core::json::{self, Value};
 use datumesh_core::{keys_from_response, FunctionDescriptor, Manifest, Receipt, SigningKey};
 use datumesh_store::Store;
 
+use crate::publish::{PublishError, PublishErrorKind};
+
 /// The formula vectors' conventions (SPEC 11): each host's key from the seed
 /// SHA-256("datumesh formula test key: <host>"), valid from 2020-01-01.
 const KEY_FROM: &str = "2020-01-01T00:00:00.000000Z";
@@ -72,6 +74,68 @@ pub fn excel_descriptor(v: &Value) -> Option<Value> {
 
 /// Imports the vectors under `dir` (a spec's `vectors/`) into `store` (see the module docs);
 /// a report as JSON: what was put, and what was refused or skipped.
+/// The names the vectors in `dir` would bind: their worlds' functions, classes and class methods,
+/// and the functions of their valid receipts whose descriptor is the receipt's cell's.
+fn bound_names(dir: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    files(dir, &mut paths);
+    let mut out = Vec::new();
+    for p in &paths {
+        let Some(v) = std::fs::read(p).ok().and_then(|b| json::parse(&b).ok()) else { continue };
+        let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+        if matches!(kind, "formula-eval" | "excel") {
+            if let Some(w) = v.get("world") {
+                for (name, _) in w.get("functions").and_then(Value::as_object).unwrap_or(&[]) {
+                    out.push(name.clone());
+                }
+                for (cname, c) in w.get("classes").and_then(Value::as_object).unwrap_or(&[]) {
+                    out.push(cname.clone());
+                    let methods = c.get("descriptor").and_then(|d| d.get("methods")).and_then(Value::as_object);
+                    for (m, _) in methods.unwrap_or(&[]) {
+                        out.push(format!("{cname}/{m}"));
+                    }
+                }
+            }
+        }
+        if kind == "receipt" && v.get("valid") == Some(&Value::Bool(true)) {
+            let rc = v.get("recompute");
+            let (Some(d), Some(text)) = (rc.and_then(|r| r.get("descriptor")), v.get("input").and_then(Value::as_str))
+            else {
+                continue;
+            };
+            let (Ok(fd), Ok(r)) = (FunctionDescriptor::from_value(d), Receipt::from_json(text.as_bytes())) else {
+                continue;
+            };
+            if fd.hash() == r.cell().fn_hash {
+                out.push(r.cell().function_name());
+            }
+        }
+    }
+    out
+}
+
+/// As [`import`], for a mesh whose own namespaces are `host` and `owned` (`import-vectors`): the
+/// whole import is refused before any write when a name it would bind is under one of them
+/// ([`PublishErrorKind::OwnedVectorName`]). Other names are exempt from rule A.
+pub fn import_in<S: Store + ?Sized>(
+    store: &S,
+    dir: &Path,
+    now: &str,
+    host: &str,
+    owned: &[String],
+) -> Result<Value, PublishError> {
+    let mine = |name: &str| {
+        let h = name.split('/').next().unwrap_or("");
+        h == host || owned.iter().any(|o| o == h)
+    };
+    if let Some(name) = bound_names(dir).into_iter().find(|n| mine(n)) {
+        return Err(PublishError::typed(0, PublishErrorKind::OwnedVectorName(name)));
+    }
+    Ok(import(store, dir, now))
+}
+
+/// Imports the spec's vectors in `dir` into `store`, binding their names at `now` (see the
+/// module documentation). The mesh's own namespaces are not checked: see [`import_in`].
 pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
     let mut paths = Vec::new();
     files(dir, &mut paths);

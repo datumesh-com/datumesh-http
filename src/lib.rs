@@ -140,6 +140,7 @@
 #![deny(missing_docs)]
 
 pub mod apikeys;
+pub mod bundle;
 pub mod call;
 pub mod client;
 pub mod config;

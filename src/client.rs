@@ -82,6 +82,14 @@ fn transport_detail(e: &ureq::Error) -> Option<ForeignDetail> {
         ureq::Error::Timeout(_) => ForeignDetail::Timeout,
         // The system resolver's failure arrives as an I/O error, not `HostNotFound`.
         ureq::Error::Io(io) if io.to_string().contains("failed to lookup address information") => ForeignDetail::Dns,
+        // Windows' resolver (CONTRACT-1.8b H3): WSAHOST_NOT_FOUND (11001) to WSANO_DATA (11004),
+        // or its text.
+        ureq::Error::Io(io)
+            if io.raw_os_error().is_some_and(|c| (11001..=11004).contains(&c))
+                || io.to_string().to_ascii_lowercase().contains("no such host is known") =>
+        {
+            ForeignDetail::Dns
+        }
         ureq::Error::Io(io) => match io.kind() {
             ErrorKind::ConnectionRefused => ForeignDetail::Refused,
             ErrorKind::TimedOut => ForeignDetail::Timeout,
@@ -727,7 +735,7 @@ mod transport_detail_tests {
     /// CONTRACT-1.8b H3, test 2: the text "No such host is known" is `dns`.
     #[test]
     fn no_such_host_is_known_is_dns() {
-        let e = ureq::Error::Io(io::Error::new(ErrorKind::Other, "No such host is known. (os error 11001)"));
+        let e = ureq::Error::Io(io::Error::other("No such host is known. (os error 11001)"));
         assert_eq!(transport_detail(&e), Some(ForeignDetail::Dns));
     }
 

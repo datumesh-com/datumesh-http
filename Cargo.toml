@@ -29,6 +29,10 @@ datumesh-store = { version = "0.4.1", default-features = false }
 datumesh-engine = "0.4.2"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
 datumesh-formula = "0.3.0"
+# The manifest signature of bundle 1 (src/bundle.rs, CONTRACT-1.8b H2): RFC 8032 over the same
+# curve and hash as core's (the versions core uses).
+curve25519-dalek = { version = "5", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query", "matched-path", "original-uri"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tower = { version = "0.5.3", features = ["util"] }

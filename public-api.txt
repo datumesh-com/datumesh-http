@@ -31,6 +31,50 @@ impl core::marker::StructuralPartialEq for datumesh_http::apikeys::Principal
 pub const datumesh_http::apikeys::KEY_PREFIX: &str
 pub fn datumesh_http::apikeys::create_key(&std::path::Path, &str, core::option::Option<u32>, &std::path::Path) -> core::result::Result<(), datumesh_http::config::ConfigError>
 pub fn datumesh_http::apikeys::new_key() -> core::result::Result<alloc::string::String, datumesh_http::config::ConfigError>
+pub mod datumesh_http::bundle
+#[non_exhaustive] pub enum datumesh_http::bundle::BundleError
+pub datumesh_http::bundle::BundleError::Bind(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Descriptor(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Format(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Manifest(alloc::string::String)
+pub datumesh_http::bundle::BundleError::NotOwned(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Receipt(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Stopped(usize)
+pub datumesh_http::bundle::BundleError::Store(alloc::string::String)
+pub datumesh_http::bundle::BundleError::TxInFuture
+pub datumesh_http::bundle::BundleError::TxInFuture::now: alloc::string::String
+pub datumesh_http::bundle::BundleError::TxInFuture::receipt: alloc::string::String
+pub datumesh_http::bundle::BundleError::TxInFuture::tx: alloc::string::String
+impl core::clone::Clone for datumesh_http::bundle::BundleError
+pub fn datumesh_http::bundle::BundleError::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::bundle::BundleError
+impl core::cmp::PartialEq for datumesh_http::bundle::BundleError
+pub fn datumesh_http::bundle::BundleError::eq(&self, &Self) -> bool
+impl core::error::Error for datumesh_http::bundle::BundleError
+impl core::fmt::Debug for datumesh_http::bundle::BundleError
+pub fn datumesh_http::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::bundle::BundleError
+pub fn datumesh_http::bundle::BundleError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::bundle::BundleError
+#[non_exhaustive] pub struct datumesh_http::bundle::Imported
+pub datumesh_http::bundle::Imported::bound_at: alloc::string::String
+pub datumesh_http::bundle::Imported::functions_bound: usize
+pub datumesh_http::bundle::Imported::namespace: alloc::string::String
+pub datumesh_http::bundle::Imported::receipts: usize
+pub datumesh_http::bundle::Imported::versions: usize
+impl datumesh_http::bundle::Imported
+pub fn datumesh_http::bundle::Imported::to_jcs(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for datumesh_http::bundle::Imported
+pub fn datumesh_http::bundle::Imported::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::bundle::Imported
+impl core::cmp::PartialEq for datumesh_http::bundle::Imported
+pub fn datumesh_http::bundle::Imported::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::bundle::Imported
+pub fn datumesh_http::bundle::Imported::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::bundle::Imported
+pub fn datumesh_http::bundle::build(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
+pub fn datumesh_http::bundle::import_signed<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &[alloc::string::String], &dyn datumesh_engine::clock::Clock, &[u8]) -> core::result::Result<datumesh_http::bundle::Imported, datumesh_http::bundle::BundleError>
+pub fn datumesh_http::bundle::manifest_bytes(&str, &[(alloc::string::String, alloc::string::String)], &[alloc::string::String]) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::call
 pub enum datumesh_http::call::Rejection
 pub datumesh_http::call::Rejection::BadRequest(datumesh_core::error::ErrorCode)
@@ -479,6 +523,22 @@ pub fn datumesh_http::foreign::host_of(&str) -> &str
 pub fn datumesh_http::foreign::pct(&str) -> alloc::string::String
 pub type datumesh_http::foreign::ForeignError = datumesh_http::client::ClientError
 pub mod datumesh_http::keydoc
+#[non_exhaustive] pub enum datumesh_http::keydoc::DeclareError
+pub datumesh_http::keydoc::DeclareError::EndBeforeNow
+pub datumesh_http::keydoc::DeclareError::EndBeforeNow::end: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::EndBeforeNow::fn_name: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::EndBeforeNow::now: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::Key(datumesh_core::error::Error)
+pub datumesh_http::keydoc::DeclareError::StartBeforeNow
+pub datumesh_http::keydoc::DeclareError::StartBeforeNow::fn_name: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::StartBeforeNow::now: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::StartBeforeNow::start: alloc::string::String
+pub datumesh_http::keydoc::DeclareError::Store(alloc::string::String)
+impl core::error::Error for datumesh_http::keydoc::DeclareError
+impl core::fmt::Debug for datumesh_http::keydoc::DeclareError
+pub fn datumesh_http::keydoc::DeclareError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::keydoc::DeclareError
+pub fn datumesh_http::keydoc::DeclareError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum datumesh_http::keydoc::Declared
 pub datumesh_http::keydoc::Declared::Added
 pub datumesh_http::keydoc::Declared::Closed
@@ -492,11 +552,31 @@ impl core::fmt::Debug for datumesh_http::keydoc::Declared
 pub fn datumesh_http::keydoc::Declared::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for datumesh_http::keydoc::Declared
 impl core::marker::StructuralPartialEq for datumesh_http::keydoc::Declared
+pub fn datumesh_http::keydoc::declare_at<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &str, &str, core::option::Option<&str>, core::option::Option<&str>, &dyn datumesh_engine::clock::Clock) -> core::result::Result<datumesh_http::keydoc::Declared, datumesh_http::keydoc::DeclareError>
 pub fn datumesh_http::keydoc::with_declaration(&str, &[u8], &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(alloc::vec::Vec<u8>, datumesh_http::keydoc::Declared), datumesh_core::error::Error>
 pub fn datumesh_http::keydoc::with_key(&str, core::option::Option<&[u8]>, &datumesh_core::sign::SigningKey, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_core::error::Error>
 pub mod datumesh_http::publish
+#[non_exhaustive] pub enum datumesh_http::publish::PublishErrorKind
+pub datumesh_http::publish::PublishErrorKind::Backfill(alloc::string::String)
+pub datumesh_http::publish::PublishErrorKind::Line
+pub datumesh_http::publish::PublishErrorKind::OwnedVectorName(alloc::string::String)
+pub datumesh_http::publish::PublishErrorKind::StartBeforeNow
+pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::name: alloc::string::String
+pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::now: alloc::string::String
+pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::start: alloc::string::String
+impl core::clone::Clone for datumesh_http::publish::PublishErrorKind
+pub fn datumesh_http::publish::PublishErrorKind::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::publish::PublishErrorKind
+impl core::cmp::PartialEq for datumesh_http::publish::PublishErrorKind
+pub fn datumesh_http::publish::PublishErrorKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::publish::PublishErrorKind
+pub fn datumesh_http::publish::PublishErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::publish::PublishErrorKind
+pub fn datumesh_http::publish::PublishErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::publish::PublishErrorKind
 pub struct datumesh_http::publish::PublishError
 pub datumesh_http::publish::PublishError::detail: alloc::string::String
+pub datumesh_http::publish::PublishError::kind: datumesh_http::publish::PublishErrorKind
 pub datumesh_http::publish::PublishError::line: usize
 impl core::clone::Clone for datumesh_http::publish::PublishError
 pub fn datumesh_http::publish::PublishError::clone(&self) -> Self
@@ -509,6 +589,13 @@ pub fn datumesh_http::publish::PublishError::fmt(&self, &mut core::fmt::Formatte
 impl core::fmt::Display for datumesh_http::publish::PublishError
 pub fn datumesh_http::publish::PublishError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::publish::PublishError
+pub struct datumesh_http::publish::PublishOptions
+pub datumesh_http::publish::PublishOptions::backfill: core::option::Option<std::path::PathBuf>
+pub datumesh_http::publish::PublishOptions::clock: alloc::rcs::arc::Arc<(dyn datumesh_engine::clock::Clock + core::marker::Send + core::marker::Sync)>
+impl datumesh_http::publish::PublishOptions
+pub fn datumesh_http::publish::PublishOptions::system() -> datumesh_http::publish::PublishOptions
+impl core::clone::Clone for datumesh_http::publish::PublishOptions
+pub fn datumesh_http::publish::PublishOptions::clone(&self) -> Self
 #[non_exhaustive] pub struct datumesh_http::publish::Published
 pub datumesh_http::publish::Published::blob_bytes: u64
 pub datumesh_http::publish::Published::blobs: usize
@@ -529,12 +616,14 @@ pub fn datumesh_http::publish::Published::fmt(&self, &mut core::fmt::Formatter<'
 impl core::marker::StructuralPartialEq for datumesh_http::publish::Published
 pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::publish_stored_in<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_with<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::receipt_json(&datumesh_core::receipt::Receipt) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::slice
 pub const datumesh_http::slice::ARROW: &str
 pub mod datumesh_http::vectors
 pub fn datumesh_http::vectors::excel_descriptor(&datumesh_core::json::Value) -> core::option::Option<datumesh_core::json::Value>
 pub fn datumesh_http::vectors::import<S: datumesh_store::Store + ?core::marker::Sized>(&S, &std::path::Path, &str) -> datumesh_core::json::Value
+pub fn datumesh_http::vectors::import_in<S: datumesh_store::Store + ?core::marker::Sized>(&S, &std::path::Path, &str, &str, &[alloc::string::String]) -> core::result::Result<datumesh_core::json::Value, datumesh_http::publish::PublishError>
 #[non_exhaustive] pub enum datumesh_http::BuildError
 pub datumesh_http::BuildError::BaseUrl(datumesh_http::config::BaseUrlError)
 pub datumesh_http::BuildError::Config(datumesh_http::config::ConfigError)
