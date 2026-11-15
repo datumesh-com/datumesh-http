@@ -27,7 +27,9 @@ async fn publish_stored_cells() {
     let path = dir.join("cells.jsonl");
     std::fs::File::create(&path).unwrap().write_all(lines.as_bytes()).unwrap();
     let key = a.key.clone();
-    let first = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &path).unwrap());
+    let first = bl(|| {
+        datumesh_http::publish::publish_stored_with(&*a.store, &key, A, &[A.to_string()], &path, &historical()).unwrap()
+    });
     assert_eq!((first.functions, first.receipts, first.versions, first.blobs), (2, 2, 2, 1), "{first:?}");
     let again = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &path).unwrap());
     assert_eq!((again.functions, again.versions), (0, 0), "idempotent: {again:?}");
@@ -75,7 +77,10 @@ async fn publish_stored_cells() {
     ]);
     let fpath = dir.join("formulas.jsonl");
     std::fs::write(&fpath, [line.to_jcs(), b"\n".to_vec()].concat()).unwrap();
-    let f1 = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &fpath).unwrap());
+    let f1 = bl(|| {
+        datumesh_http::publish::publish_stored_with(&*a.store, &key, A, &[A.to_string()], &fpath, &historical())
+            .unwrap()
+    });
     assert_eq!((f1.functions, f1.cells), (1, 0), "{f1:?}");
     let f2 = bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &fpath).unwrap());
     assert_eq!(f2.functions, 0, "idempotent: {f2:?}");
@@ -96,6 +101,15 @@ async fn publish_stored_cells() {
         Some("בראשית ברא אלהים את השמים ואת הארץ׃")
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rule A (CONTRACT-1.8b H1): the seed binds from 2020 on (or 2026-11), so it is published with a
+/// clock at or before its earliest `bound`.
+fn historical() -> datumesh_http::publish::PublishOptions {
+    datumesh_http::publish::PublishOptions {
+        clock: std::sync::Arc::new(common::lite::FixedClock("2000-01-01T00:00:00.000000Z")),
+        backfill: None,
+    }
 }
 
 fn tempdir() -> std::path::PathBuf {

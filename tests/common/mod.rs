@@ -19,6 +19,7 @@ use datumesh_http::{Config, Mesh, MeshBuilder};
 use datumesh_store::pg_unstable::postgres::{Config as PgConfig, NoTls};
 use datumesh_store::{migrate, PgStore, PoolOptions, Store};
 
+pub mod lite;
 pub mod world;
 
 pub use datumesh_core::Resolver;

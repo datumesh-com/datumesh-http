@@ -102,6 +102,15 @@ async fn declarations_are_served_and_kept() {
     assert!(with_declaration(A, &doc, &name, "not a licence", FROM, None).is_err());
 }
 
+/// Rule A (CONTRACT-1.8b H1): the seed binds from 2020 on (or 2026-11), so it is published with a
+/// clock at or before its earliest `bound`.
+fn historical() -> datumesh_http::publish::PublishOptions {
+    datumesh_http::publish::PublishOptions {
+        clock: std::sync::Arc::new(common::lite::FixedClock("2000-01-01T00:00:00.000000Z")),
+        backfill: None,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_seed_under_licence_inheritance() {
     let a = Node::start(A, |_| {}).await;
@@ -110,7 +119,9 @@ async fn the_seed_under_licence_inheritance() {
     python("ecb.py", &[dir.to_str().unwrap(), A]);
     let key = a.key.clone();
     let ecb = dir.join("ecb.jsonl");
-    bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &ecb).unwrap());
+    bl(|| {
+        datumesh_http::publish::publish_stored_with(&*a.store, &key, A, &[A.to_string()], &ecb, &historical()).unwrap()
+    });
     // The strip_niqqud seed, as deploy/seed/scripture.py writes it (one verse).
     let text = "בְּרֵאשִׁ֖ית בָּרָ֣א אֱלֹהִ֑ים".as_bytes();
     std::fs::write(dir.join("gen-1-1.txt"), text).unwrap();
@@ -145,7 +156,10 @@ async fn the_seed_under_licence_inheritance() {
     );
     let scripture = dir.join("scripture.jsonl");
     std::fs::write(&scripture, lines).unwrap();
-    bl(|| datumesh_http::publish::publish_stored(&*a.store, &key, A, &scripture).unwrap());
+    bl(|| {
+        datumesh_http::publish::publish_stored_with(&*a.store, &key, A, &[A.to_string()], &scripture, &historical())
+            .unwrap()
+    });
     // The declarations, as deploy/licences.sh applies them with `datumesh-mesh declare`.
     let decls = python("declarations.py", &[A]);
     let mut n = 0;

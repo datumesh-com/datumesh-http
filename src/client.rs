@@ -711,3 +711,30 @@ fn collect_signers(v: &Value, hosts: &mut BTreeSet<String>) {
 pub fn name_host(name: &str) -> &str {
     host_of(name)
 }
+
+#[cfg(test)]
+mod transport_detail_tests {
+    use super::*;
+    use std::io::{self, ErrorKind};
+
+    /// CONTRACT-1.8b H3, test 1: a Windows resolver error code (WSAHOST_NOT_FOUND, 11001) is `dns`.
+    #[test]
+    fn a_windows_resolver_code_is_dns() {
+        let e = ureq::Error::Io(io::Error::from_raw_os_error(11001));
+        assert_eq!(transport_detail(&e), Some(ForeignDetail::Dns));
+    }
+
+    /// CONTRACT-1.8b H3, test 2: the text "No such host is known" is `dns`.
+    #[test]
+    fn no_such_host_is_known_is_dns() {
+        let e = ureq::Error::Io(io::Error::new(ErrorKind::Other, "No such host is known. (os error 11001)"));
+        assert_eq!(transport_detail(&e), Some(ForeignDetail::Dns));
+    }
+
+    /// CONTRACT-1.8b H3, test 3: everything else is unchanged.
+    #[test]
+    fn a_refused_connection_stays_refused() {
+        let e = ureq::Error::Io(io::Error::from(ErrorKind::ConnectionRefused));
+        assert_eq!(transport_detail(&e), Some(ForeignDetail::Refused));
+    }
+}

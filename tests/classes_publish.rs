@@ -7,12 +7,19 @@ mod common;
 
 use std::io::Write;
 
+use common::lite::FixedClock;
 use common::world::*;
 use common::*;
 use datumesh_core::json::Value;
-use datumesh_http::publish::{publish_stored, publish_stored_in, PublishError, Published};
+use datumesh_http::publish::{publish_stored, publish_stored_with, PublishError, PublishOptions, Published};
 
 const A: &str = "mesh-a.example";
+
+/// Rule A (CONTRACT-1.8b H1): the seeds bind from 2020 on, so they are published with a clock at or
+/// before their earliest `bound`.
+fn historical() -> PublishOptions {
+    PublishOptions { clock: std::sync::Arc::new(FixedClock("2000-01-01T00:00:00.000000Z")), backfill: None }
+}
 
 fn tempdir(label: &str) -> std::path::PathBuf {
     let d = out_dir().join(format!("classes-publish-{label}-{}", std::process::id()));
@@ -98,7 +105,7 @@ fn formula_lines(w: &World) -> Vec<String> {
 
 fn run(a: &Node, owned: &[String], path: &std::path::Path) -> Result<Published, PublishError> {
     let key = a.key.clone();
-    bl(|| publish_stored_in(&*a.store, &key, A, owned, path))
+    bl(|| publish_stored_with(&*a.store, &key, A, owned, path, &historical()))
 }
 
 /// A `class` line defines the class with core and formula, stores it and binds it with its methods,
