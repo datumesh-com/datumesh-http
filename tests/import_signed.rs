@@ -161,7 +161,7 @@ fn a_manifest_signed_by_a_fresh_key() {
 }
 
 /// 5. A receipt with one byte changed (value 42 to 43, signature kept), in a bundle whose manifest
-/// signs it, is `Receipt`.
+///    signs it, is `Receipt`.
 #[test]
 fn a_tampered_receipt() {
     let lite = Lite::new("import-5");
@@ -231,7 +231,7 @@ fn format_errors() {
 }
 
 /// 9. All or nothing: two receipts, the second tampered: neither cell has a version, and the name
-/// is unbound.
+///    is unbound.
 #[test]
 fn all_or_nothing() {
     let lite = Lite::new("import-9");
@@ -244,7 +244,7 @@ fn all_or_nothing() {
 }
 
 /// 10. The CLI `import-signed` prints a JSON line with `"functions_bound":1`. The binary reads the
-/// system clock and a PostgreSQL store (`DATABASE_URL`), so the receipt's tx is long past.
+///     system clock and a PostgreSQL store (`DATABASE_URL`), so the receipt's tx is long past.
 #[test]
 fn the_cli_prints_imported() {
     let db = TestDb::migrated();

@@ -134,7 +134,13 @@ fn publish(f: &Fixture, key: &SigningKey, tx: &str, value: &str) -> Result<datum
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{tx}.jsonl"));
     std::fs::write(&path, lines(tx, value)).unwrap();
-    let r = datumesh_http::publish::publish_stored(&f.store, key, H, &path).map_err(|e| e.to_string());
+    // The seed binds from 2020: published at a clock before that (rule A; CONTRACT-1.8b H1 test 10).
+    let opts = datumesh_http::publish::PublishOptions {
+        clock: Arc::new(common::lite::FixedClock("2000-01-01T00:00:00.000000Z")),
+        backfill: None,
+    };
+    let r = datumesh_http::publish::publish_stored_with(&f.store, key, H, &[H.to_string()], &path, &opts)
+        .map_err(|e| e.to_string());
     let _ = std::fs::remove_dir_all(&dir);
     r
 }

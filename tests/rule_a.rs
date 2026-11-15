@@ -106,7 +106,7 @@ fn a_future_start_binds_and_a_rerun_is_not_refused() {
 }
 
 /// 5. All or nothing: a valid function line (no `bound`), then a class line whose `bound` is in the
-/// past: `StartBeforeNow`, and the function's name is unbound too.
+///    past: `StartBeforeNow`, and the function's name is unbound too.
 #[test]
 fn nothing_is_written_unless_every_check_passes() {
     use common::world::{class_json, fx_rate_sig, NONE_KEYS_PAIR};
@@ -171,7 +171,7 @@ fn backfill_is_accepted_on_a_fresh_store() {
 }
 
 /// 7. After test 6, a second file under the same namespace binding a new name, with backfill, is
-/// refused with `Backfill`; the log still has one line.
+///    refused with `Backfill`; the log still has one line.
 #[test]
 fn backfill_is_refused_under_a_namespace_that_has_bindings() {
     let (lite, log) = backfilled();
@@ -189,7 +189,7 @@ fn declarations_of(lite: &Lite) -> KeyDocument {
 }
 
 /// 8. Declarations: a `valid_from` before the clock is refused; none means now; closing with a
-/// `valid_to` before the clock is refused.
+///    `valid_to` before the clock is refused.
 #[test]
 fn declarations_are_checked_against_the_clock() {
     let lite = Lite::new("rule-a-8");
@@ -208,7 +208,7 @@ fn declarations_are_checked_against_the_clock() {
 }
 
 /// 9. import-vectors: refused as a whole, before any write, when a name it would bind is under a
-/// namespace the mesh owns; the spec's vectors import as before.
+///    namespace the mesh owns; the spec's vectors import as before.
 #[test]
 fn import_vectors_refuses_owned_names() {
     let lite = Lite::new("rule-a-9");
