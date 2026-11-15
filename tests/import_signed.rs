@@ -406,8 +406,9 @@ fn names_added_after_signing() {
 fn a_descriptor_that_is_not_canonical() {
     let lite = Lite::new("import-r1-4");
     let text = String::from_utf8(bundle_b()).unwrap();
+    // Member order inside an embedded object carries no meaning (JCS); an unknown member does.
     let from = r#""code":{"body":"","lang":"stored"},"inputs":[],"#;
-    let to = r#""inputs":[],"code":{"body":"","lang":"stored"},"#;
+    let to = r#""code":{"body":"","lang":"stored"},"extra":1,"inputs":[],"#;
     assert!(text.contains(from));
     let b = text.replace(from, to).into_bytes();
     refused_with(&lite, &b, |e| matches!(e, BundleError::Descriptor(_)));
