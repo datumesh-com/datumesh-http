@@ -814,6 +814,10 @@ impl Inner {
                 attempt += 1;
                 continue;
             }
+            // A formula cell answered: the describe index learns of it (CONTRACT-1.8b H4).
+            if !stored && matches!(r, Ok(Answer::Receipt(_))) {
+                self.known.lock().unwrap_or_else(|p| p.into_inner()).note_computed(&target.cell);
+            }
             return match r {
                 Ok(Answer::Receipt(bytes)) => {
                     let Some(info) = self.receipt_info(&bytes) else {

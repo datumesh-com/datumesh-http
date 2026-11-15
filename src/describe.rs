@@ -7,13 +7,18 @@
 //! # Known objects
 //!
 //! Objects are never stored, so the objects the mesh *knows* (the ones an object id or a short id
-//! can name) are those of a class bound in the store (as of now) that have a recorded cell of one
-//! of the class's stored methods, found by the store's slice reads over that method with every
-//! argument open, or through the class's `extent.keys` function when it has one. They are kept in
-//! an in-memory index (object id to object, cell id to cell), built on the first describe or
-//! short-id request and built again when the mesh is told of a stored version
+//! can name) are the objects of the recorded cells of a class bound in the store (as of now): for
+//! every method `N/m` of the class, stored or computed (a formula), every recorded cell with every
+//! argument open. The stored cells come from the store's `slice_values` over `N/m`; the computed
+//! ones from its `computed_cells` over the same slice, at most [`INDEX_LIMIT`] per method (reaching
+//! it logs one warning and keeps what was read). The class's `extent` function is one of its
+//! methods, so its recorded cells are covered the same way. Nothing is evaluated to build the index,
+//! and no product of argument extents is formed.
+//!
+//! The index is kept in memory (object id to object, cell id to cell). It is built on the first
+//! describe or short-id request, and built again when the mesh is told of a stored version
 //! ([`Mesh::stored_version_added`](crate::Mesh::stored_version_added)), when it learns of a class,
-//! or after [`INDEX_TTL`].
+//! when a formula cell is computed that the index does not hold yet, or after [`INDEX_TTL`].
 //!
 //! The store cannot list the classes it holds, so the classes the index covers are the ones the
 //! mesh has *heard of*: a class a stored version was added under, a class a request or a describe
@@ -37,6 +42,9 @@ use crate::mesh::Inner;
 /// How long an index is used before it is built again (a stored version another process added is
 /// not announced to this mesh).
 pub(crate) const INDEX_TTL: Duration = Duration::from_secs(30);
+
+/// The most recorded cells of one method the index reads from the store (per method, per build).
+pub(crate) const INDEX_LIMIT: usize = 1_000_000;
 
 /// An object the mesh knows.
 #[derive(Clone, Debug)]
@@ -79,6 +87,16 @@ impl Index {
         }
         self.dirty = true;
     }
+
+    /// A formula cell was computed: the index is built again unless it already holds the cell.
+    pub(crate) fn note_computed(&mut self, cell: &Cell) {
+        let id = cell.id();
+        if self.built.as_ref().is_some_and(|b| b.cells.contains_key(&id)) {
+            return;
+        }
+        self.hear_of_class(&cell.ns);
+        self.announce(&id);
+    }
 }
 
 /// The class a cell's receipt names: its function's namespace, which is the class name when the
@@ -114,20 +132,30 @@ impl Inner {
         self.known.lock().unwrap_or_else(|p| p.into_inner()).hear_of_class(name);
     }
 
-    /// The cells of the stored function `fn_hash` (its descriptor `d`, named `name`) with every
-    /// argument open, as of `now`.
-    fn all_cells(&self, name: &str, fn_hash: &str, d: &datumesh_core::FunctionDescriptor, now: &str) -> Vec<Cell> {
+    /// The recorded cells of the function `fn_hash` (its descriptor `d`, named `name`) with every
+    /// argument open, as of `now`: its stored cells and its computed ones (at most [`INDEX_LIMIT`]).
+    fn recorded_cells(&self, name: &str, fn_hash: &str, d: &datumesh_core::FunctionDescriptor, now: &str) -> Vec<Cell> {
         let Some((ns, f)) = name.rsplit_once('/') else { return vec![] };
         let args: datumesh_core::Args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
         let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: fn_hash.into(), args };
         let Ok(slice) = Slice::from_value(&cell.to_value()) else { return vec![] };
-        match self.store.slice_values(&slice, now) {
+        let mut out = match self.store.slice_values(&slice, now) {
             Ok(vs) => vs.into_iter().map(|v| v.cell).collect(),
             Err(e) => {
                 tracing::warn!(target: "datumesh_http", error = %e, "describe index: slice_values");
                 vec![]
             }
+        };
+        match self.store.computed_cells(&slice, now, INDEX_LIMIT) {
+            Ok(cells) => {
+                if cells.len() >= INDEX_LIMIT {
+                    tracing::warn!(target: "datumesh_http", "describe index: {name} reached the limit");
+                }
+                out.extend(cells);
+            }
+            Err(e) => tracing::warn!(target: "datumesh_http", error = %e, "describe index: computed_cells"),
         }
+        out
     }
 
     /// Builds the index of known objects as of `now`.
@@ -148,16 +176,11 @@ impl Inner {
         for name in &ix.classes {
             let Ok(Some(c)) = self.class_binding(name, now) else { continue };
             let d = &c.descriptor;
-            // The class's stored methods; its `extent.keys` function is one of them when it can be
-            // named (the descriptor holds only its hash).
+            // Every method of the class, stored or computed (its `extent.keys` function among them).
             for (m, hash) in &d.methods {
                 let name_of = format!("{name}/{m}");
                 let Ok(fd) = self.descriptor(hash) else { continue };
-                if fd.lang != "stored" {
-                    continue;
-                }
-                let hash = hash.clone();
-                for cell in self.all_cells(&name_of, &hash, &fd, now) {
+                for cell in self.recorded_cells(&name_of, hash, &fd, now) {
                     let Some(object) = object_of(name, d, &cell.args) else { continue };
                     let Ok(id) = object.object_id(&c.class_hash) else { continue };
                     cells.insert(cell.id(), id.clone());

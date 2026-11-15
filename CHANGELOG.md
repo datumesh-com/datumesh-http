@@ -2,8 +2,8 @@
 
 ## 0.3.0 (unreleased; no release yet)
 
-For CONTRACT-1.8b (item 9): rule A, `--backfill` with its operator log, `import-signed` and bundle 1, and
-Windows resolver errors. `cargo public-api` against 0.2.2 shows additions only (`public-api.txt`),
+For CONTRACT-1.8b (item 9): rule A, `--backfill` with its operator log, `import-signed` and bundle 1, the
+describe index over computed cells, and Windows resolver errors. `cargo public-api` against 0.2.2 shows additions only (`public-api.txt`),
 but `publish::PublishError` gains the public field `kind`, and a binding or declaration that starts
 before the clock is now refused where it used to bind (see below): a minor release, not a patch.
 
@@ -18,8 +18,8 @@ before the clock is now refused where it used to bind (see below): a minor relea
 - **`--backfill` (H1).** `publish-stored <file> --backfill` with `DATUMESH_BACKFILL_LOG` (mode 0600,
   one JCS line per run that writes: `{"at","namespaces","starts"}`). Starts are not checked, but
   a backfill is refused when a name it would bind has a binding, or a namespace it would write
-  under is in the log. Interim: store 0.4.1 cannot list the bindings under a namespace. Store 0.4.2's
-  `has_bindings_under` replaces the log check.
+  under has any binding (store 0.4.2's `has_bindings_under`, CONTRACT-1.8b R2; the log records the
+  run and is no longer read for the check).
 - **`import-vectors` (H1).** `vectors::import_in(store, dir, now, host, owned)`: refused as a whole,
   before any write, when a name it would bind is under the mesh's own namespaces
   (`PublishErrorKind::OwnedVectorName`). `vectors::import` is unchanged.
@@ -29,6 +29,12 @@ before the clock is now refused where it used to bind (see below): a minor relea
   run descriptors, then receipts and versions, then the bindings last, so a crash leaves nothing
   answerable and a re-run completes the import. `docs/bundle-1.md`. The `datumesh-mesh
   import-signed <file>` command prints the result as one JCS line.
+- **The describe index covers computed cells (H4).** `GET /describe/{id}` names the objects of
+  every recorded cell of each method of a class, stored (`slice_values`) and computed
+  (`computed_cells`, store 0.4.2; at most 1,000,000 per method, one warning when reached). A formula
+  cell that is computed is announced to the index, so a short id of its object resolves. Nothing is
+  evaluated to build the index. Store 0.4.2 is required (`datumesh-store` 0.4.2, with `sqlite` in
+  the dev-dependencies).
 - **Windows resolver errors are `dns` (H3).** `client::transport_detail`: the Windows resolver codes
   11001 to 11004, and the text "No such host is known", are `dns` (they were `network`).
 

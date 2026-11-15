@@ -38,9 +38,8 @@
 //! `9999-12-31T23:59:59.999999Z`) and checks their starts; nothing is written unless every check
 //! passes. A `--backfill` run ([`PublishOptions::backfill`]) lifts the start check, and is refused
 //! ([`PublishErrorKind::Backfill`]) when a name it would bind has a binding, or when a namespace
-//! of such a name is in the operator log of an earlier backfill. (Store 0.4.1 cannot list the
-//! names under a namespace; the log is what stands in for that check. A run that writes appends
-//! one line to the log: `{"at": …, "namespaces": […], "starts": […]}`, a JCS object.)
+//! of such a name has any binding (store 0.4.2's `has_bindings_under`). A run that writes appends one line to the log: `{"at": …, "namespaces": […], "starts":
+//! […]}`, a JCS object.)
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
@@ -435,35 +434,17 @@ fn plan<S: Store + ?Sized>(
     Ok(binds)
 }
 
-/// The namespaces a backfill log holds (every line's `namespaces`); none when there is no log.
-fn logged_namespaces(log: &Path) -> Result<BTreeSet<String>, String> {
-    let text = match std::fs::read_to_string(log) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
-        Err(e) => return Err(format!("{}: {e}", log.display())),
-    };
-    let mut out = BTreeSet::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let v = json::parse(line.as_bytes()).map_err(|e| format!("{}: {}", log.display(), e))?;
-        if let Some(Value::Array(ns)) = v.get("namespaces") {
-            out.extend(ns.iter().filter_map(|n| n.as_str().map(str::to_string)));
-        }
-    }
-    Ok(out)
-}
-
-/// The backfill's checks: no name the file binds has a binding, and no namespace of one is in the
-/// log of an earlier backfill.
-fn backfill_check<S: Store + ?Sized>(store: &S, binds: &[Bind], log: &Path) -> Result<(), PublishError> {
-    let logged = logged_namespaces(log).map_err(|e| PublishError::typed(0, PublishErrorKind::Backfill(e)))?;
+/// The backfill's checks (since 0.3.0 with store 0.4.2): no name the file binds has a binding, and
+/// no namespace of one has any binding (`has_bindings_under`).
+fn backfill_check<S: Store + ?Sized>(store: &S, binds: &[Bind]) -> Result<(), PublishError> {
     for b in binds {
         let refuse = |why: String| PublishError::typed(b.line, PublishErrorKind::Backfill(why));
         if store.resolve_binding(&b.name, END).map_err(|e| PublishError::at(b.line, e.to_string()))?.is_some() {
             return Err(refuse(format!("{} has a binding", b.name)));
         }
         let ns = namespace_of(&b.name);
-        if logged.contains(ns) {
-            return Err(refuse(format!("{ns} has bindings: an earlier backfill wrote under it")));
+        if store.has_bindings_under(ns).map_err(|e| PublishError::at(b.line, e.to_string()))? {
+            return Err(refuse(format!("{ns} has bindings")));
         }
     }
     Ok(())
@@ -712,8 +693,8 @@ pub fn publish_stored_with<S: Store + ?Sized>(
     let now = opts.clock.now();
     let ctx = Ctx { host, owned, key_from: &key_from, now: &now, base: path.parent().unwrap_or(Path::new(".")) };
     let binds = plan(store, &ctx, &lines, opts.backfill.is_some())?;
-    if let Some(log) = &opts.backfill {
-        backfill_check(store, &binds, log)?;
+    if opts.backfill.is_some() {
+        backfill_check(store, &binds)?;
     }
     let (out, written) = write(store, key, &ctx, &lines)?;
     if let Some(log) = &opts.backfill {
