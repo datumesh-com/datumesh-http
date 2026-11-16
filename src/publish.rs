@@ -32,7 +32,8 @@
 //!   0.3.1, H4), each independently.
 //!
 //! The function of a cell is the one its name is bound to as of the cell's `tx`. Re-running a
-//! file changes nothing: descriptors and blobs are content-addressed, signing is deterministic
+//! file changes nothing (a cell line without `tx` whose latest version states the same thing is
+//! skipped, since 0.3.1): descriptors and blobs are content-addressed, signing is deterministic
 //! (the same receipt, the same hash), and a version already there is skipped. The key is never
 //! logged.
 //!
@@ -666,6 +667,21 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         let receipt = receipt_json(&r);
         let hash = Receipt::from_json(&receipt).map_err(|e| err(e.to_string()))?.hash().to_string();
         let id = cell.id();
+        // A line without tx takes the run's clock, so a re-run at a later clock would sign the same
+        // fact again as a new version. Re-running a file changes nothing: when the cell's latest
+        // version is the store's and states the same thing (type, value, valid, licence, summary),
+        // the line is skipped. A changed value is a new version, a correction.
+        if field("tx").is_none() {
+            if let Some((_, latest)) = cell_latest(self.store, &self.sim, &id).map_err(err)? {
+                if let Some(old) = self.store.receipt(&latest) {
+                    let old = json::parse(&old).map_err(|e| err(e.to_string()))?;
+                    let new = json::parse(&receipt).map_err(|e| err(e.to_string()))?;
+                    if ["type", "value", "valid", "licence", "summary"].iter().all(|k| old.get(k) == new.get(k)) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let version = match cell_latest(self.store, &self.sim, &id).map_err(err)? {
             Some((latest_tx, _)) if latest_tx.as_str() >= tx.as_str() => {
                 if cell_version_asof(self.store, &self.sim, &id, &tx).map_err(err)?.as_deref() != Some(hash.as_str()) {
