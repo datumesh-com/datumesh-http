@@ -131,11 +131,8 @@ fn a_formula_descriptor_is_refused_and_nothing_is_written() {
     let lite = Lite::new("h1-f");
     let good = stored_descriptor(&rate_sig());
     let formula = format!(r#"{{"code":{{"body":"1","lang":"formula"}},"inputs":[],"signature":{}}}"#, rate_sig());
-    let lines = [
-        descriptor_line(&good),
-        function_line(&format!("{NS}/plain"), &rate_sig(), None),
-        descriptor_line(&formula),
-    ];
+    let lines =
+        [descriptor_line(&good), function_line(&format!("{NS}/plain"), &rate_sig(), None), descriptor_line(&formula)];
     refused_whole(&lite, "f.jsonl", &lines, 3, NOW);
     assert!(lite.store.descriptor(&descriptor_hash(&good)).is_none());
     assert!(unbound(&lite, &format!("{NS}/plain")));

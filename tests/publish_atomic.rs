@@ -34,10 +34,7 @@ fn put_method_function(lite: &Lite) -> String {
 fn w1b_a_function_line_and_a_class_line_binding_one_name_in_one_run() {
     let lite = Lite::new("h2-w1b");
     let y = put_method_function(&lite);
-    let lines = [
-        function_line(RATE, &rate_sig_plain(), None),
-        class_line(CLASS, &pair_class(&[("rate", &y)]), None),
-    ];
+    let lines = [function_line(RATE, &rate_sig_plain(), None), class_line(CLASS, &pair_class(&[("rate", &y)]), None)];
     refused_whole(&lite, "f.jsonl", &lines, 2, NOW);
     assert!(unbound(&lite, RATE), "line 1's binding was not written");
     assert!(lite.store.resolve_class(CLASS, END).unwrap().is_none());
@@ -48,10 +45,8 @@ fn w1b_a_function_line_and_a_class_line_binding_one_name_in_one_run() {
 fn w1b_with_one_explicit_instant() {
     let lite = Lite::new("h2-w1b-explicit");
     let y = put_method_function(&lite);
-    let lines = [
-        function_line(RATE, &rate_sig_plain(), Some(T1)),
-        class_line(CLASS, &pair_class(&[("rate", &y)]), Some(T1)),
-    ];
+    let lines =
+        [function_line(RATE, &rate_sig_plain(), Some(T1)), class_line(CLASS, &pair_class(&[("rate", &y)]), Some(T1))];
     refused_whole(&lite, "f.jsonl", &lines, 2, NOW);
 }
 
@@ -244,7 +239,8 @@ fn a_class_naming_an_unknown_method_hash_is_refused_in_pass_one() {
     let lite = Lite::new("h2-d-unknown");
     let y = put_method_function(&lite);
     let missing = "0".repeat(64);
-    let d = stored_descriptor(&rate_sig());
+    // A descriptor the store does not hold yet (put_method_function put rate_sig's).
+    let d = stored_descriptor(&rate_sig_plain());
     let h = descriptor_hash(&d);
     let lines = [
         descriptor_line(&d),

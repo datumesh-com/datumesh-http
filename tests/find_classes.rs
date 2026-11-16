@@ -8,8 +8,8 @@ mod common;
 use std::sync::Arc;
 
 use common::lite::*;
-use common::pub031::*;
 use common::pub031::T1;
+use common::pub031::*;
 use common::*;
 use datumesh_core::json::Value;
 use datumesh_http::{Config, Mesh};
@@ -129,7 +129,9 @@ fn results(v: &Value) -> Vec<&Value> {
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
-    v.get(k).and_then(Value::as_str).unwrap_or_else(|| panic!("no string {k} in {}", String::from_utf8_lossy(&v.to_jcs())))
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("no string {k} in {}", String::from_utf8_lossy(&v.to_jcs())))
 }
 
 fn keys_of(v: &Value) -> Vec<String> {
@@ -213,7 +215,10 @@ async fn a_method_entry_has_its_class_and_function() {
     assert_eq!(s(r, "fn_hash"), m.rate_hash);
     assert_eq!(s(r, "since"), m.class_tx, "the method is bound with the class");
     assert!(matches!(r.get("descriptor"), Some(Value::Object(_))));
-    assert_eq!(keys_of(r), ["class", "description", "descriptor", "fn_hash", "kind", "name", "since"].map(String::from));
+    assert_eq!(
+        keys_of(r),
+        ["class", "description", "descriptor", "fn_hash", "kind", "name", "since"].map(String::from)
+    );
 }
 
 /// A function's result is what it was, apart from `kind`.

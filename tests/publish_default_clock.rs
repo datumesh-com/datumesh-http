@@ -56,11 +56,8 @@ fn a_cell_without_tx_and_asof_takes_the_clock_now() {
 #[test]
 fn tx_or_asof_alone_may_be_left_out() {
     let lite = Lite::new("h4-b");
-    let f = write(
-        &lite,
-        "f.jsonl",
-        &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", Some(NOW), None, None)],
-    );
+    let f =
+        write(&lite, "f.jsonl", &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", Some(NOW), None, None)]);
     let p = run(&lite, &f, NOW).unwrap();
     assert_eq!(p.versions, 1, "{p:?}");
     let h = lite.store.resolve_name(F, END).unwrap().unwrap();
@@ -68,11 +65,8 @@ fn tx_or_asof_alone_may_be_left_out() {
     assert_eq!(instants(&lite, &id, NOW), (NOW.to_string(), NOW.to_string(), NOW.to_string()));
 
     let lite = Lite::new("h4-c");
-    let f = write(
-        &lite,
-        "f.jsonl",
-        &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", None, Some(NOW), None)],
-    );
+    let f =
+        write(&lite, "f.jsonl", &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", None, Some(NOW), None)]);
     let p = run(&lite, &f, NOW).unwrap();
     assert_eq!(p.versions, 1, "{p:?}");
     let h = lite.store.resolve_name(F, END).unwrap().unwrap();
@@ -85,11 +79,8 @@ fn tx_or_asof_alone_may_be_left_out() {
 #[test]
 fn issued_still_defaults_as_before() {
     let lite = Lite::new("h4-d");
-    let f = write(
-        &lite,
-        "f.jsonl",
-        &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", None, None, Some(T1))],
-    );
+    let f =
+        write(&lite, "f.jsonl", &[function_line(F, &rate_sig(), None), rate_cell(F, "1.0832", None, None, Some(T1))]);
     run(&lite, &f, NOW).unwrap();
     let h = lite.store.resolve_name(F, END).unwrap().unwrap();
     let id = rate_cell_id(F, &h);

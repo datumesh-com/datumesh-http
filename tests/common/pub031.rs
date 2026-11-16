@@ -96,13 +96,7 @@ pub fn class_line(name: &str, descriptor: &str, bound: Option<&str>) -> String {
 
 /// A cell of an `fx_rate`-shaped function: `base`, `quote`, `date` (valid), a number value.
 /// `tx`, `asof` and `issued` are left out when `None`.
-pub fn rate_cell(
-    function: &str,
-    value: &str,
-    tx: Option<&str>,
-    asof: Option<&str>,
-    issued: Option<&str>,
-) -> String {
+pub fn rate_cell(function: &str, value: &str, tx: Option<&str>, asof: Option<&str>, issued: Option<&str>) -> String {
     let args = parse(
         r#"{"base":{"type":"string","value":"EUR"},"date":{"type":"date","value":"2026-03-02"},"quote":{"type":"string","value":"USD"}}"#,
     );
@@ -185,7 +179,8 @@ pub fn rate_cell_id(function: &str, fn_hash: &str) -> String {
     use datumesh_core::{Arg, Args, Cell, Scalar, Type};
     let (ns, f) = function.rsplit_once('/').unwrap();
     let mut args = Args::new();
-    for (k, t, v) in [("base", Type::String, "EUR"), ("date", Type::Date, "2026-03-02"), ("quote", Type::String, "USD")] {
+    for (k, t, v) in [("base", Type::String, "EUR"), ("date", Type::Date, "2026-03-02"), ("quote", Type::String, "USD")]
+    {
         args.insert(k.to_string(), Arg::Value(Scalar::from_lexical(t, v).unwrap()));
     }
     Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash: fn_hash.to_string(), args }.id()
