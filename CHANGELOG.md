@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased; no release yet)
+## 0.3.0 (2026-11-16)
 
 For CONTRACT-1.8b (item 9): rule A, `--backfill` with its operator log, `import-signed` and bundle 1, the
 describe index over computed cells, and Windows resolver errors. `cargo public-api` against 0.2.2 shows additions only (`public-api.txt`),
