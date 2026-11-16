@@ -548,8 +548,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             &start,
         )
         .map_err(|e| err(format!("define {name}: {e}")))?;
-        // put_class refuses under a suspended steward namespace, whether or not the name binds.
-        suspended(self.store, &def.descriptor.steward.namespace, n)?;
+        // put_class refuses under a suspended steward namespace, whether or not the name binds. A
+        // namespace row is a host's (9.9), so the steward namespace's host is asked: a steward with
+        // a path (datumesh.com/scripture) is not a host and Store::namespace refuses it.
+        suspended(self.store, host_of(&def.descriptor.steward.namespace), n)?;
         let hash = def.class_hash.clone();
         let methods: Vec<(String, String)> =
             def.descriptor.methods.iter().map(|(m, fh)| (format!("{name}/{m}"), fh.clone())).collect();
