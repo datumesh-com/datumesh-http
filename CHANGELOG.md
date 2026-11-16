@@ -23,6 +23,12 @@ part way (see below).
   version at or after the cell's `tx` that is not this receipt. Receipts are signed in the first pass
   (signing is deterministic), so their hashes are known there. The store is compared before and after
   in the tests (`tests/publish_atomic.rs`).
+- **Found by the production rehearsal of step 1.7a.** A class whose steward namespace has a path
+  (`datumesh.com/scripture`) is accepted: the first pass asks about the steward namespace's host,
+  which is what a suspension row is. A cell line without `tx` (it takes the run's clock) whose
+  cell's latest version states the same thing (type, value, valid, licence, summary) is skipped, so
+  a re-run at a later clock changes nothing; a changed value is still a new version.
+  `datumesh-mesh publish-stored` prints the `descriptors` count.
 - **Cells on the run's clock (H4).** A cell line may leave out `tx` and `asof`; each defaults to the run's
   clock now, independently, the same instant as the default binding start. `issued` defaults as before
   (the later of `asof` and the key's start). One file can bind and publish with one clock reading.
