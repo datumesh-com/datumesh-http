@@ -917,10 +917,99 @@ struct FindQuery {
     limit: Option<usize>,
 }
 
-/// Functions by keyword (a stub until 2.2).
+/// The whole of a `/find` match: every word of `words` is a substring of `hay` (lowercased).
+fn find_matches(words: &[String], hay: &str) -> bool {
+    words.iter().all(|w| hay.contains(w.as_str()))
+}
+
+/// A stored descriptor as JSON (`null` when it is not stored).
+fn descriptor_json(store: &dyn datumesh_store::Store, hash: &str) -> Value {
+    store.descriptor(hash).and_then(|d| json::parse(&d).ok()).unwrap_or(Value::Null)
+}
+
+/// The arguments and return of a class method's function (CONTRACT-1.7a H3): the arguments after
+/// the class's keys, each as its declaration without a unit that names another argument, and the
+/// return as declared.
+fn method_call_shape(store: &dyn datumesh_store::Store, fn_hash: &str, keys: &[String]) -> (Value, Value) {
+    let Some(bytes) = store.descriptor(fn_hash) else { return (Value::Null, Value::Null) };
+    let Ok(d) = datumesh_core::FunctionDescriptor::from_json(&bytes) else { return (Value::Null, Value::Null) };
+    let sig = d.signature.to_value();
+    let args = match sig.get("args") {
+        Some(Value::Object(m)) => Value::Object(
+            m.iter()
+                .filter(|(k, _)| !keys.contains(k))
+                .map(|(k, v)| {
+                    let v = match v {
+                        Value::Object(f) => Value::Object(
+                            f.iter()
+                                .filter(|(fk, fv)| fk != "unit" || matches!(fv, Value::String(_)))
+                                .cloned()
+                                .collect(),
+                        ),
+                        other => other.clone(),
+                    };
+                    (k.clone(), v)
+                })
+                .collect(),
+        ),
+        _ => Value::Object(vec![]),
+    };
+    (args, sig.get("returns").cloned().unwrap_or(Value::Null))
+}
+
+/// A class of the catalog as a `/find` result (CONTRACT-1.7a H3), when it matches: its name and
+/// description, its method names and the catalog descriptions of its methods.
+fn class_find(
+    inner: &crate::mesh::Inner,
+    name: &str,
+    desc: &str,
+    class: &datumesh_store::ClassBinding,
+    words: &[String],
+) -> Option<Value> {
+    let store: &dyn datumesh_store::Store = &*inner.store;
+    let catalog = &inner.config.catalog;
+    let bytes = store.class(&class.class_hash).ok().flatten()?;
+    let cd = datumesh_core::ClassDescriptor::from_json(&bytes).ok()?;
+    let keys: Vec<String> = cd.keys.keys().cloned().collect();
+    let mut hay = format!("{} {}", name.to_lowercase(), desc.to_lowercase());
+    let mut methods = Vec::new();
+    for (m, fh) in &cd.methods {
+        let full = format!("{name}/{m}");
+        let mdesc = catalog.get(&full);
+        hay.push_str(&format!(" {} {}", m.to_lowercase(), mdesc.map(|d| d.to_lowercase()).unwrap_or_default()));
+        let (args, returns) = method_call_shape(store, fh, &keys);
+        let mut obj = vec![
+            ("fn".into(), Value::String(full)),
+            ("fn_hash".into(), Value::String(fh.clone())),
+            ("args".into(), args),
+            ("returns".into(), returns),
+        ];
+        if let Some(d) = mdesc {
+            obj.push(("description".into(), Value::String(d.clone())));
+        }
+        methods.push((m.clone(), Value::Object(obj)));
+    }
+    if !find_matches(words, &hay) {
+        return None;
+    }
+    let descriptor = json::parse(&bytes).unwrap_or(Value::Null);
+    Some(Value::Object(vec![
+        ("kind".into(), Value::String("class".into())),
+        ("name".into(), Value::String(name.into())),
+        ("description".into(), Value::String(desc.into())),
+        ("class_hash".into(), Value::String(class.class_hash.clone())),
+        ("descriptor".into(), descriptor),
+        ("methods".into(), Value::Object(methods)),
+        ("since".into(), Value::String(class.tx.clone())),
+    ]))
+}
+
+/// Functions, classes and methods of the catalog by keyword (CONTRACT-1.7a H3): each entry the
+/// catalog names that is bound as of now, with its `kind`. A catalog name that is not bound is
+/// skipped.
 #[utoipa::path(get, path = "/find",
-    params(("q" = String, Query, description = "Keywords, all of which must appear (case-insensitive) in the function's name or catalog description."), ("limit" = Option<usize>, Query, description = "At most this many results (default 20, at most 100).")),
-    responses((status = 200, description = "`{\"query\", \"results\": [{\"name\", \"fn_hash\", \"since\", \"description\", \"descriptor\"}]}`", content_type = "application/json")))]
+    params(("q" = String, Query, description = "Keywords, all of which must appear (case-insensitive) in the name or the catalog description of an entry; a class is also matched by its methods' names and their catalog descriptions."), ("limit" = Option<usize>, Query, description = "At most this many results (default 20, at most 100).")),
+    responses((status = 200, description = "`{\"query\", \"results\": [...]}`: each result has a `kind`. `function`: `{\"kind\", \"name\", \"description\", \"descriptor\", \"fn_hash\", \"since\"}`. `class`: `{\"kind\", \"name\", \"description\", \"class_hash\", \"descriptor\" (the flattened class descriptor), \"methods\": {<m>: {\"fn\": \"<name>/<m>\", \"fn_hash\", \"args\" (the arguments after the keys), \"returns\", \"description\"?}}, \"since\"}`. `method` (a catalog entry `<class>/<m>`): `{\"kind\", \"name\", \"description\", \"class\", \"fn_hash\", \"descriptor\", \"since\"}`.", content_type = "application/json")))]
 async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: HeaderMap, req: Request) -> Response {
     if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
         return r;
@@ -934,23 +1023,52 @@ async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: Hea
         .run(move || {
             let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
             let now = inner.now();
+            let store: &dyn datumesh_store::Store = &*inner.store;
             let mut results = Vec::new();
             for (name, desc) in &inner.config.catalog {
-                let hay = format!("{} {}", name.to_lowercase(), desc.to_lowercase());
-                if !words.iter().all(|w| hay.contains(w.as_str())) {
-                    continue;
-                }
-                let Ok(Some(b)) = inner.store.resolve_binding(name, &now) else { continue };
-                let d = inner.store.descriptor(&b.fn_hash).and_then(|d| json::parse(&d).ok()).unwrap_or(Value::Null);
-                results.push(Value::Object(vec![
-                    ("description".into(), Value::String(desc.clone())),
-                    ("descriptor".into(), d),
-                    ("fn_hash".into(), Value::String(b.fn_hash)),
-                    ("name".into(), Value::String(name.clone())),
-                    ("since".into(), Value::String(b.tx)),
-                ]));
-                if results.len() >= limit {
-                    break;
+                let entry = if let Ok(Some(cb)) = store.resolve_class_binding(name, &now) {
+                    class_find(&inner, name, desc, &cb, &words)
+                } else {
+                    let parent = name.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+                    // A method entry: `<class>/<m>` where the class is bound and has method `m`.
+                    let is_method = match store.resolve_class_binding(parent, &now) {
+                        Ok(Some(cb)) if !parent.is_empty() => {
+                            let short = &name[parent.len() + 1..];
+                            store
+                                .class(&cb.class_hash)
+                                .ok()
+                                .flatten()
+                                .and_then(|bytes| datumesh_core::ClassDescriptor::from_json(&bytes).ok())
+                                .is_some_and(|cd| cd.methods.contains_key(short))
+                        }
+                        _ => false,
+                    };
+                    let hay = format!("{} {}", name.to_lowercase(), desc.to_lowercase());
+                    if !find_matches(&words, &hay) {
+                        None
+                    } else if let Ok(Some(b)) = store.resolve_binding(name, &now) {
+                        let descriptor = descriptor_json(store, &b.fn_hash);
+                        let mut m = vec![
+                            ("kind".into(), Value::String(if is_method { "method" } else { "function" }.into())),
+                            ("description".into(), Value::String(desc.clone())),
+                            ("descriptor".into(), descriptor),
+                            ("fn_hash".into(), Value::String(b.fn_hash)),
+                            ("name".into(), Value::String(name.clone())),
+                            ("since".into(), Value::String(b.tx)),
+                        ];
+                        if is_method {
+                            m.push(("class".into(), Value::String(parent.into())));
+                        }
+                        Some(Value::Object(m))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(e) = entry {
+                    results.push(e);
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
             Value::Object(vec![("query".into(), Value::String(query)), ("results".into(), Value::Array(results))])

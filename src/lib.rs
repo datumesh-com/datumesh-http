@@ -16,7 +16,7 @@
 //! | `GET /slice/<call or uri with *>` | the members of a stored function's slice: JSON pages by key, or an Arrow IPC stream |
 //! | `GET /receipt/<hash>`, `/descriptor/<hash>`, `/manifest/<slice id>/<members hash>`, `/blob/<sha256>` | the bytes, immutable (also `/slice/<slice id>/<members hash>`, SPEC 15.13) |
 //! | `GET /explain/<call or uri>` | the lineage as nested envelopes, depth-bounded (`depth=`, default 4, at most 16) |
-//! | `GET /find?q=` | functions of the catalog by keyword (a stub until 2.2) |
+//! | `GET /find?q=` | functions, classes and methods of the catalog by keyword, each with its `kind` (a stub until 2.2) |
 //! | `POST /verify` | the core verifier on a submitted receipt with this mesh's keys |
 //! | `GET /jobs/<id>` | a job: `pending`, or the envelope of the original request |
 //! | `GET /.well-known/datumesh.json`, `/.well-known/datumesh-mesh.json` | the key document (the store's namespace record for the host, SPEC 9.2) and the mesh document (SPEC 9.6; its URLs on [`Config::base_url`] when set: `http://` on a loopback address for an unrooted host only, local use, not valid under spec-0.4.3) |

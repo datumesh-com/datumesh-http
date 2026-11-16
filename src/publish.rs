@@ -3,6 +3,10 @@
 //!
 //! Each line is one of:
 //!
+//! * a descriptor (since 0.3.1, CONTRACT-1.7a H1): `{"descriptor": <function descriptor>}`: the
+//!   descriptor is put with `put_descriptor` and binds nothing. Only a stored function is
+//!   accepted (`code.lang` = `stored`, `code.body` = `""`, `inputs` = `[]`); any other is refused
+//!   at its line. A class later in the file (or in a later run) may name its hash as a method;
 //! * a function: `{"function": "<ns>/<name>", "signature": {...}, "bound": "<instant>"}`: the
 //!   descriptor `{"code": {"body": "", "lang": "stored"}, "inputs": [], "signature": ...}`
 //!   is put and the name bound to it from `bound` (unless it already is);
@@ -16,14 +20,16 @@
 //!   rules: the class is under one of the mesh's own namespaces, else `E_CLASS_OWNER`; the method
 //!   functions are those bound as of `bound`), `put_class`, and `bind_class` from `bound` unless the
 //!   name is already bound to that class hash. Method functions come first in the file (or in an
-//!   earlier one), `bound` later than theirs.
+//!   earlier one), `bound` later than theirs. A line with both `class` and `descriptor` is a class
+//!   line;
 //! * a cell: `{"cell": {"fn": "<ns>/<name>", "args": {<name>: <typed scalar>}}, "value": <typed
-//!   scalar> or {"blob": "<file>", "media_type": "<type>"}, "tx", "asof", "issued"?, "licence",
+//!   scalar> or {"blob": "<file>", "media_type": "<type>"}, "tx"?, "asof"?, "issued"?, "licence",
 //!   "summary"}`: a blob's file (relative to the JSON lines file) is put with `put_blob` and the
 //!   value is `<sha256>:<length>:<media type>`; the receipt is signed with the mesh's key
 //!   (`computed_by` the mesh host, `publisher` the cell's namespace, `valid` its valid-time
 //!   arguments; `issued` defaults to the later of `asof` and the key's start) and stored with
-//!   `put_receipt` and `put_version`.
+//!   `put_receipt` and `put_version`. `tx` and `asof` default to the run's clock now (since
+//!   0.3.1, H4), each independently.
 //!
 //! The function of a cell is the one its name is bound to as of the cell's `tx`. Re-running a
 //! file changes nothing: descriptors and blobs are content-addressed, signing is deterministic
@@ -33,21 +39,30 @@
 //! Rule A (since 0.3.0, CONTRACT-1.8b H1): no binding starts earlier than the mesh clock. The
 //! start of a binding (a name's, a class's, or a class method's `N/m`) is its `bound`, or the
 //! clock's now when `bound` is left out, and a start earlier than now is refused with
-//! [`PublishErrorKind::StartBeforeNow`]. The file is read in two passes: the first works out
-//! which binds would happen (a bind is skipped when the name is already bound to that hash as of
-//! `9999-12-31T23:59:59.999999Z`) and checks their starts; nothing is written unless every check
-//! passes. A `--backfill` run ([`PublishOptions::backfill`]) lifts the start check, and is refused
-//! ([`PublishErrorKind::Backfill`]) when a name it would bind has a binding, or when a namespace
-//! of such a name has any binding (store 0.4.2's `has_bindings_under`). A run that writes appends one line to the log: `{"at": …, "namespaces": […], "starts":
-//! […]}`, a JCS object.)
+//! [`PublishErrorKind::StartBeforeNow`]. A `--backfill` run ([`PublishOptions::backfill`]) lifts
+//! the start check, and is refused ([`PublishErrorKind::Backfill`]) when a name it would bind has
+//! a binding, or when a namespace of such a name has any binding (store 0.4.2's
+//! `has_bindings_under`). A run that writes appends one line to the log: `{"at": …, "namespaces":
+//! […], "starts": […]}`, a JCS object.
+//!
+//! No partial writes (since 0.3.1, CONTRACT-1.7a H2): the file is read in two passes. The first
+//! plans every write the second one makes, and checks each as the store will: a bind is refused
+//! when its start is not later than the latest binding of its name (the store's, or one planned
+//! earlier in the file, W1b), when the name is of the other kind (a class or a function), or when
+//! its namespace is suspended; a cell's function must be bound as of its `tx` (counting the
+//! earlier binds of the file), its blob must be readable, `tx <= asof <= issued`, and a version
+//! at or after its `tx` must be this receipt. Receipts are signed in the first pass (signing is
+//! deterministic), so their hashes are known. A file that the first pass refuses writes nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, ReceiptBuilder, Scalar, SigningKey, Type};
+use datumesh_core::{
+    sha256_hex, Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, Receipt, ReceiptBuilder, Scalar, SigningKey, Type,
+};
 use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
 use datumesh_store::Store;
@@ -73,6 +88,8 @@ pub struct Published {
     pub blobs: usize,
     /// Blob bytes put.
     pub blob_bytes: u64,
+    /// Descriptors newly put by descriptor lines (since 0.3.1); a re-run counts 0.
+    pub descriptors: u64,
 }
 
 /// How a run reads the clock and whether it backfills (CONTRACT-1.8b H1).
@@ -168,6 +185,11 @@ fn namespace_of(name: &str) -> &str {
     name.rsplit_once('/').map(|(ns, _)| ns).unwrap_or("")
 }
 
+/// The host of a name: its first segment.
+fn host_of(name: &str) -> &str {
+    name.split('/').next().unwrap_or("")
+}
+
 /// The definer of a class `name`: its own namespace when the mesh owns the name's host, else the
 /// mesh's host (which no class name under another host has, so core answers `E_CLASS_OWNER`).
 fn definer<'a>(name: &'a str, host: &'a str, owned: &[String]) -> &'a str {
@@ -187,26 +209,25 @@ fn bound_of(v: &Value, line: usize, now: &str) -> Result<String, PublishError> {
     }
 }
 
-/// The bindings a dry run has made so far: the file's own, which are seen before the store's.
+/// The bindings and versions a pass one has planned so far: the file's own, which are seen before
+/// the store's.
 #[derive(Default)]
 struct Simulation {
     /// Function name to the (tx, function hash) of each bind the file would make.
-    functions: std::collections::BTreeMap<String, Vec<(String, String)>>,
+    functions: BTreeMap<String, Vec<(String, String)>>,
     /// Class name to the (tx, class hash) of each class bind the file would make.
-    classes: std::collections::BTreeMap<String, Vec<(String, String)>>,
+    classes: BTreeMap<String, Vec<(String, String)>>,
     /// Canonical bytes by function hash, of the descriptors the file would store.
-    descriptors: std::collections::BTreeMap<String, Vec<u8>>,
+    descriptors: BTreeMap<String, Vec<u8>>,
     /// Canonical bytes by class hash, of the classes the file would store.
-    class_bytes: std::collections::BTreeMap<String, Vec<u8>>,
+    class_bytes: BTreeMap<String, Vec<u8>>,
+    /// Cell id to the (tx, receipt hash) of each version the file would add, in tx order.
+    versions: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl Simulation {
     /// The latest of `binds`' entries for `name` with tx <= `at`.
-    fn latest(
-        binds: &std::collections::BTreeMap<String, Vec<(String, String)>>,
-        name: &str,
-        at: &str,
-    ) -> Option<(String, String)> {
+    fn latest(binds: &BTreeMap<String, Vec<(String, String)>>, name: &str, at: &str) -> Option<(String, String)> {
         binds.get(name)?.iter().filter(|(t, _)| t.as_str() <= at).max_by(|a, b| a.0.cmp(&b.0)).cloned()
     }
 }
@@ -289,29 +310,89 @@ fn current_class<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str) -> 
     store.resolve_class(name, END).map_err(|e| e.to_string())
 }
 
+/// The function hash `name` means as of `at`, counting the file's earlier binds.
+fn function_at<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str, at: &str) -> Result<Option<String>, String> {
+    let stored = store.resolve_binding(name, at).map_err(|e| e.to_string())?;
+    let simmed = Simulation::latest(&sim.functions, name, at);
+    Ok(match (stored, simmed) {
+        (Some(b), Some((t, h))) if t >= b.tx => Some(h),
+        (Some(b), _) => Some(b.fn_hash),
+        (None, Some((_, h))) => Some(h),
+        (None, None) => None,
+    })
+}
+
+/// The latest binding tx of `name` (a class's, or a function's), the store's or the file's.
+fn latest_bind<S: Store + ?Sized>(
+    store: &S,
+    sim: &Simulation,
+    name: &str,
+    class: bool,
+) -> Result<Option<String>, String> {
+    let stored: Option<String> = if class {
+        store.resolve_class_binding(name, END).map_err(|e| e.to_string())?.map(|b| b.tx)
+    } else {
+        store.resolve_binding(name, END).map_err(|e| e.to_string())?.map(|b| b.tx)
+    };
+    let binds = if class { &sim.classes } else { &sim.functions };
+    let planned = binds.get(name).and_then(|v| v.iter().map(|(t, _)| t.clone()).max());
+    Ok(match (stored, planned) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    })
+}
+
+/// Whether `name` is bound as the other kind: a function for a class, a class for a function.
+fn bound_as_other<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str, class: bool) -> Result<bool, String> {
+    if class {
+        Ok(store.resolve_binding(name, END).map_err(|e| e.to_string())?.is_some() || sim.functions.contains_key(name))
+    } else {
+        Ok(store.resolve_class_binding(name, END).map_err(|e| e.to_string())?.is_some()
+            || sim.classes.contains_key(name))
+    }
+}
+
+/// The latest version of a cell, the store's or the file's: its tx and receipt hash.
+fn cell_latest<S: Store + ?Sized>(store: &S, sim: &Simulation, id: &str) -> Result<Option<(String, String)>, String> {
+    let stored = store.latest(id).map_err(|e| e.to_string())?.map(|v| (v.tx, v.receipt_hash));
+    let planned = sim.versions.get(id).and_then(|v| v.last().cloned());
+    Ok(match (stored, planned) {
+        (Some(a), Some(b)) => Some(if b.0 > a.0 { b } else { a }),
+        (a, b) => a.or(b),
+    })
+}
+
+/// The receipt hash of a cell's version as of `at`, the store's or the file's.
+fn cell_version_asof<S: Store + ?Sized>(
+    store: &S,
+    sim: &Simulation,
+    id: &str,
+    at: &str,
+) -> Result<Option<String>, String> {
+    let stored = store.version_asof(id, at).map_err(|e| e.to_string())?.map(|v| (v.tx, v.receipt_hash));
+    let planned = sim.versions.get(id).and_then(|v| v.iter().rev().find(|(t, _)| t.as_str() <= at).cloned());
+    let latest = match (stored, planned) {
+        (Some(a), Some(b)) => Some(if b.0 > a.0 { b } else { a }),
+        (a, b) => a.or(b),
+    };
+    Ok(latest.map(|x| x.1))
+}
+
+/// Whether a namespace is suspended (the store refuses binds and class puts under it).
+fn suspended<S: Store + ?Sized>(store: &S, host: &str, line: usize) -> Result<(), PublishError> {
+    match store.namespace(host) {
+        Ok(Some(n)) if n.suspended_at.is_some() => {
+            Err(PublishError::at(line, format!("{host} is suspended: no new bindings or classes under it")))
+        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(PublishError::at(line, e.to_string())),
+    }
+}
+
 /// A binding a run would make: the line that makes it and its name.
 struct Bind {
     line: usize,
     name: String,
-}
-
-/// Records a bind that would happen, refusing a start earlier than now unless backfilling.
-fn record(
-    binds: &mut Vec<Bind>,
-    line: usize,
-    name: &str,
-    start: &str,
-    now: &str,
-    backfill: bool,
-) -> Result<(), PublishError> {
-    if !backfill && start < now {
-        return Err(PublishError::typed(
-            line,
-            PublishErrorKind::StartBeforeNow { name: name.into(), start: start.into(), now: now.into() },
-        ));
-    }
-    binds.push(Bind { line, name: name.into() });
-    Ok(())
 }
 
 /// What a run writes, for the backfill log: the namespaces and starts of its binds.
@@ -340,6 +421,18 @@ struct Ctx<'a> {
     base: &'a Path,
 }
 
+/// One write the second pass makes, planned (and checked) by the first.
+enum Op {
+    /// A descriptor line: put; counted when newly put.
+    Descriptor { hash: String, bytes: Vec<u8>, counted: bool },
+    /// A function (stored or formula): put its descriptor, and bind the name when `bind`.
+    Function { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool },
+    /// A class: put it, and bind it (its methods with it, in the store) when `bind`.
+    Class { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool, methods: Vec<String> },
+    /// A cell: its blob, its receipt, and the version when `version`.
+    Cell { tx: String, id: String, hash: String, receipt: Vec<u8>, blob: Option<Vec<u8>>, version: bool },
+}
+
 /// The lines of a file, numbered, without the blank ones.
 fn read_lines(path: &Path) -> Result<Vec<(usize, String)>, PublishError> {
     let file = std::fs::File::open(path).map_err(|e| PublishError::at(0, format!("{}: {e}", path.display())))?;
@@ -354,84 +447,247 @@ fn read_lines(path: &Path) -> Result<Vec<(usize, String)>, PublishError> {
     Ok(out)
 }
 
-/// Pass one: the binds the lines would make, each start checked (rule A), nothing written.
-fn plan<S: Store + ?Sized>(
-    store: &S,
-    ctx: &Ctx<'_>,
-    lines: &[(usize, String)],
+/// Pass one: plans the writes of the lines and checks each as the store will (CONTRACT-1.7a H2).
+struct Planner<'a, S: Store + ?Sized> {
+    store: &'a S,
+    key: &'a SigningKey,
+    ctx: Ctx<'a>,
     backfill: bool,
-) -> Result<Vec<Bind>, PublishError> {
-    let mut sim = Simulation::default();
-    let mut binds = Vec::new();
-    for (n, text) in lines {
-        let n = *n;
-        let err = |d: String| PublishError::at(n, d);
-        let v = json::parse(text.as_bytes()).map_err(|e| err(e.to_string()))?;
-        if let Some(name) = v.get("class").and_then(Value::as_str) {
-            let descriptor = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let def = datumesh_formula::definition::define_class(
-                name,
-                &descriptor.to_jcs(),
-                definer(name, ctx.host, ctx.owned),
-                &Callers { store, sim: Some(&sim) },
-                &start,
-            )
-            .map_err(|e| err(format!("define {name}: {e}")))?;
-            if current_class(store, &sim, name).map_err(err)?.as_deref() != Some(def.class_hash.as_str()) {
-                record(&mut binds, n, name, &start, ctx.now, backfill)?;
-                sim.classes.entry(name.to_string()).or_default().push((start.clone(), def.class_hash.clone()));
-                sim.class_bytes.insert(def.class_hash.clone(), def.bytes.clone());
-                // bind_class binds the methods too, at the class's start.
-                for (m, fh) in &def.descriptor.methods {
-                    let mname = format!("{name}/{m}");
-                    if current_function(store, &sim, &mname).map_err(err)?.as_deref() != Some(fh.as_str()) {
-                        record(&mut binds, n, &mname, &start, ctx.now, backfill)?;
-                        sim.functions.entry(mname).or_default().push((start.clone(), fh.clone()));
-                    }
-                }
-            }
-            continue;
-        }
-        let function = if let Some(name) = v.get("function").and_then(Value::as_str) {
-            let sig = v.get("signature").ok_or_else(|| err("a function without a signature".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let d = Value::Object(vec![
-                ("code".into(), Value::Object(vec![("body".into(), s("")), ("lang".into(), s("stored"))])),
-                ("inputs".into(), Value::Array(vec![])),
-                ("signature".into(), sig.clone()),
-            ]);
-            let fd = FunctionDescriptor::from_value(&d).map_err(|e| err(e.to_string()))?;
-            Some((name, start, fd.hash(), fd.canonical()))
-        } else if let Some(name) = v.get("formula").and_then(Value::as_str) {
-            let source =
-                v.get("source").and_then(Value::as_str).ok_or_else(|| err("a formula without source".into()))?;
-            let sig = v.get("signature").ok_or_else(|| err("a formula without a signature".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let def = datumesh_formula::definition::define_function(
-                name,
-                source,
-                sig,
-                &Default::default(),
-                &Callers { store, sim: Some(&sim) },
-                &start,
-            )
-            .map_err(|e| err(format!("define {name}: {e}")))?;
-            Some((name, start, def.fn_hash, def.bytes))
-        } else if v.get("cell").is_none() {
-            return Err(err("neither a function nor a cell".into()));
-        } else {
-            None
-        };
-        if let Some((name, start, h, bytes)) = function {
-            if current_function(store, &sim, name).map_err(err)?.as_deref() != Some(h.as_str()) {
-                record(&mut binds, n, name, &start, ctx.now, backfill)?;
-                sim.functions.entry(name.to_string()).or_default().push((start, h.clone()));
-                sim.descriptors.insert(h, bytes);
-            }
-        }
+    sim: Simulation,
+    ops: Vec<Op>,
+    binds: Vec<Bind>,
+}
+
+impl<S: Store + ?Sized> Planner<'_, S> {
+    fn callers(&self) -> Callers<'_, S> {
+        Callers { store: self.store, sim: Some(&self.sim) }
     }
-    Ok(binds)
+
+    fn run(&mut self, lines: &[(usize, String)]) -> Result<(), PublishError> {
+        for (n, text) in lines {
+            let n = *n;
+            let err = |d: String| PublishError::at(n, d);
+            let v = json::parse(text.as_bytes()).map_err(|e| err(e.to_string()))?;
+            if let Some(name) = v.get("class").and_then(Value::as_str) {
+                self.class_line(n, name, &v)?;
+            } else if let Some(d) = v.get("descriptor") {
+                self.descriptor_line(n, d)?;
+            } else if let Some(name) = v.get("function").and_then(Value::as_str) {
+                let sig = v.get("signature").ok_or_else(|| err("a function without a signature".into()))?;
+                let start = bound_of(&v, n, self.ctx.now)?;
+                let fd = FunctionDescriptor::from_value(&stored_value(sig)).map_err(|e| err(e.to_string()))?;
+                self.function(n, name, start, fd.hash(), fd.canonical())?;
+            } else if let Some(name) = v.get("formula").and_then(Value::as_str) {
+                let source =
+                    v.get("source").and_then(Value::as_str).ok_or_else(|| err("a formula without source".into()))?;
+                let sig = v.get("signature").ok_or_else(|| err("a formula without a signature".into()))?;
+                let start = bound_of(&v, n, self.ctx.now)?;
+                let def = datumesh_formula::definition::define_function(
+                    name,
+                    source,
+                    sig,
+                    &Default::default(),
+                    &self.callers(),
+                    &start,
+                )
+                .map_err(|e| err(format!("define {name}: {e}")))?;
+                self.function(n, name, start, def.fn_hash, def.bytes)?;
+            } else if let Some(cell_v) = v.get("cell") {
+                self.cell_line(n, &v, cell_v)?;
+            } else {
+                return Err(err("neither a function nor a cell".into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// `{"descriptor": ...}`: a stored function's descriptor, put and bound to nothing.
+    fn descriptor_line(&mut self, n: usize, d: &Value) -> Result<(), PublishError> {
+        let fd = FunctionDescriptor::from_value(d).map_err(|e| PublishError::at(n, e.to_string()))?;
+        if fd.lang != "stored" || !fd.body.is_empty() || !fd.inputs.is_empty() {
+            return Err(PublishError::at(
+                n,
+                "a descriptor line takes a stored function only: code.lang stored, code.body empty, no inputs",
+            ));
+        }
+        let (hash, bytes) = (fd.hash(), fd.canonical());
+        self.sim.descriptors.insert(hash.clone(), bytes.clone());
+        self.ops.push(Op::Descriptor { hash, bytes, counted: true });
+        Ok(())
+    }
+
+    /// A function's descriptor (stored or formula): put, and bound when its name does not mean it.
+    fn function(
+        &mut self,
+        n: usize,
+        name: &str,
+        start: String,
+        hash: String,
+        bytes: Vec<u8>,
+    ) -> Result<(), PublishError> {
+        self.sim.descriptors.insert(hash.clone(), bytes.clone());
+        let current = current_function(self.store, &self.sim, name).map_err(|e| PublishError::at(n, e))?;
+        let bind = current.as_deref() != Some(hash.as_str());
+        if bind {
+            self.check_bind(n, name, &start, false)?;
+            self.sim.functions.entry(name.to_string()).or_default().push((start.clone(), hash.clone()));
+        }
+        self.ops.push(Op::Function { name: name.to_string(), start, hash, bytes, bind });
+        Ok(())
+    }
+
+    fn class_line(&mut self, n: usize, name: &str, v: &Value) -> Result<(), PublishError> {
+        let err = |d: String| PublishError::at(n, d);
+        let descriptor = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
+        let start = bound_of(v, n, self.ctx.now)?;
+        let def = datumesh_formula::definition::define_class(
+            name,
+            &descriptor.to_jcs(),
+            definer(name, self.ctx.host, self.ctx.owned),
+            &self.callers(),
+            &start,
+        )
+        .map_err(|e| err(format!("define {name}: {e}")))?;
+        // put_class refuses under a suspended steward namespace, whether or not the name binds.
+        suspended(self.store, &def.descriptor.steward.namespace, n)?;
+        let hash = def.class_hash.clone();
+        let methods: Vec<(String, String)> =
+            def.descriptor.methods.iter().map(|(m, fh)| (format!("{name}/{m}"), fh.clone())).collect();
+        let bind = current_class(self.store, &self.sim, name).map_err(err)?.as_deref() != Some(hash.as_str());
+        if bind {
+            self.check_bind(n, name, &start, true)?;
+            // bind_class binds every method in the same transaction (the store's rule).
+            for (mname, _) in &methods {
+                self.check_bind(n, mname, &start, false)?;
+            }
+            self.sim.classes.entry(name.to_string()).or_default().push((start.clone(), hash.clone()));
+            for (mname, fh) in &methods {
+                self.sim.functions.entry(mname.clone()).or_default().push((start.clone(), fh.clone()));
+            }
+        }
+        self.sim.class_bytes.insert(hash.clone(), def.bytes.clone());
+        self.ops.push(Op::Class {
+            name: name.to_string(),
+            start,
+            hash,
+            bytes: def.bytes,
+            bind,
+            methods: methods.into_iter().map(|(m, _)| m).collect(),
+        });
+        Ok(())
+    }
+
+    /// One bind a line would make: rule A, the other kind, the namespace, and the latest binding.
+    fn check_bind(&mut self, line: usize, name: &str, start: &str, class: bool) -> Result<(), PublishError> {
+        if !self.backfill && start < self.ctx.now {
+            return Err(PublishError::typed(
+                line,
+                PublishErrorKind::StartBeforeNow { name: name.into(), start: start.into(), now: self.ctx.now.into() },
+            ));
+        }
+        let err = |d: String| PublishError::at(line, d);
+        if bound_as_other(self.store, &self.sim, name, class).map_err(err)? {
+            let kind = if class { "function" } else { "class" };
+            return Err(err(format!("{name} is bound as a {kind}: one namespace of names")));
+        }
+        suspended(self.store, host_of(name), line)?;
+        if let Some(latest) = latest_bind(self.store, &self.sim, name, class).map_err(err)? {
+            if start <= latest.as_str() {
+                return Err(err(format!("{name} is bound from {latest}: a bind at {start} is not later")));
+            }
+        }
+        self.binds.push(Bind { line, name: name.into() });
+        Ok(())
+    }
+
+    fn cell_line(&mut self, n: usize, v: &Value, cell_v: &Value) -> Result<(), PublishError> {
+        let err = |d: String| PublishError::at(n, d);
+        let name = cell_v.get("fn").and_then(Value::as_str).ok_or_else(|| err("a cell without fn".into()))?;
+        let (ns, f) = name.rsplit_once('/').ok_or_else(|| err(format!("{name}: not a function name")))?;
+        let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        let required = |k: &str| field(k).ok_or_else(|| err(format!("no {k}")));
+        let (licence, summary) = (required("licence")?, required("summary")?);
+        // tx and asof default to the run's clock now, each on its own (H4).
+        let asof = field("asof").unwrap_or_else(|| self.ctx.now.to_string());
+        let tx = field("tx").unwrap_or_else(|| self.ctx.now.to_string());
+        if tx > asof {
+            return Err(err(format!("tx {tx} is after asof {asof} (SPEC 8)")));
+        }
+        let issued = field("issued").unwrap_or_else(|| std::cmp::max(asof.clone(), self.ctx.key_from.to_string()));
+        if asof > issued {
+            return Err(err(format!("asof {asof} is after issued {issued} (SPEC 8)")));
+        }
+        let fn_hash = function_at(self.store, &self.sim, name, &tx)
+            .map_err(err)?
+            .ok_or_else(|| err(format!("{name} is not bound as of {tx}")))?;
+        let d = self
+            .callers()
+            .function_bytes(&fn_hash)
+            .map_err(err)?
+            .ok_or_else(|| err(format!("no descriptor {fn_hash}")))?;
+        let d = FunctionDescriptor::from_json(&d).map_err(|e| err(e.to_string()))?;
+        let mut args = Args::new();
+        for (k, a) in cell_v.get("args").and_then(Value::as_object).ok_or_else(|| err("a cell without args".into()))? {
+            args.insert(k.clone(), Arg::Value(Scalar::from_json(&a.to_jcs()).map_err(|e| err(format!("{k}: {e}")))?));
+        }
+        let valid: Args = args
+            .iter()
+            .filter(|(k, _)| d.signature.args.get(*k).is_some_and(|x| x.valid))
+            .map(|(k, a)| (k.clone(), a.clone()))
+            .collect();
+        let value_v = v.get("value").ok_or_else(|| err("a cell without value".into()))?;
+        let (value, blob) = match value_v.get("blob").and_then(Value::as_str) {
+            Some(file) => {
+                let media = value_v.get("media_type").and_then(Value::as_str).unwrap_or("application/octet-stream");
+                let bytes = std::fs::read(self.ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?;
+                let sha = sha256_hex(&bytes);
+                let scalar = Scalar::from_lexical(Type::Blob, &format!("{sha}:{}:{media}", bytes.len()))
+                    .map_err(|e| err(e.to_string()))?;
+                (scalar, Some(bytes))
+            }
+            None => (Scalar::from_json(&value_v.to_jcs()).map_err(|e| err(e.to_string()))?, None),
+        };
+        let cell = Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash, args };
+        let r = ReceiptBuilder::new()
+            .cell(cell.clone())
+            .value(value)
+            .valid(valid)
+            .asof(asof.as_str())
+            .tx(tx.as_str())
+            .issued(issued.as_str())
+            .publisher(ns)
+            .signer_host(self.ctx.host)
+            .licence(licence.as_str())
+            .summary(summary.as_str())
+            .sign(self.key)
+            .map_err(|e| err(e.to_string()))?;
+        let receipt = receipt_json(&r);
+        let hash = Receipt::from_json(&receipt).map_err(|e| err(e.to_string()))?.hash().to_string();
+        let id = cell.id();
+        let version = match cell_latest(self.store, &self.sim, &id).map_err(err)? {
+            Some((latest_tx, _)) if latest_tx.as_str() >= tx.as_str() => {
+                if cell_version_asof(self.store, &self.sim, &id, &tx).map_err(err)?.as_deref() != Some(hash.as_str()) {
+                    return Err(err(format!("{id} has a version at or after {tx} that is not this receipt")));
+                }
+                false
+            }
+            _ => {
+                self.sim.versions.entry(id.clone()).or_default().push((tx.clone(), hash.clone()));
+                true
+            }
+        };
+        self.ops.push(Op::Cell { tx, id, hash, receipt, blob, version });
+        Ok(())
+    }
+}
+
+/// The stored descriptor of a function line's signature.
+fn stored_value(signature: &Value) -> Value {
+    Value::Object(vec![
+        ("code".into(), Value::Object(vec![("body".into(), s("")), ("lang".into(), s("stored"))])),
+        ("inputs".into(), Value::Array(vec![])),
+        ("signature".into(), signature.clone()),
+    ])
 }
 
 /// The backfill's checks (since 0.3.0 with store 0.4.2): no name the file binds has a binding, and
@@ -471,155 +727,53 @@ fn append_log(log: &Path, written: &Written) -> Result<(), String> {
     f.write_all(&bytes).map_err(|e| format!("{}: {e}", log.display()))
 }
 
-/// Pass two: the writes, the binds as the first pass found them (every start checked there).
-fn write<S: Store + ?Sized>(
-    store: &S,
-    key: &SigningKey,
-    ctx: &Ctx<'_>,
-    lines: &[(usize, String)],
-) -> Result<(Published, Written), PublishError> {
+/// Pass two: the writes the first pass planned, in order. Nothing here can refuse a planned
+/// write, so a refused file has written nothing.
+fn write<S: Store + ?Sized>(store: &S, ops: &[Op]) -> Result<(Published, Written), PublishError> {
     let mut out = Published::default();
     let mut written = Written::default();
-    for (n, text) in lines {
-        let n = *n;
-        let err = |d: String| PublishError::at(n, d);
-        let v = json::parse(text.as_bytes()).map_err(|e| err(e.to_string()))?;
-        if let Some(name) = v.get("class").and_then(Value::as_str) {
-            let descriptor = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let def = datumesh_formula::definition::define_class(
-                name,
-                &descriptor.to_jcs(),
-                definer(name, ctx.host, ctx.owned),
-                &Callers { store, sim: None },
-                &start,
-            )
-            .map_err(|e| err(format!("define {name}: {e}")))?;
-            let bound_hash = store.put_class(&def.bytes).map_err(|e| err(e.to_string()))?;
-            match store.resolve_class(name, END).map_err(|e| err(e.to_string()))? {
-                Some(h) if h == bound_hash => {}
-                _ => {
-                    store.bind_class(name, &bound_hash, &start).map_err(|e| err(format!("bind {name}: {e}")))?;
+    let err = |d: String| PublishError::at(0, d);
+    for op in ops {
+        match op {
+            Op::Descriptor { hash, bytes, counted } => {
+                let existed = store.descriptor(hash).is_some();
+                store.put_descriptor(bytes).map_err(|e| err(e.to_string()))?;
+                if *counted && !existed {
+                    out.descriptors += 1;
+                }
+            }
+            Op::Function { name, start, hash, bytes, bind } => {
+                store.put_descriptor(bytes).map_err(|e| err(e.to_string()))?;
+                if *bind {
+                    store.bind_name(name, hash, start).map_err(|e| err(format!("bind {name}: {e}")))?;
+                    out.functions += 1;
+                    written.bound(name, start);
+                }
+            }
+            Op::Class { name, start, hash, bytes, bind, methods } => {
+                store.put_class(bytes).map_err(|e| err(e.to_string()))?;
+                if *bind {
+                    store.bind_class(name, hash, start).map_err(|e| err(format!("bind {name}: {e}")))?;
                     out.classes += 1;
-                    written.bound(name, &start);
-                    for m in def.descriptor.methods.keys() {
-                        written.bound(&format!("{name}/{m}"), &start);
+                    written.bound(name, start);
+                    for m in methods {
+                        written.bound(m, start);
                     }
                 }
             }
-            continue;
-        }
-        if let Some(name) = v.get("function").and_then(Value::as_str) {
-            let sig = v.get("signature").ok_or_else(|| err("a function without a signature".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let d = Value::Object(vec![
-                ("code".into(), Value::Object(vec![("body".into(), s("")), ("lang".into(), s("stored"))])),
-                ("inputs".into(), Value::Array(vec![])),
-                ("signature".into(), sig.clone()),
-            ]);
-            let fd = FunctionDescriptor::from_value(&d).map_err(|e| err(e.to_string()))?;
-            let h = store.put_descriptor(&fd.canonical()).map_err(|e| err(e.to_string()))?;
-            match store.resolve_binding(name, END).map_err(|e| err(e.to_string()))? {
-                Some(b) if b.fn_hash == h => {}
-                _ => {
-                    store.bind_name(name, &h, &start).map_err(|e| err(format!("bind {name}: {e}")))?;
-                    out.functions += 1;
-                    written.bound(name, &start);
+            Op::Cell { tx, id, hash, receipt, blob, version } => {
+                if let Some(bytes) = blob {
+                    store.put_blob(bytes).map_err(|e| err(e.to_string()))?;
+                    out.blobs += 1;
+                    out.blob_bytes += bytes.len() as u64;
                 }
-            }
-            continue;
-        }
-        if let Some(name) = v.get("formula").and_then(Value::as_str) {
-            let source =
-                v.get("source").and_then(Value::as_str).ok_or_else(|| err("a formula without source".into()))?;
-            let sig = v.get("signature").ok_or_else(|| err("a formula without a signature".into()))?;
-            let start = bound_of(&v, n, ctx.now)?;
-            let def = datumesh_formula::definition::define_function(
-                name,
-                source,
-                sig,
-                &Default::default(),
-                &Callers { store, sim: None },
-                &start,
-            )
-            .map_err(|e| err(format!("define {name}: {e}")))?;
-            let h = store.put_descriptor(&def.bytes).map_err(|e| err(e.to_string()))?;
-            match store.resolve_binding(name, END).map_err(|e| err(e.to_string()))? {
-                Some(b) if b.fn_hash == h => {}
-                _ => {
-                    store.bind_name(name, &h, &start).map_err(|e| err(format!("bind {name}: {e}")))?;
-                    out.functions += 1;
-                    written.bound(name, &start);
+                store.put_receipt(receipt).map_err(|e| err(e.to_string()))?;
+                out.cells += 1;
+                out.receipts += 1;
+                if *version {
+                    store.put_version(id, tx, hash).map_err(|e| err(e.to_string()))?;
+                    out.versions += 1;
                 }
-            }
-            continue;
-        }
-        let cell_v = v.get("cell").ok_or_else(|| err("neither a function nor a cell".into()))?;
-        let name = cell_v.get("fn").and_then(Value::as_str).ok_or_else(|| err("a cell without fn".into()))?;
-        let (ns, f) = name.rsplit_once('/').ok_or_else(|| err(format!("{name}: not a function name")))?;
-        let field =
-            |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| err(format!("no {k}")));
-        let (tx, asof, licence, summary) = (field("tx")?, field("asof")?, field("licence")?, field("summary")?);
-        let issued = v
-            .get("issued")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| std::cmp::max(asof.clone(), ctx.key_from.to_string()));
-        let fn_hash = store
-            .resolve_name(name, &tx)
-            .map_err(|e| err(e.to_string()))?
-            .ok_or_else(|| err(format!("{name} is not bound as of {tx}")))?;
-        let d = store.descriptor(&fn_hash).ok_or_else(|| err(format!("no descriptor {fn_hash}")))?;
-        let d = FunctionDescriptor::from_json(&d).map_err(|e| err(e.to_string()))?;
-        let mut args = Args::new();
-        for (k, a) in cell_v.get("args").and_then(Value::as_object).ok_or_else(|| err("a cell without args".into()))? {
-            args.insert(k.clone(), Arg::Value(Scalar::from_json(&a.to_jcs()).map_err(|e| err(format!("{k}: {e}")))?));
-        }
-        let valid: Args = args
-            .iter()
-            .filter(|(k, _)| d.signature.args.get(*k).is_some_and(|x| x.valid))
-            .map(|(k, a)| (k.clone(), a.clone()))
-            .collect();
-        let value_v = v.get("value").ok_or_else(|| err("a cell without value".into()))?;
-        let value = match value_v.get("blob").and_then(Value::as_str) {
-            Some(file) => {
-                let media = value_v.get("media_type").and_then(Value::as_str).unwrap_or("application/octet-stream");
-                let bytes = std::fs::read(ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?;
-                let sha = store.put_blob(&bytes).map_err(|e| err(e.to_string()))?;
-                out.blobs += 1;
-                out.blob_bytes += bytes.len() as u64;
-                Scalar::from_lexical(Type::Blob, &format!("{sha}:{}:{media}", bytes.len()))
-                    .map_err(|e| err(e.to_string()))?
-            }
-            None => Scalar::from_json(&value_v.to_jcs()).map_err(|e| err(e.to_string()))?,
-        };
-        let cell = Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash, args };
-        let r = ReceiptBuilder::new()
-            .cell(cell.clone())
-            .value(value)
-            .valid(valid)
-            .asof(asof.as_str())
-            .tx(tx.as_str())
-            .issued(issued.as_str())
-            .publisher(ns)
-            .signer_host(ctx.host)
-            .licence(licence.as_str())
-            .summary(summary.as_str())
-            .sign(key)
-            .map_err(|e| err(e.to_string()))?;
-        let h = store.put_receipt(&receipt_json(&r)).map_err(|e| err(e.to_string()))?;
-        out.cells += 1;
-        out.receipts += 1;
-        let id = cell.id();
-        match store.latest(&id).map_err(|e| err(e.to_string()))? {
-            Some(l) if l.tx.as_str() >= tx.as_str() => {
-                if store.version_asof(&id, &tx).ok().flatten().is_none_or(|v| v.receipt_hash != h) {
-                    return Err(err(format!("{id} has a version at or after {tx} that is not this receipt")));
-                }
-            }
-            _ => {
-                store.put_version(&id, &tx, &h).map_err(|e| err(e.to_string()))?;
-                out.versions += 1;
             }
         }
     }
@@ -664,7 +818,7 @@ pub fn publish_stored_in<S: Store + ?Sized>(
 ///
 /// Errors: a line refused by its checks, or a binding whose start is earlier than the clock
 /// ([`PublishErrorKind::StartBeforeNow`]), or a backfill refused ([`PublishErrorKind::Backfill`]).
-/// Nothing is written when the first pass refuses.
+/// Nothing is written when the first pass refuses (CONTRACT-1.7a H2).
 pub fn publish_stored_with<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,
@@ -692,11 +846,21 @@ pub fn publish_stored_with<S: Store + ?Sized>(
         })?;
     let now = opts.clock.now();
     let ctx = Ctx { host, owned, key_from: &key_from, now: &now, base: path.parent().unwrap_or(Path::new(".")) };
-    let binds = plan(store, &ctx, &lines, opts.backfill.is_some())?;
+    let mut planner = Planner {
+        store,
+        key,
+        ctx,
+        backfill: opts.backfill.is_some(),
+        sim: Simulation::default(),
+        ops: Vec::new(),
+        binds: Vec::new(),
+    };
+    planner.run(&lines)?;
+    let Planner { ops, binds, .. } = planner;
     if opts.backfill.is_some() {
         backfill_check(store, &binds)?;
     }
-    let (out, written) = write(store, key, &ctx, &lines)?;
+    let (out, written) = write(store, &ops)?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

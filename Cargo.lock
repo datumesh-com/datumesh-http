@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-http"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",

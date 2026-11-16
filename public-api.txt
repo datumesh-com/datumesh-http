@@ -601,6 +601,7 @@ pub datumesh_http::publish::Published::blob_bytes: u64
 pub datumesh_http::publish::Published::blobs: usize
 pub datumesh_http::publish::Published::cells: usize
 pub datumesh_http::publish::Published::classes: usize
+pub datumesh_http::publish::Published::descriptors: u64
 pub datumesh_http::publish::Published::functions: usize
 pub datumesh_http::publish::Published::receipts: usize
 pub datumesh_http::publish::Published::versions: usize

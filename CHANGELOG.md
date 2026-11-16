@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.1 (2026-11-16)
+
+For CONTRACT-1.7a (datumesh-http part): descriptor lines, no partial writes, `/find` returns classes
+and methods, and cells on the run's clock. Additive: the public API gains members and no signature
+changes; `publish::Published` gains the public field `descriptors`, which `Published`'s `#[non_exhaustive]`
+allows. A file that was accepted in 0.3.0 and is refused now is one whose writes would have failed
+part way (see below).
+
+- **Descriptor lines (H1).** `publish-stored` takes `{"descriptor": <function descriptor>}`: the
+  descriptor is put (`put_descriptor`, its hash is the core's `FunctionDescriptor::hash`) and nothing
+  is bound. Only a stored function is accepted (`code.lang` `"stored"`, `code.body` `""`, `inputs`
+  `[]`); any other is refused at its line, in the first pass. A class later in the file, or in a later
+  run, may name the hash as a method. `Published::descriptors` counts the descriptors newly put by
+  descriptor lines (a re-run counts 0). A line with both `class` and `descriptor` is a class line.
+- **No partial writes (H2).** The first pass now plans every write the second makes, and refuses the
+  file before any write when one would fail: a bind whose start is not later than the latest binding of
+  its name (the store's, or one planned earlier in the file, so a function line and a class line binding
+  one name at one instant are refused, W1b); a name bound as the other kind (a class as a function, or the
+  reverse); a suspended namespace; a cell whose function is not bound as of its `tx` (counting the file's
+  earlier binds); a blob file that is missing or unreadable; `tx <= asof <= issued`; and an existing
+  version at or after the cell's `tx` that is not this receipt. Receipts are signed in the first pass
+  (signing is deterministic), so their hashes are known there. The store is compared before and after
+  in the tests (`tests/publish_atomic.rs`).
+- **Cells on the run's clock (H4).** A cell line may leave out `tx` and `asof`; each defaults to the run's
+  clock now, independently, the same instant as the default binding start. `issued` defaults as before
+  (the later of `asof` and the key's start). One file can bind and publish with one clock reading.
+- **`/find` returns classes and methods (H3).** The catalog may list class names and method names
+  (`N/m`). Each result has a `kind`: `function` (as before, plus `kind`), `class` (`class_hash`, the
+  flattened `descriptor`, `methods` with each method's `fn`, `fn_hash`, `args` (the arguments after the
+  keys) and `returns`, and `description` where the catalog has one, and `since`), or `method` (`class`,
+  `fn_hash`, `descriptor`, `since`). A class is matched by its own name and description and by its
+  methods' names and catalog descriptions. Order and `limit` are as before; a catalog name that is
+  unbound as of now is skipped. `/openapi.json` documents the members.
+- **Version 0.3.1 (H5).** The README and the `lib` endpoint table describe the new members.
+
 ## 0.3.0 (2026-11-16)
 
 For CONTRACT-1.8b (item 9): rule A, `--backfill` with its operator log, `import-signed` and bundle 1, the
