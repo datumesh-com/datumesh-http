@@ -1,0 +1,81 @@
+# The production mesh at https://datumesh.com (step 1.7a): compose project `datumesh` on
+# quran-box, in /srv/datumesh.
+#
+#   cd /srv/datumesh && docker compose -f compose.yml up -d
+#
+# No host port is published, Postgres included. The mesh is reached only by khatm's Caddy,
+# on the network khatm_default, as `datumesh-mesh:8080` (a name unique there: khatm has `app`
+# and `caddy`). Postgres is only on the project's internal network.
+#
+# State, all under /srv/datumesh (made by setup.sh):
+#   env/db.env          POSTGRES_PASSWORD and DATABASE_URL (owner datumesh, mode 0600)
+#   secrets/            owner uid 10001 (the mesh's user), mode 0700: mesh.key, the production
+#                       signing key generated here (mode 0600), and the API keys' hashes
+#   catalog.json        the /find catalog (names and plain descriptions)
+#   backups/            nightly pg_dump (mode 0700), copied off the server
+#   status/, logs/      checks and drill results
+name: datumesh
+
+services:
+  datumesh-postgres:
+    image: postgres:16@sha256:${POSTGRES_DIGEST:?set POSTGRES_DIGEST in .env}
+    env_file: /srv/datumesh/env/db.env
+    environment:
+      POSTGRES_DB: datumesh
+    volumes:
+      - /srv/datumesh/pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "datumesh"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    shm_size: 256m
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 2g}
+
+  datumesh-mesh:
+    image: ghcr.io/datumesh-com/datumesh-mesh@sha256:${MESH_DIGEST:?set MESH_DIGEST in .env}
+    depends_on:
+      datumesh-postgres:
+        condition: service_healthy
+    env_file: /srv/datumesh/env/db.env
+    environment:
+      DATUMESH_HOST: datumesh.com
+      DATUMESH_NAMESPACES: datumesh.com
+      DATUMESH_CROSS_MESH_HOSTS: ""
+      DATUMESH_KEY_FILE: /run/secrets/mesh.key
+      DATUMESH_API_KEYS_FILE: /run/secrets/api-keys
+      DATUMESH_CATALOG_FILE: /etc/datumesh/catalog.json
+      # The client IP is the last X-Forwarded-For entry, which khatm's Caddy sets from
+      # CF-Connecting-IP after refusing anything not from Cloudflare (site-block.caddy).
+      DATUMESH_TRUST_PROXY: "1"
+      DATUMESH_LISTEN: 0.0.0.0:8080
+      DATUMESH_POOL_SIZE: "16"
+      DATUMESH_BUDGET_MS: "1000"
+      DATUMESH_RATE_PER_IP: "60"
+      DATUMESH_RATE_IP_BURST: "120"
+      DATUMESH_RATE_PER_KEY: "600"
+      DATUMESH_RATE_VERIFY_PER_IP: "60"
+      DATUMESH_LICENCE: CC-BY-4.0
+      DATUMESH_MIGRATE: "1"
+      RUST_LOG: info
+    volumes:
+      - /srv/datumesh/secrets:/run/secrets:ro
+      - /srv/datumesh/catalog.json:/etc/datumesh/catalog.json:ro
+    networks:
+      backend: {}
+      khatm_default:
+        aliases: [datumesh-mesh]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 2g}
+
+networks:
+  backend:
+    internal: true
+  khatm_default:
+    external: true

@@ -1,0 +1,12 @@
+{
+ "datumesh.com/scripture/chapter_count": "The number of chapters of a book of scripture: chapter_count(corpus, book), for the Tanakh (Hebrew Bible), the Greek New Testament and the Quran (book Quran: its 114 surahs).",
+ "datumesh.com/scripture/edition": "A source edition of a scripture text, edition(corpus, code): uxlc (the Unicode/XML Leningrad Codex of the Hebrew Bible), sblgnt (the SBL Greek New Testament), uthmani and simple (the Tanzil Quran Text). Its methods give the version, the source URL, the SHA-256 of the source file, the licence notice in full, and the source file itself where it may be redistributed.",
+ "datumesh.com/scripture/edition/file": "The exact source file of a scripture edition, byte for byte as downloaded (sblgnt, uthmani and simple).",
+ "datumesh.com/scripture/edition/file_hash": "The SHA-256 of the source file of a scripture edition, the file every verse was checked against before it was signed.",
+ "datumesh.com/scripture/edition/notice": "The licence or copyright notice of a scripture edition in full, as its source gives it.",
+ "datumesh.com/scripture/edition/source_url": "The URL a scripture edition's source file was downloaded from.",
+ "datumesh.com/scripture/edition/version": "The version of a scripture edition, as its source names it.",
+ "datumesh.com/scripture/verse": "A verse of scripture in its original language: the Hebrew Bible (Tanakh: the Torah, the Prophets and the Writings) in Hebrew, the Greek New Testament, and the Quran in Arabic. verse(corpus, book, chapter, verse): corpus tanakh, nt or quran; book an OSIS code such as Gen, Ps, Matt or John, or Quran; for the Quran, chapter is the surah and verse the ayah, so verse(quran, Quran, 2, 255) is Ayat al-Kursi. Its method text(edition) gives the exact text.",
+ "datumesh.com/scripture/verse/text": "The exact text of a verse in one edition, as its source publishes it, a UTF-8 text blob: uxlc (Hebrew, the Unicode/XML Leningrad Codex), sblgnt (Greek, the SBL Greek New Testament), uthmani or simple (Arabic, the Tanzil Quran Text). Never normalised or changed.",
+ "datumesh.com/scripture/verse_count": "The number of verses in a chapter of scripture: verse_count(corpus, book, chapter), for the Tanakh, the Greek New Testament and the Quran (the ayat of a surah)."
+}
