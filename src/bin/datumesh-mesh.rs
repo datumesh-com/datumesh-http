@@ -111,8 +111,8 @@ fn main() {
             let p = datumesh_http::publish::publish_stored_with(&s, &key, &host, &owned, std::path::Path::new(file), &opts)
                 .unwrap_or_else(|e| fail(e));
             println!(
-                "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"classes\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",
-                p.blob_bytes, p.blobs, p.cells, p.classes, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
+                "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"classes\":{},\"descriptors\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",
+                p.blob_bytes, p.blobs, p.cells, p.classes, p.descriptors, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
             );
         }
         Some("import-signed") => {
