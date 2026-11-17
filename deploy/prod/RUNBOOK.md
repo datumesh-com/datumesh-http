@@ -60,9 +60,9 @@ The site block lists Cloudflare's address ranges. Cloudflare changes them rarely
 
 ## Jobs
 - **quran-box, the `datumesh` user's crontab** (`install_cron.sh`):
-  - `backup.sh` at 03:15 UTC: a dump, then a copy to vmi630775 at `/root/datumesh-prod-backups` (user `dmbackup`, `rrsync -wo`, no shell);
+  - `backup.sh` at 03:15 UTC: a dump, then a copy to vmi630775 at `/var/backups/datumesh-prod` (user `dmbackup`, `rrsync -wo`, no shell);
   - `check.sh` every 5 minutes, the error alert: a new 5xx or `error` envelope, a container down, the mesh unreachable, or disk, memory or Postgres over threshold.
-- **vmi630775, root's crontab:** `uptime.sh` every 5 minutes. Through Cloudflare, the key document and Genesis 1:1 must answer; two failures in a row are an ALERT.
+- **vmi630775, `/etc/cron.d/datumesh-prod`:** `uptime.sh` every 5 minutes, as root. Through Cloudflare, the key document must answer, and Genesis 1:1 too once `/root/datumesh-prod/scripture-loaded` exists (create it after the scripture load); two failures in a row are an ALERT.
 - **Alerts** are log lines and status files (`status/check.txt`, `/root/datumesh-prod/status/uptime.txt`), as for mesh-test. No e-mail is configured.
 - **Restore drill:** `bin/restore_drill.sh`, by hand. It restores the newest dump into a scratch Postgres with a second mesh, compares the answers with the live mesh's, and times the restore (`status/drill.json`).
 
