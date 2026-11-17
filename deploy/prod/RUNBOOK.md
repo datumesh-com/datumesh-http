@@ -54,6 +54,10 @@ The site block lists Cloudflare's address ranges. Cloudflare changes them rarely
 | `backups/` | nightly dumps, the 14 newest | datumesh, 0700 |
 | `bin/`, `logs/`, `status/` | installed scripts, cron logs, check and drill results | datumesh |
 
+**The build machine (vmi630775) can reach the production key.** Its SSH key `/root/.ssh/quran-box-datumesh` logs in as `datumesh`, and `datumesh` is in the `docker` group, which is root-equivalent: a container started with `/srv/datumesh/secrets` mounted reads `mesh.key`. Anyone holding root on vmi630775 has the same reach. To remove it, both of these must change:
+- the build machine's key leaves `~datumesh/.ssh/authorized_keys` (deploys and the drill then run by the maintenance agent on quran-box), or it stays but `datumesh` leaves the `docker` group;
+- the jobs that need Docker (`backup.sh`, `check.sh`, `restore_drill.sh`, `docker compose up`) run instead through a root-owned sudo rule for fixed commands, against a root-owned `compose.yml` and `.env` that `datumesh` cannot edit. As long as `datumesh` can run Docker with a file it can edit, it can read the key.
+
 ## Jobs
 - **quran-box, the `datumesh` user's crontab** (`install_cron.sh`):
   - `backup.sh` at 03:15 UTC: a dump, then a copy to vmi630775 at `/root/datumesh-prod-backups` (user `dmbackup`, `rrsync -wo`, no shell);
