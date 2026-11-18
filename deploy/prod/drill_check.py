@@ -11,6 +11,7 @@ envelope byte for byte after canonical JSON, and the blob it names. Prints one J
 """
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,11 +21,16 @@ H = "datumesh.com/scripture"
 
 
 def get(base, path):
-    try:
-        with urllib.request.urlopen(base + path, timeout=60) as r:
-            return r.status, r.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+    # Both meshes rate-limit by address (the live configuration): a 429 is waited out and retried.
+    for _ in range(10):
+        try:
+            with urllib.request.urlopen(base + path, timeout=60) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                return e.code, e.read()
+            time.sleep(min(int(e.headers.get("Retry-After") or 2), 30))
+    return 429, b"{}"
 
 
 def canon(b):

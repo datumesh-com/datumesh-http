@@ -30,8 +30,10 @@ failed = []
 
 
 def get(path):
+    # Cloudflare's Browser Integrity Check answers Python's default user agent with 403 (1010).
+    req = urllib.request.Request(BASE + path, headers={"User-Agent": "datumesh-smoke/1.7a (datumesh.com)"})
     try:
-        with urllib.request.urlopen(BASE + path, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
