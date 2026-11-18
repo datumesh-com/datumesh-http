@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 (unreleased)
+
+Loading is batched; no change to receipts. `publish-stored` makes its reads in chunks of up to 1,000 cell lines (one `latest_many` and one `receipts_many` per chunk, the store's binding, descriptor and namespace answers kept for the run) and writes consecutive cells with `put_cells` in calls of up to 1,000 (datumesh-store 0.4.3). The receipts, versions, counts and errors are those of 0.3.2: the golden files of `tests/perf_load.rs` were recorded with 0.3.2 and still match byte for byte. Signing runs on up to `available_parallelism()` threads. The earliest failing line still wins, with its line number and text.
+
 ## 0.3.2 (2026-11-18)
 
 For CONTRACT-1.7a-text (datumesh-http part): describe gives each method its description. Additive: no
