@@ -1,0 +1,4 @@
+error line 1100 kind Line
+text line 1100: 59ed54cc5f44e6abca1ea6d7b95e32765dcc64dbc56246b5a7e0171cc03f2d29 has a version at or after 2026-11-15T12:00:00.000000Z that is not this receipt
+error line 1200 kind Line
+text line 1200: tx 2026-11-15T12:00:02.000000Z is after asof 2026-11-15T12:00:01.000000Z (SPEC 8)
