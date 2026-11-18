@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 (unreleased; no release yet)
+## 0.3.2 (2026-11-18)
 
 For CONTRACT-1.7a-text (datumesh-http part): describe gives each method its description. Additive: no
 signature changes, no change to the hash, the other members, or the cache header.
