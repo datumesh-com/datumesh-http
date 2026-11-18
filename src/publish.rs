@@ -58,6 +58,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
@@ -68,11 +69,30 @@ use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
 use datumesh_store::{Binding, CellWrite, Namespace, Store};
 
+use crate::config::ConfigError;
+
 /// The end of time: a binding as of it is the latest one.
 const END: &str = "9999-12-31T23:59:59.999999Z";
 
 /// Cell lines planned together, and cell writes per `put_cells` call (CONTRACT-perf H1, H2).
 const CHUNK: usize = 1_000;
+
+/// The environment variable of the publish lanes (CONTRACT-perf H5), read once per run.
+const LANES_VAR: &str = "DATUMESH_PUBLISH_LANES";
+
+/// The lanes of a run (CONTRACT-perf H5): `DATUMESH_PUBLISH_LANES` (a positive integer), else
+/// `min(4, available_parallelism)`, at least 1. An invalid value refuses the run before any write.
+fn publish_lanes() -> Result<usize, PublishError> {
+    let bad = |detail: String| PublishError::at(0, ConfigError::new(LANES_VAR, detail).to_string());
+    match std::env::var(LANES_VAR) {
+        Err(std::env::VarError::NotPresent) => Ok(std::thread::available_parallelism().map_or(1, |n| n.get()).min(4)),
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(bad(format!("must be a positive integer, not {v:?}"))),
+        },
+        Err(e) => Err(bad(e.to_string())),
+    }
+}
 
 /// What a run put.
 #[non_exhaustive]
@@ -1024,8 +1044,8 @@ fn append_log(log: &Path, written: &Written) -> Result<(), String> {
 
 /// Pass two: the writes the first pass planned, in order. Nothing here can refuse a planned
 /// write, so a refused file has written nothing. Consecutive cell writes go in `put_cells` calls
-/// of up to `CHUNK`, their blobs put first (CONTRACT-perf H2).
-fn write<S: Store + ?Sized>(store: &S, ops: &[Op]) -> Result<(Published, Written), PublishError> {
+/// of up to `CHUNK` on `lanes` lanes, their blobs put first (CONTRACT-perf H2, H5).
+fn write<S: Store + Sync + ?Sized>(store: &S, ops: &[Op], lanes: usize) -> Result<(Published, Written), PublishError> {
     let mut out = Published::default();
     let mut written = Written::default();
     let err = |d: String| PublishError::at(0, d);
@@ -1063,7 +1083,7 @@ fn write<S: Store + ?Sized>(store: &S, ops: &[Op]) -> Result<(Published, Written
                 while j < ops.len() && j - i < CHUNK && matches!(ops[j], Op::Cell { .. }) {
                     j += 1;
                 }
-                write_cells(store, &ops[i..j], &mut out).map_err(err)?;
+                write_cells(store, &ops[i..j], lanes, &mut out).map_err(err)?;
                 i = j;
                 continue;
             }
@@ -1073,25 +1093,87 @@ fn write<S: Store + ?Sized>(store: &S, ops: &[Op]) -> Result<(Published, Written
     Ok((out, written))
 }
 
-/// A run of cell writes: their blobs, then their receipts and versions in one `put_cells` call.
-fn write_cells<S: Store + ?Sized>(store: &S, group: &[Op], out: &mut Published) -> Result<(), String> {
-    let mut items = Vec::with_capacity(group.len());
+/// A run of cell writes (up to `CHUNK`): their blobs first, then their receipts and versions on
+/// `lanes` lanes (CONTRACT-perf H5). A cell's id picks its lane (its first hex digit, mod `lanes`),
+/// so all writes of one cell share a lane, in file order. A lane's `put_cells` calls take up to
+/// `CHUNK` of its items. When one fails, no lane starts another call, and the error returned is
+/// that of the earliest failing item in file order.
+fn write_cells<S: Store + Sync + ?Sized>(
+    store: &S,
+    group: &[Op],
+    lanes: usize,
+    out: &mut Published,
+) -> Result<(), String> {
     for op in group {
-        if let Op::Cell { tx, id, receipt, blob, version, .. } = op {
-            if let Some(bytes) = blob {
-                store.put_blob(bytes).map_err(|e| e.to_string())?;
-                out.blobs += 1;
-                out.blob_bytes += bytes.len() as u64;
-            }
-            let version = if *version { Some((id.as_str(), tx.as_str())) } else { None };
-            items.push(CellWrite::new(receipt, version));
+        if let Op::Cell { blob: Some(bytes), .. } = op {
+            store.put_blob(bytes).map_err(|e| e.to_string())?;
+            out.blobs += 1;
+            out.blob_bytes += bytes.len() as u64;
         }
     }
-    store.put_cells(&items).map_err(|e| e.to_string())?;
+    let items: Vec<CellItem<'_>> = group
+        .iter()
+        .filter_map(|op| match op {
+            Op::Cell { tx, id, receipt, version, .. } => {
+                Some((receipt.as_slice(), if *version { Some((id.as_str(), tx.as_str())) } else { None }))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut by_lane: Vec<Vec<usize>> = vec![Vec::new(); lanes];
+    for (k, op) in group.iter().enumerate() {
+        if let Op::Cell { id, .. } = op {
+            by_lane[lane_of(id, lanes)].push(k);
+        }
+    }
+    let failed = AtomicBool::new(false);
+    let failures: Vec<(usize, String)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = by_lane
+            .iter()
+            .map(|ks| {
+                let (items, failed) = (&items, &failed);
+                scope.spawn(move || put_lane(store, items, ks, failed))
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
+    });
+    if let Some((_, detail)) = failures.into_iter().min_by_key(|(k, _)| *k) {
+        return Err(detail);
+    }
     out.cells += group.len();
     out.receipts += group.len();
-    out.versions += items.iter().filter(|w| w.version.is_some()).count();
+    out.versions += items.iter().filter(|(_, v)| v.is_some()).count();
     Ok(())
+}
+
+/// The lane of a cell id: its first hex digit, mod `lanes` (CONTRACT-perf H5).
+fn lane_of(id: &str, lanes: usize) -> usize {
+    id.bytes().next().and_then(|b| (b as char).to_digit(16)).unwrap_or(0) as usize % lanes
+}
+
+/// A cell write of a run: its receipt's bytes and its version (cell id, tx), if any.
+type CellItem<'a> = (&'a [u8], Option<(&'a str, &'a str)>);
+
+/// One lane's writes: its items (indices into `items`, in file order) in `put_cells` calls of up to
+/// `CHUNK`. Returns the index of the first item of the call that failed, and its error. No call
+/// starts once `failed` is set.
+fn put_lane<S: Store + Sync + ?Sized>(
+    store: &S,
+    items: &[CellItem<'_>],
+    ks: &[usize],
+    failed: &AtomicBool,
+) -> Option<(usize, String)> {
+    for call in ks.chunks(CHUNK) {
+        if failed.load(Ordering::SeqCst) {
+            return None;
+        }
+        let writes: Vec<CellWrite<'_>> = call.iter().map(|&k| CellWrite::new(items[k].0, items[k].1)).collect();
+        if let Err(e) = store.put_cells(&writes) {
+            failed.store(true, Ordering::SeqCst);
+            return Some((call[0], e.to_string()));
+        }
+    }
+    None
 }
 
 /// The receipt JSON of a signed receipt: its payload's members and `sig`.
@@ -1106,7 +1188,7 @@ pub fn receipt_json(r: &datumesh_core::Receipt) -> Vec<u8> {
 /// Publishes the file at `path` into `store` as the mesh `host` signing with `key` (see the
 /// module documentation). The mesh's own namespaces are `host` alone: see [`publish_stored_in`].
 /// The clock is the system clock, and there is no backfill.
-pub fn publish_stored<S: Store + ?Sized>(
+pub fn publish_stored<S: Store + Sync + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1118,7 +1200,7 @@ pub fn publish_stored<S: Store + ?Sized>(
 /// As [`publish_stored`], for a mesh that owns the namespaces (hosts) `owned` (`Config::namespaces`):
 /// a class line is accepted for a class under one of them, and refused with `E_CLASS_OWNER` (in the
 /// [`PublishError::detail`]) under any other. Since 0.2.2. The system clock, and no backfill.
-pub fn publish_stored_in<S: Store + ?Sized>(
+pub fn publish_stored_in<S: Store + Sync + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1133,7 +1215,7 @@ pub fn publish_stored_in<S: Store + ?Sized>(
 /// Errors: a line refused by its checks, or a binding whose start is earlier than the clock
 /// ([`PublishErrorKind::StartBeforeNow`]), or a backfill refused ([`PublishErrorKind::Backfill`]).
 /// Nothing is written when the first pass refuses (CONTRACT-1.7a H2).
-pub fn publish_stored_with<S: Store + ?Sized>(
+pub fn publish_stored_with<S: Store + Sync + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1141,6 +1223,7 @@ pub fn publish_stored_with<S: Store + ?Sized>(
     path: &Path,
     opts: &PublishOptions,
 ) -> Result<Published, PublishError> {
+    let lanes = publish_lanes()?;
     let lines = read_lines(path)?;
     // The key's start: the earliest `issued`.
     let key_from = store
@@ -1175,7 +1258,7 @@ pub fn publish_stored_with<S: Store + ?Sized>(
     if opts.backfill.is_some() {
         backfill_check(store, &binds)?;
     }
-    let (out, written) = write(store, &ops)?;
+    let (out, written) = write(store, &ops, lanes)?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

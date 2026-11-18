@@ -111,6 +111,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_LISTEN` | `127.0.0.1:8080` | where to listen (plain HTTP: Caddy terminates TLS in front) |
 | `DATUMESH_NAMESPACES` | the host | the hosts whose names this mesh owns (comma-separated); the owned list of `publish-stored`, `import-signed` and `import-vectors` (0.3.0) |
 | `DATUMESH_BACKFILL_LOG` | none | since 0.3.0: the operator log of `publish-stored --backfill` (created with mode 0600; one JCS line appended per run that writes) |
+| `DATUMESH_PUBLISH_LANES` | `min(4, available_parallelism)`, at least 1 | since 0.3.3: `publish-stored` writes the cells of its second pass on this many lanes (a positive integer; a cell's lane is its id's first hex digit mod the count, so a cell's versions keep their file order); `1` writes as 0.3.2 |
 | `DATUMESH_API_KEYS_FILE` | none | the API keys: `<sha256 of the key> <principal> [per minute]` lines, mode 0600 |
 | `DATUMESH_POLICY_FILE` | none | `{"<function>": {"principals": [...]} or {"price": {"amount", "currency"}}}` |
 | `DATUMESH_ALIASES_FILE`, `DATUMESH_CATALOG_FILE` | none | `{"alias": "<function>"}`; `{"<function>": "description"}` |
