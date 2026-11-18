@@ -4,7 +4,8 @@
 //! Members come from the store's `slice_values` (values, hashes and cells, no receipt bytes),
 //! in SPEC 15.13 key order. A slice read as of an instant at or before now is kept in a small
 //! memory cache (its members cannot change, the store being append-only), so repeated reads
-//! of it are warm.
+//! of it are warm. A latest read (no `asof`) reuses the cached members of its slice while no
+//! member changed after the cached instant, and its `next` links pin that instant.
 //!
 //! JSON: a page envelope (SPEC 5.6, spec-0.4.2): `{"outcome": "ok", "slice", "members",
 //! "next"?, "fn_hash"}`, `members` the members' `ok` envelopes ascending by key, `next` the URL
@@ -100,12 +101,36 @@ pub(crate) fn split_query(rest: &str) -> Result<(String, SliceQuery), ErrorCode>
 }
 
 impl Inner {
-    /// The members of a slice as of `a` (cached when `a` is at or before now).
-    fn members(&self, slice: &Slice, a: &str, now: &str) -> Result<Arc<Vec<SliceValue>>, ErrorCode> {
+    /// The members of a slice as of `a`, and the instant they answer as of (`a`, or for a
+    /// latest request, the `at` of a cached entry they are reused from). Cached when `a` is at
+    /// or before now. A latest request (`latest`, `a` = now) reuses the cached entry of the
+    /// slice with the greatest `at <= now` when no member changed after that `at`
+    /// (`slice_changed_after`), so a first page of an unchanged series is a cache hit.
+    fn members(
+        &self,
+        slice: &Slice,
+        a: &str,
+        now: &str,
+        latest: bool,
+    ) -> Result<(Arc<Vec<SliceValue>>, String), ErrorCode> {
         {
             let c = self.slices.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some((_, _, m)) = c.iter().find(|(id, at, _)| id == slice.id() && at == a) {
-                return Ok(m.clone());
+            if latest {
+                let reuse = c
+                    .iter()
+                    .filter(|(id, at, _)| id == slice.id() && at.as_str() <= now)
+                    .max_by(|x, y| x.1.cmp(&y.1))
+                    .map(|(_, at, m)| (at.clone(), m.clone()));
+                drop(c);
+                if let Some((at, m)) = reuse {
+                    match self.store.slice_changed_after(slice, &at) {
+                        Ok(false) => return Ok((m, at)),
+                        Ok(true) => {}
+                        Err(e) => tracing::warn!(target: "datumesh_http", error = %e, "slice_changed_after"),
+                    }
+                }
+            } else if let Some((_, _, m)) = c.iter().find(|(id, at, _)| id == slice.id() && at == a) {
+                return Ok((m.clone(), a.to_string()));
             }
         }
         let m = Arc::new(self.store.slice_values(slice, a).map_err(|e| {
@@ -114,12 +139,13 @@ impl Inner {
         })?);
         if a <= now {
             let mut c = self.slices.lock().unwrap_or_else(|p| p.into_inner());
+            c.retain(|(id, at, _)| !(id == slice.id() && at == a));
             c.push((slice.id().to_string(), a.to_string(), m.clone()));
             if c.len() > 8 {
                 c.remove(0);
             }
         }
-        Ok(m)
+        Ok((m, a.to_string()))
     }
 
     /// Answers a slice request (blocking).
@@ -154,7 +180,7 @@ impl Inner {
                 })
             }
         };
-        let members = match self.members(&slice, &a, now) {
+        let (members, at) = match self.members(&slice, &a, now, target.asof().is_none()) {
             Ok(m) => m,
             Err(c) => return envelope::error_reply(c),
         };
@@ -207,7 +233,7 @@ impl Inner {
         }
         let next = (end < total).then(|| {
             let k = key_of(&members[end - 1], &open);
-            format!("{}/slice/{}&limit={limit}&after={}", self.config.origin(), target.rest_asof(&a), cursor(&k))
+            format!("{}/slice/{}&limit={limit}&after={}", self.config.origin(), target.rest_asof(&at), cursor(&k))
         });
         let fn_hash = slice.fn_hash().to_string();
         let answer = datumesh_core::Answer::page(datumesh_core::SlicePage::new(slice, page, next));
