@@ -1045,7 +1045,11 @@ fn append_log(log: &Path, written: &Written) -> Result<(), String> {
 /// Pass two: the writes the first pass planned, in order. Nothing here can refuse a planned
 /// write, so a refused file has written nothing. Consecutive cell writes go in `put_cells` calls
 /// of up to `CHUNK` on `lanes` lanes, their blobs put first (CONTRACT-perf H2, H5).
-fn write<S: Store + Sync + ?Sized>(store: &S, ops: &[Op], lanes: usize) -> Result<(Published, Written), PublishError> {
+fn write<S: Store + ?Sized>(
+    store: &S,
+    ops: &[Op],
+    cells: impl Fn(&S, &[Op], &mut Published) -> Result<(), String>,
+) -> Result<(Published, Written), PublishError> {
     let mut out = Published::default();
     let mut written = Written::default();
     let err = |d: String| PublishError::at(0, d);
@@ -1083,7 +1087,7 @@ fn write<S: Store + Sync + ?Sized>(store: &S, ops: &[Op], lanes: usize) -> Resul
                 while j < ops.len() && j - i < CHUNK && matches!(ops[j], Op::Cell { .. }) {
                     j += 1;
                 }
-                write_cells(store, &ops[i..j], lanes, &mut out).map_err(err)?;
+                cells(store, &ops[i..j], &mut out).map_err(err)?;
                 i = j;
                 continue;
             }
@@ -1093,33 +1097,35 @@ fn write<S: Store + Sync + ?Sized>(store: &S, ops: &[Op], lanes: usize) -> Resul
     Ok((out, written))
 }
 
+/// A run of cell writes (up to `CHUNK`) on one lane: their blobs first, then the receipts and
+/// versions in file order in `put_cells` calls of up to `CHUNK` (CONTRACT-perf H2). No `Sync`
+/// bound: this is what [`publish_stored_with`] runs.
+fn write_cells_one_lane<S: Store + ?Sized>(store: &S, group: &[Op], out: &mut Published) -> Result<(), String> {
+    let items = put_blobs_and_items(store, group, out)?;
+    let failed = AtomicBool::new(false);
+    let ks: Vec<usize> = (0..items.len()).collect();
+    if let Some((_, detail)) = put_lane(store, &items, &ks, &failed) {
+        return Err(detail);
+    }
+    count_cells(group, &items, out);
+    Ok(())
+}
+
 /// A run of cell writes (up to `CHUNK`): their blobs first, then their receipts and versions on
 /// `lanes` lanes (CONTRACT-perf H5). A cell's id picks its lane (its first hex digit, mod `lanes`),
 /// so all writes of one cell share a lane, in file order. A lane's `put_cells` calls take up to
 /// `CHUNK` of its items. When one fails, no lane starts another call, and the error returned is
-/// that of the earliest failing item in file order.
+/// that of the earliest failing item in file order. With one lane, as [`write_cells_one_lane`].
 fn write_cells<S: Store + Sync + ?Sized>(
     store: &S,
     group: &[Op],
     lanes: usize,
     out: &mut Published,
 ) -> Result<(), String> {
-    for op in group {
-        if let Op::Cell { blob: Some(bytes), .. } = op {
-            store.put_blob(bytes).map_err(|e| e.to_string())?;
-            out.blobs += 1;
-            out.blob_bytes += bytes.len() as u64;
-        }
+    if lanes <= 1 {
+        return write_cells_one_lane(store, group, out);
     }
-    let items: Vec<CellItem<'_>> = group
-        .iter()
-        .filter_map(|op| match op {
-            Op::Cell { tx, id, receipt, version, .. } => {
-                Some((receipt.as_slice(), if *version { Some((id.as_str(), tx.as_str())) } else { None }))
-            }
-            _ => None,
-        })
-        .collect();
+    let items = put_blobs_and_items(store, group, out)?;
     let mut by_lane: Vec<Vec<usize>> = vec![Vec::new(); lanes];
     for (k, op) in group.iter().enumerate() {
         if let Op::Cell { id, .. } = op {
@@ -1140,10 +1146,39 @@ fn write_cells<S: Store + Sync + ?Sized>(
     if let Some((_, detail)) = failures.into_iter().min_by_key(|(k, _)| *k) {
         return Err(detail);
     }
+    count_cells(group, &items, out);
+    Ok(())
+}
+
+/// The blobs of a run, put in order (counted in `out`), and the run's cell writes.
+fn put_blobs_and_items<'a, S: Store + ?Sized>(
+    store: &S,
+    group: &'a [Op],
+    out: &mut Published,
+) -> Result<Vec<CellItem<'a>>, String> {
+    for op in group {
+        if let Op::Cell { blob: Some(bytes), .. } = op {
+            store.put_blob(bytes).map_err(|e| e.to_string())?;
+            out.blobs += 1;
+            out.blob_bytes += bytes.len() as u64;
+        }
+    }
+    Ok(group
+        .iter()
+        .filter_map(|op| match op {
+            Op::Cell { tx, id, receipt, version, .. } => {
+                Some((receipt.as_slice(), if *version { Some((id.as_str(), tx.as_str())) } else { None }))
+            }
+            _ => None,
+        })
+        .collect())
+}
+
+/// Counts a written run of cells in `out`.
+fn count_cells(group: &[Op], items: &[CellItem<'_>], out: &mut Published) {
     out.cells += group.len();
     out.receipts += group.len();
     out.versions += items.iter().filter(|(_, v)| v.is_some()).count();
-    Ok(())
 }
 
 /// The lane of a cell id: its first hex digit, mod `lanes` (CONTRACT-perf H5).
@@ -1157,7 +1192,7 @@ type CellItem<'a> = (&'a [u8], Option<(&'a str, &'a str)>);
 /// One lane's writes: its items (indices into `items`, in file order) in `put_cells` calls of up to
 /// `CHUNK`. Returns the index of the first item of the call that failed, and its error. No call
 /// starts once `failed` is set.
-fn put_lane<S: Store + Sync + ?Sized>(
+fn put_lane<S: Store + ?Sized>(
     store: &S,
     items: &[CellItem<'_>],
     ks: &[usize],
@@ -1187,8 +1222,9 @@ pub fn receipt_json(r: &datumesh_core::Receipt) -> Vec<u8> {
 
 /// Publishes the file at `path` into `store` as the mesh `host` signing with `key` (see the
 /// module documentation). The mesh's own namespaces are `host` alone: see [`publish_stored_in`].
-/// The clock is the system clock, and there is no backfill.
-pub fn publish_stored<S: Store + Sync + ?Sized>(
+/// The clock is the system clock, and there is no backfill. The cells are written on one lane;
+/// see [`publish_stored_lanes`] for the parallel lanes.
+pub fn publish_stored<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1200,7 +1236,7 @@ pub fn publish_stored<S: Store + Sync + ?Sized>(
 /// As [`publish_stored`], for a mesh that owns the namespaces (hosts) `owned` (`Config::namespaces`):
 /// a class line is accepted for a class under one of them, and refused with `E_CLASS_OWNER` (in the
 /// [`PublishError::detail`]) under any other. Since 0.2.2. The system clock, and no backfill.
-pub fn publish_stored_in<S: Store + Sync + ?Sized>(
+pub fn publish_stored_in<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1210,12 +1246,30 @@ pub fn publish_stored_in<S: Store + Sync + ?Sized>(
     publish_stored_with(store, key, host, owned, path, &PublishOptions::system())
 }
 
-/// As [`publish_stored_in`], with the run's clock and backfill (CONTRACT-1.8b H1, rule A).
+/// As [`publish_stored_in`], with the run's clock and backfill (CONTRACT-1.8b H1, rule A). The
+/// cells are written in file order on one lane, as in 0.3.2 (CONTRACT-perf H2).
 ///
 /// Errors: a line refused by its checks, or a binding whose start is earlier than the clock
 /// ([`PublishErrorKind::StartBeforeNow`]), or a backfill refused ([`PublishErrorKind::Backfill`]).
 /// Nothing is written when the first pass refuses (CONTRACT-1.7a H2).
-pub fn publish_stored_with<S: Store + Sync + ?Sized>(
+pub fn publish_stored_with<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    path: &Path,
+    opts: &PublishOptions,
+) -> Result<Published, PublishError> {
+    publish_planned(store, key, host, owned, path, opts, |s, ops| {
+        write(s, ops, |s, g, out| write_cells_one_lane(s, g, out))
+    })
+}
+
+/// As [`publish_stored_with`], with the cells written on parallel lanes (CONTRACT-perf H5, H6):
+/// `DATUMESH_PUBLISH_LANES` (a positive integer) if set, else `min(4, available_parallelism())`.
+/// The same receipts, versions and rows as one lane; only the order of the inserts across
+/// different cells differs. The variable is read once per run, before the file is read.
+pub fn publish_stored_lanes<S: Store + Sync + ?Sized>(
     store: &S,
     key: &SigningKey,
     host: &str,
@@ -1224,6 +1278,21 @@ pub fn publish_stored_with<S: Store + Sync + ?Sized>(
     opts: &PublishOptions,
 ) -> Result<Published, PublishError> {
     let lanes = publish_lanes()?;
+    publish_planned(store, key, host, owned, path, opts, |s, ops| {
+        write(s, ops, |s, g, out| write_cells(s, g, lanes, out))
+    })
+}
+
+/// The first pass (the planner) and the second pass (`write_ops`) of a publish.
+fn publish_planned<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    path: &Path,
+    opts: &PublishOptions,
+    write_ops: impl FnOnce(&S, &[Op]) -> Result<(Published, Written), PublishError>,
+) -> Result<Published, PublishError> {
     let lines = read_lines(path)?;
     // The key's start: the earliest `issued`.
     let key_from = store
@@ -1258,7 +1327,7 @@ pub fn publish_stored_with<S: Store + Sync + ?Sized>(
     if opts.backfill.is_some() {
         backfill_check(store, &binds)?;
     }
-    let (out, written) = write(store, &ops, lanes)?;
+    let (out, written) = write_ops(store, &ops)?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

@@ -203,7 +203,8 @@ impl Inner {
                 Some(l) => (start + l).min(total),
                 None => total,
             };
-            return match arrow_stream(&members[start..end], &open, &slice, &a, &target.fn_name()) {
+            // The instant the members answer as of (CONTRACT-perf H7): `at`, the `asof` the JSON `next` pins.
+            return match arrow_stream(&members[start..end], &open, &slice, &at, &target.fn_name()) {
                 Ok(body) => Reply {
                     status: 200,
                     body: body.into(),

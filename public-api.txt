@@ -615,9 +615,10 @@ pub fn datumesh_http::publish::Published::default() -> Self
 impl core::fmt::Debug for datumesh_http::publish::Published
 pub fn datumesh_http::publish::Published::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::publish::Published
-pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
-pub fn datumesh_http::publish::publish_stored_in<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
-pub fn datumesh_http::publish::publish_stored_with<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_in<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_lanes<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_with<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::receipt_json(&datumesh_core::receipt::Receipt) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::slice
 pub const datumesh_http::slice::ARROW: &str

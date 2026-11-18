@@ -4,9 +4,9 @@
 
 Loading is batched; no change to receipts. `publish-stored` makes its reads in chunks of up to 1,000 cell lines (one `latest_many` and one `receipts_many` per chunk, the store's binding, descriptor and namespace answers kept for the run) and writes consecutive cells with `put_cells` in calls of up to 1,000 (datumesh-store 0.4.3). The receipts, versions, counts and errors are those of 0.3.2: the golden files of `tests/perf_load.rs` were recorded with 0.3.2 and still match byte for byte. Signing runs on up to `available_parallelism()` threads. The earliest failing line still wins, with its line number and text.
 
-`publish-stored` writes the cells of its second pass on parallel lanes (`DATUMESH_PUBLISH_LANES`, default `min(4, available_parallelism)`; a cell's lane is its id's first hex digit mod the lane count, and a failing call stops the other lanes from starting new ones).
+The cells of the second pass are written on parallel lanes by the new `publish::publish_stored_lanes` (added, `S: Store + Sync`, the arguments of `publish_stored_with`) and by the `datumesh-mesh publish-stored` command, which calls it. The lanes are `DATUMESH_PUBLISH_LANES` (a positive integer), default `min(4, available_parallelism)`; a cell's lane is its id's first hex digit mod the lane count, and a failing call stops the other lanes from starting new ones. `publish_stored`, `publish_stored_in` and `publish_stored_with` keep their 0.3.2 signatures (no `Sync` bound) and always write on one lane, in file order, as 0.3.2 did. `public-api.txt` gains that one line.
 
-A latest slice first page (no `asof`) reuses the cached members of its slice when no member changed since the cached instant (`slice_changed_after`), so a repeated first page is a cache hit; its `next` links pin that instant. The page contents are unchanged.
+A latest slice first page (no `asof`) reuses the cached members of its slice when no member changed since the cached instant (`slice_changed_after`), so a repeated first page is a cache hit; its `next` links pin that instant. The page contents are unchanged. The Arrow stream's schema metadata `asof` is the instant the members answer as of: on a reused first page, the reused `at`, the same instant its JSON `next` pins, not the request's now. Otherwise the Arrow stream is unchanged.
 
 ## 0.3.2 (2026-11-18)
 
