@@ -1,4 +1,5 @@
-//! CONTRACT-perf L-T9, L-T10 (H5): `publish-stored` writes cells on parallel lanes
+//! CONTRACT-perf L-T9, L-T10 (H5) and R-T3 (H6): `publish_stored_lanes` (and the CLI) writes cells on
+//! parallel lanes
 //! (`DATUMESH_PUBLISH_LANES`) without changing any receipt, version or row. Its own test binary,
 //! because it sets that variable; the two tests here take a lock around every run, so none reads
 //! the variable while the other sets it. PostgreSQL, through the `Node` harness.
@@ -13,7 +14,7 @@ use common::lite::{FixedClock, NOW};
 use common::pub031::{descriptor_hash, function_line, jcs, parse, st, stored_descriptor};
 use common::*;
 use datumesh_core::{Arg, Args, Cell, Scalar, Type};
-use datumesh_http::publish::{publish_stored_with, PublishOptions, Published};
+use datumesh_http::publish::{publish_stored_lanes, publish_stored_with, PublishOptions, Published};
 
 const A: &str = "mesh-a.example";
 const F: &str = "mesh-a.example/scratch_perf/lanes";
@@ -70,6 +71,16 @@ fn file(name: &str) -> std::path::PathBuf {
 }
 
 fn publish(node: &Node, path: &Path, lanes: &str) -> Published {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("DATUMESH_PUBLISH_LANES", lanes);
+    let opts = PublishOptions { clock: Arc::new(FixedClock(NOW)), backfill: None };
+    let r = bl(|| publish_stored_lanes(&*node.store, &node.key, A, &[A.to_string()], path, &opts)).unwrap();
+    std::env::remove_var("DATUMESH_PUBLISH_LANES");
+    r
+}
+
+/// `publish_stored_with` (always one lane) with the lanes variable set to `lanes`.
+fn publish_one_lane(node: &Node, path: &Path, lanes: &str) -> Published {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("DATUMESH_PUBLISH_LANES", lanes);
     let opts = PublishOptions { clock: Arc::new(FixedClock(NOW)), backfill: None };
@@ -178,4 +189,27 @@ async fn republishing_on_four_lanes_writes_nothing() {
     assert_eq!((again.functions, again.versions), (0, 0), "{again:?}");
     assert_eq!((counts(&n), state(&n)), before);
     let _ = std::fs::remove_file(f);
+}
+
+/// R-T3 (H6): `publish_stored_with` writes on one lane whatever the variable says, so the
+/// physical order of `versions` is file order and the result equals that of
+/// `publish_stored_lanes` on the same file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_stored_with_writes_in_file_order_and_equals_the_lanes() {
+    let (with, lanes) = (node().await, node().await);
+    let (fw, fl) = (file("with"), file("lanes"));
+    let (pw, pl) = (publish_one_lane(&with, &fw, "4"), publish(&lanes, &fl, "4"));
+    assert_eq!((pw.functions, pw.cells, pw.receipts, pw.versions), (1, LINES, LINES, LINES), "{pw:?}");
+    assert_eq!(pw, pl);
+    let want = [LINES as i64, LINES as i64, CELLS as i64, 2 * CELLS as i64];
+    assert_eq!(counts(&with), want);
+    assert_eq!(counts(&lanes), want);
+    assert!(state(&with) == state(&lanes), "publish_stored_with and publish_stored_lanes store different data");
+    let expected: Vec<String> = (0..LINES).map(|k| cell_id(k % CELLS)).collect();
+    assert!(
+        insertion_order(&with) == expected,
+        "publish_stored_with: versions not inserted in file order (DATUMESH_PUBLISH_LANES=4 must not apply)"
+    );
+    let _ = std::fs::remove_file(fw);
+    let _ = std::fs::remove_file(fl);
 }
