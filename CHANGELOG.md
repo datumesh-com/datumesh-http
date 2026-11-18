@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2 (unreleased; no release yet)
+
+For CONTRACT-1.7a-text (datumesh-http part): describe gives each method its description. Additive: no
+signature changes, no change to the hash, the other members, or the cache header.
+
+- **Method descriptions (H1).** `GET /describe/{class}` gives each method of the class a `description`
+  taken from the catalog entry `{class}/{method}` when that entry is 1 to 1,024 bytes (UTF-8 bytes,
+  never truncated). An entry that is absent, empty or longer than that gives no `description` member.
+  The class itself still has none (16.8). `/find` is unchanged.
+
 ## 0.3.1 (2026-11-16)
 
 For CONTRACT-1.7a (datumesh-http part): descriptor lines, no partial writes, `/find` returns classes

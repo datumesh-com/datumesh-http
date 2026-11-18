@@ -276,17 +276,18 @@ impl Inner {
                 _ => vec![],
             };
             let returns = sig.and_then(|s| s.get("returns")).cloned().unwrap_or(Value::Null);
-            // A method's `description` is its descriptor's metadata, which a function descriptor
-            // does not have (7): absent.
-            methods.push((
-                m.clone(),
-                Value::Object(vec![
-                    ("args".into(), Value::Object(args)),
-                    ("fn".into(), Value::String(format!("{name}/{m}"))),
-                    ("fn_hash".into(), Value::String(hash.clone())),
-                    ("returns".into(), returns),
-                ]),
-            ));
+            // A method's `description` comes from the catalog entry `{name}/{m}` when it is 1 to 1,024
+            // bytes (16.8); otherwise the member is absent.
+            let mut members = vec![("args".into(), Value::Object(args))];
+            if let Some(text) =
+                self.config.catalog.get(&format!("{name}/{m}")).filter(|t| (1..=1024).contains(&t.len()))
+            {
+                members.push(("description".into(), Value::String(text.clone())));
+            }
+            members.push(("fn".into(), Value::String(format!("{name}/{m}"))));
+            members.push(("fn_hash".into(), Value::String(hash.clone())));
+            members.push(("returns".into(), returns));
+            methods.push((m.clone(), Value::Object(members)));
         }
         let doc = Value::Object(vec![
             ("class".into(), Value::String(name.into())),

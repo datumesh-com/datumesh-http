@@ -1446,7 +1446,8 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
 }
 
 /// describe (SPEC 16.8): a class or an object, by class name, key encoding, object id, cell id or
-/// short id (`{id}`, percent-encoded as a path).
+/// short id (`{id}`, percent-encoded as a path). A class's method table gives each method its
+/// `description` from the catalog entry `{class}/{method}` when that is 1 to 1,024 bytes.
 #[utoipa::path(get, path = "/describe/{id}",
     params(("id" = String, Path, description = "A class name, an object's key encoding, an object id, a cell id or a short id (12 hex digits).")),
     responses((status = 200, description = "A describe-class or describe-object document (SPEC 16.8)", content_type = "application/json"), (status = 400, description = "`E_KEY_ENCODING`, `E_KEY_NORMALISATION` or `E_SHORT_ID_AMBIGUOUS`", content_type = "application/json"), (status = 404, description = "An id the mesh does not know", content_type = "application/json")))]
