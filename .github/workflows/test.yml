@@ -18,7 +18,8 @@ jobs:
         toolchain: ["1.97", "1.99"] # MSRV and stable
     services:
       postgres:
-        image: postgres:16
+        # PostgreSQL 16 with pgvector, as the meshes run it (0.4.1): the vector find tests run here too.
+        image: pgvector/pgvector@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b # 0.8.6-pg16-trixie
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -27,6 +28,7 @@ jobs:
           --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      DATUMESH_PGVECTOR_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v7
         with:

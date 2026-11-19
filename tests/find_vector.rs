@@ -156,3 +156,27 @@ async fn the_service_stopping_later_gives_vector_false() {
     assert!(results(&v).iter().all(|r| r["match"] != "vector"));
     assert_eq!(names(&v)[0], BIRD_A);
 }
+
+/// 0.4.1: indexing waits longer than a query. A batch of passages on one CPU takes over 2 s (32
+/// descriptions took 2.1 s on mesh-test), so the index has a time limit of its own: with every
+/// call taking 2.5 s the embeddings are still written, while a query (2 s) answers `vector: false`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn indexing_outlasts_a_slow_service() {
+    let admin = need_pgvector!();
+    let fake = FakeEmbed::start_with(&[("falcon", "kestrel")]);
+    fake.set_delay(2_500);
+    let m = serve_pg(&admin, &lexicon_and_zoo(), Some(config_with_embed(&fake.url()))).await;
+    let mut n = 0;
+    for _ in 0..120 {
+        n = m.column("select count(*)::text from embeddings")[0].parse::<u64>().unwrap();
+        if n > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(n > 0, "no embedding was written with a 2.5 s service");
+    let v = m.find("kestrel").await;
+    assert_eq!(v["vector"], json!(false), "{v}");
+    fake.set_delay(0);
+    m.find_until("kestrel", vec_hits).await;
+}

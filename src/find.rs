@@ -964,6 +964,9 @@ pub(crate) fn summary(inner: &Inner) -> Value {
 
 /// Index maintenance (R3): the generic words, the value counts, and the embeddings of the entries
 /// and values that have none for the model. Idempotent; a failing embedding service stops the pass.
+/// The entries embedded in one call of the index (0.4.1: 16, was 32).
+const INDEX_BATCH: usize = 16;
+
 pub(crate) fn reindex(inner: &Inner) {
     let Ok(_guard) = inner.reindex.lock() else { return };
     let store: &dyn Store = &*inner.store;
@@ -974,18 +977,31 @@ pub(crate) fn reindex(inner: &Inner) {
     }
     let (Some(ec), true) = (inner.embed.as_ref(), store.vector_available()) else { return };
     loop {
-        let Ok(pending) = store.pending_embeddings(MODEL, 32) else { return };
+        let pending = match store.pending_embeddings(MODEL, INDEX_BATCH) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "the index could not read the entries to embed");
+                return;
+            }
+        };
         if pending.is_empty() {
             return;
         }
         let texts: Vec<String> = pending.iter().map(|p| p.text.clone()).collect();
-        let Ok(vecs) = ec.embed("passage: ", &texts) else { return };
+        let vecs = match ec.embed_passages(&texts) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, pending = texts.len(), "the embed service did not embed the index's batch; retried in 30 s");
+                return;
+            }
+        };
         let items: Vec<datumesh_store::Embedding> = pending
             .iter()
             .zip(vecs)
             .map(|(p, v)| datumesh_store::Embedding { ref_kind: p.ref_kind, ref_id: p.ref_id, vec: v })
             .collect();
-        if store.put_embeddings(MODEL, &items).is_err() {
+        if let Err(e) = store.put_embeddings(MODEL, &items) {
+            tracing::warn!(error = %e, "the index could not store a batch of embeddings");
             return;
         }
     }

@@ -12,6 +12,8 @@ For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-buil
 - **Bundle import** (`bundle::import_signed` and its siblings) gives a failed test run the code as the text's prefix: `E_TESTS_MISSING: ...` or `E_TESTS_FAILING: ...` (`BundleError::Tests`). The variants and signatures are unchanged.
 
 - **Feed jobs (Part 5, deploy only, not in the crate).** `deploy/prod/feeds/`: one fetch script per relayed source (ECB reference rates, €STR, ECB policy rates, US Treasury par yields, Bank of England Bank Rate), the CHIRPS regional summaries and the licence register. Each writes a `publish-stored` file of new values only, with `source` on every line, and runs it with the lanes from `.env`. Relay names come from one table, `names.toml`.
+- **Fix: the embedding index gets a time limit of its own (found on mesh-test).** A batch of 32 passages took 2.1 s on the embed service's one CPU, past the 2 s query limit, so 0.4.0 never wrote an embedding and logged nothing. Indexing now sends 16 entries a call under a 60 s limit (`embed::INDEX_TIMEOUT`, `EmbedClient::embed_passages`), and a failed batch is logged as a warning and retried in 30 s. A query keeps its 2 s limit.
+- **CI runs the pgvector tests:** the test job's database is the pgvector image the meshes run, with `DATUMESH_PGVECTOR_URL` set. Before, `tests/find_vector.rs` skipped itself in CI.
 
 ## 0.4.0 (2026-11-19)
 
