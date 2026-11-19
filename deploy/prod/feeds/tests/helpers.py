@@ -79,3 +79,8 @@ def call_text(fq: str, argnames: list[str], values: dict) -> str:
         v = values[a]
         parts.append(f'{a}: {v}' if re.match(r"^\d{4}-\d\d-\d\d$", v) else f'{a}: "{v}"')
     return f"{fq}({', '.join(parts)})"
+
+
+def jcs(obj) -> bytes:
+    """JSON canonical form for strings and integers only: sorted keys, no spaces, UTF-8 as is."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
