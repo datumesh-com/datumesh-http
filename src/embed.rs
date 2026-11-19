@@ -57,7 +57,11 @@ impl EmbedClient {
                 .build()
                 .into()
         };
-        EmbedClient { url: url.trim_end_matches('/').to_string(), agent: agent(TIMEOUT), index_agent: agent(INDEX_TIMEOUT) }
+        EmbedClient {
+            url: url.trim_end_matches('/').to_string(),
+            agent: agent(TIMEOUT),
+            index_agent: agent(INDEX_TIMEOUT),
+        }
     }
 
     /// The normalised vectors of `texts` with the `passage: ` prefix, in order, under
