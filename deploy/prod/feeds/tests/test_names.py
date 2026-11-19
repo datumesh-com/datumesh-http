@@ -84,8 +84,8 @@ def test_every_namespace_is_under_the_given_host_and_only_it(host):
 
 
 def test_the_two_tables_differ_only_in_the_host():
-    a = {p: s.replace(REHEARSAL, "HOST") for p, s in strings(common.names(REHEARSAL))}
-    b = {p: s.replace(PRODUCTION, "HOST") for p, s in strings(common.names(PRODUCTION))}
+    a = {p: s.replace(REHEARSAL, "HOST") for p, s in strings(common.names(REHEARSAL)) if p != ".meta.status"}
+    b = {p: s.replace(PRODUCTION, "HOST") for p, s in strings(common.names(PRODUCTION)) if p != ".meta.status"}
     assert a == b
 
 

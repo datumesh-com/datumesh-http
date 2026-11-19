@@ -28,7 +28,7 @@ def test_run_feed_refuses_an_unknown_host(tmp_path, bad):
 def test_run_feed_keeps_state_and_output_per_host():
     text = (FEEDS / "run_feed.sh").read_text()
     assert 'state="$feeds/state/$host"' in text and 'out="$feeds/out/$host"' in text
-    assert '--host "$host"' in text
+    assert '--host \\"$host\\"' in text
 
 
 def test_install_cron_needs_a_host_and_prints_it():

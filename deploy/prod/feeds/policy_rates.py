@@ -16,7 +16,7 @@ LABELS = {"mro": "main refinancing operations rate", "dfr": "deposit facility ra
 
 
 def _rate_of_series() -> dict:
-    series = common.names()[KEY]["series"]
+    series = common.series(KEY)
     return {s: rate for rate, s in series.items()}
 
 
@@ -39,7 +39,7 @@ def parse(data: bytes) -> list:
 
 
 def _dictionary(rows):
-    series = common.names()[KEY]["series"]
+    series = common.series(KEY)
     return {"rate": [{"value": k, "label": LABELS[k]} for k in sorted(series)]}
 
 
@@ -74,7 +74,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
 
 def main(argv=None):
     a = common.base_parser().parse_args(argv)
-    return common.finish(run(common.names(), fetch=common.http_get, now=common.now_instant(),
+    return common.finish(run(common.names(a.host), fetch=common.http_get, now=common.now_instant(),
                              state_dir=a.state_dir, out_dir=a.out_dir))
 
 

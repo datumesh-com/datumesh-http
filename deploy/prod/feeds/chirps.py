@@ -2,8 +2,8 @@
 
 The aggregation runs here because the engine has no raster reader. A pixel counts when its centre is inside the
 region's outer ring and outside its holes; its weight is cos(latitude of its centre); nodata is skipped.
-Stored cells: the mean per region and month, the raster file's SHA-256 and size per month, and each region's WKT
-once. The raster is decoded with tifffile and numpy, imported only when a raster is decoded (D15)."""
+Stored cells: the mean per region and month, with no `source` member (D17); the raster's URL and SHA-256, the method
+and the Natural Earth region are in the summary and the function description. The raster is decoded with tifffile and numpy, imported only when a raster is decoded (D15)."""
 import datetime as dt
 import io
 import math
@@ -11,7 +11,6 @@ import re
 import time
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
-from urllib.parse import urlparse
 
 import common
 import relay
@@ -134,33 +133,49 @@ def read_geotiff(data: bytes) -> dict:
 
 # ---- lines -----------------------------------------------------------------------------------------------
 
+COMPUTED = "computed by datumesh.com from CHIRPS v3; not CHIRPS's own value"
+
+
 def _label(sec, region):
-    return sec["regions"][region]
+    return sec["regions"][region]["label"]
 
 
-def _mean_summary(sec, r, value):
+def _mean_summary(sec, r, value, source):
+    """The lineage is here and in the function description, not in a `source` member (D17): the raster's URL and
+    SHA-256, the method, the Natural Earth region id and file."""
     region = r["region"]
-    return (f"{_label(sec, region)} ({region}), {r['month'][:7]}: {value} mm, the area-weighted mean of CHIRPS v3 "
-            f"pixels inside the region; computed by datumesh.com from CHIRPS v3; not the source's own value.")
+    return (f"{_label(sec, region)} ({region}), {r['month'][:7]}: {value} mm, the area-weighted mean (weight cos "
+            f"latitude) of the CHIRPS v3 pixels whose centres fall inside the region; {COMPUTED}. "
+            f"Raster {source['url']} sha256 {source['sha256']}. "
+            f"Region: {sec['region_source']}, id {sec['regions'][region]['ne_id']}, "
+            f"file sha256 {sec['region_source_sha256']}.")
 
 
 def _catalogue(sec, fq, rows):
     ordered = sorted(rows, key=lambda r: (r["month"], r["region"]))
     examples = []
     for r in ordered[-2:][::-1]:
-        examples.append({"call": f'{fq}(region: "{r["region"]}", month: {r["month"]})',
+        examples.append({"call": f'{fq}(dataset: "{sec["dataset"]}", region: "{r["region"]}", month: {r["month"]})',
                          "expected": {"type": "number", "value": decimal_text(r["value"])}})
-    return {"catalog": fq, "kind": "function", "label": "CHIRPS regional rainfall (computed)",
-            "description": ("the mean monthly rainfall in mm over a region, computed by datumesh.com from CHIRPS v3 "
-                            "pixels whose centres lie in the region (area-weighted); not the source's own value"),
-            "args": {"region": "the region code, for example US-KS", "month": "the first day of the month"},
+    description = (f"Mean monthly rainfall in mm over a region, {COMPUTED}. Method: the area-weighted mean "
+                   f"(weight cos latitude) of the pixels whose centres lie inside the region in the CHIRPS v3 monthly "
+                   f"raster, nodata skipped, rounded to two places. Region: the polygon from {sec['region_source']}, "
+                   f"by its region id. Each cell's summary gives its raster URL and SHA-256 and the region's Natural "
+                   f"Earth id and file hash. Rasters: {sec['raster_url']}.")
+    return {"catalog": fq, "kind": "function", "label": "Monthly rainfall by region (computed)",
+            "description": description,
+            "args": {"dataset": "the rainfall dataset: chirps",
+                     "region": "the region id, snake_case, for example us_kansas",
+                     "month": "the first day of the month"},
             "examples": examples,
-            "dictionary": {"region": [{"value": k, "label": v} for k, v in sec["regions"].items()]}}
+            "dictionary": {"dataset": [{"value": sec["dataset"], "label": sec["dataset_label"]}],
+                           "region": [{"value": k, "label": v["label"]} for k, v in sec["regions"].items()]}}
 
 
 def emit(rows, state, names, source):
     """The mean cells for one month's rows after the state, and the new state. The first call also emits the
-    function and catalogue lines. `source` = {url, retrieved, sha256} of the raster file."""
+    function and catalogue lines. `source` = {url, retrieved, sha256} of the raster file. A cell has no `source`
+    member: its receipt is primary, not relayed (D17)."""
     sec = names[KEY]
     fq = relay.fq_of(sec)
     new = [r for r in rows if r["month"] > state.get("last_date", "")]
@@ -170,83 +185,22 @@ def emit(rows, state, names, source):
     st = dict(state)
     if not state.get("fn"):
         lines.append({"function": fq, "signature": {
-            "args": {"region": {"type": "string", "valid": False}, "month": {"type": "date", "valid": True}},
-            "order": ["region", "month"], "returns": {"type": "number", "unit": sec["unit"]}}})
+            "args": {"dataset": {"type": "string", "valid": False}, "region": {"type": "string", "valid": False},
+                     "month": {"type": "date", "valid": True}},
+            "order": ["dataset", "region", "month"], "returns": {"type": "number", "unit": sec["unit"]}}})
         lines.append(_catalogue(sec, fq, rows))
         st["fn"] = True
-    src = {"url": source["url"], "retrieved": source["retrieved"], "sha256": source["sha256"]}
     for r in new:
         value = decimal_text(r["value"])
         lines.append({
-            "cell": {"fn": fq, "args": {"region": {"type": "string", "value": r["region"]},
+            "cell": {"fn": fq, "args": {"dataset": {"type": "string", "value": sec["dataset"]},
+                                        "region": {"type": "string", "value": r["region"]},
                                         "month": {"type": "date", "value": r["month"]}}},
             "value": {"type": "number", "value": value},
             "licence": sec["licence"],
-            "summary": common.nfc(_mean_summary(sec, r, value)),
-            "source": {"name": sec["source_name"], "url": src["url"], "retrieved": src["retrieved"],
-                       "sha256": src["sha256"]},
+            "summary": common.nfc(_mean_summary(sec, r, value, source)),
         })
     st["last_date"] = max([state.get("last_date", "")] + [r["month"] for r in new])
-    return lines, st
-
-
-def raster_lines(names, month: str, sha: str, size: int, url: str, retrieved: str, state: dict):
-    """The raster file's SHA-256 and size for the month, as stored cells under datumesh.com."""
-    sec = names[KEY]
-    fq_sha = f"{sec['namespace']}/{sec['raster_sha_function']}"
-    fq_size = f"{sec['namespace']}/{sec['raster_bytes_function']}"
-    st = dict(state)
-    lines = []
-    if not state.get("raster_fns"):
-        margs = {"month": {"type": "date", "valid": True}}
-        lines.append({"function": fq_sha, "signature": {"args": margs, "order": ["month"], "returns": "string"}})
-        lines.append({"function": fq_size, "signature": {"args": margs, "order": ["month"],
-                                                         "returns": {"type": "number", "unit": "bytes"}}})
-        for fq, what in ((fq_sha, "SHA-256 of the CHIRPS v3 monthly GeoTIFF"), (fq_size, "size in bytes of the CHIRPS v3 monthly GeoTIFF")):
-            lines.append({"catalog": fq, "kind": "function", "label": what[:60],
-                          "description": (f"The {what} for the month, as fetched by datumesh.com; the raster is "
-                                          f"the source's, the file's hash and size are datumesh.com's record."),
-                          "args": {"month": "the first day of the month"}, "examples": [], "dictionary": {}})
-        st["raster_fns"] = True
-    src_host = sec["source_name"]
-    margs = {"month": {"type": "date", "value": month}}
-    summary = f"CHIRPS v3 monthly GeoTIFF for {month[:7]} as fetched by datumesh.com from {src_host}"
-    for fq, value, vobj, what in ((fq_sha, sha, {"type": "string", "value": sha}, "SHA-256"),
-                                  (fq_size, str(size), {"type": "number", "value": str(size)}, "size in bytes")):
-        lines.append({"cell": {"fn": fq, "args": margs}, "value": vobj, "licence": sec["licence"],
-                      "summary": f"{what} of the {summary}: {value}. Recorded by datumesh.com; not the source's own value.",
-                      "source": {"name": src_host, "url": url, "retrieved": retrieved, "sha256": sha}})
-    return lines, st
-
-
-def region_wkt_lines(names, region: str, wkt: str, now: str, state: dict):
-    """A region's polygon, once, as a stored cell (WKT) under datumesh.com; its source is the Natural Earth file."""
-    if region in state.get("wkt_regions", []):
-        return [], state
-    sec = names[KEY]
-    fq = f"{sec['namespace']}/{sec['region_wkt_function']}"
-    st = dict(state)
-    lines = []
-    if not state.get("wkt_fn"):
-        lines.append({"function": fq, "signature": {"args": {"region": {"type": "string", "valid": False}},
-                                                    "order": ["region"], "returns": "string"}})
-        lines.append({"catalog": fq, "kind": "function", "label": "CHIRPS region polygon (WKT)",
-                      "description": ("the polygon of a region used for CHIRPS regional means, as WKT, from "
-                                      "Natural Earth admin-1 (public domain); computed by datumesh.com"),
-                      "args": {"region": "the region code, for example US-KS"}, "examples": [],
-                      "dictionary": {"region": [{"value": k, "label": v} for k, v in sec["regions"].items()]}})
-        st["wkt_fn"] = True
-    url = sec["region_source_url"]
-    lines.append({
-        "cell": {"fn": fq, "args": {"region": {"type": "string", "value": region}}},
-        "value": {"type": "string", "value": wkt},
-        "licence": sec["region_licence"],
-        "summary": common.nfc(f"Polygon of {sec['regions'][region]} ({region}) as WKT, converted by datumesh.com "
-                              f"from the Natural Earth admin-1 file named in the source (public domain)."),
-        "source": {"name": urlparse(url).hostname, "url": url, "retrieved": now,
-                   "sha256": sec["region_source_sha256"]},
-    })
-    st["wkt_regions"] = sorted(set(state.get("wkt_regions", [])) | {region})
     return lines, st
 
 
@@ -288,9 +242,8 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         return None
     decode = decode or read_geotiff
     regions = {}
-    for region, rel in sec["region_files"].items():
-        regions[region] = parse_wkt((common.FEEDS / rel).read_text(encoding="utf-8"))
-    wkt_text = {region: (common.FEEDS / rel).read_text(encoding="utf-8").strip() for region, rel in sec["region_files"].items()}
+    for region, spec in sec["regions"].items():
+        regions[region] = parse_wkt((common.FEEDS / spec["file"]).read_text(encoding="utf-8"))
     lines = []
     for month in months:
         url = sec["raster_url"].format(year=month[:4], month=month[5:7])
@@ -311,11 +264,6 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
                 rows.append(region_row(region, month, grid, rings))
             except EmptyRegion:
                 continue
-        more, state = raster_lines(names, month, sha, len(data), url, now, state)
-        lines += more
-        for region in regions:
-            more, state = region_wkt_lines(names, region, wkt_text[region], now, state)
-            lines += more
         more, state = emit(rows, state, names, src)
         lines += more
         state["last_date"] = month
@@ -337,7 +285,7 @@ def main(argv=None):
     p = common.base_parser()
     p.add_argument("--max-months", type=int, default=None)
     a = p.parse_args(argv)
-    return common.finish(run(common.names(), fetch=common.http_get, now=common.now_instant(),
+    return common.finish(run(common.names(a.host), fetch=common.http_get, now=common.now_instant(),
                              state_dir=a.state_dir, out_dir=a.out_dir, max_months=a.max_months))
 
 

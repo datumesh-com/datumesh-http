@@ -105,15 +105,51 @@ def write_jsonl(path: Path, lines) -> Path:
     return path
 
 
-_NAMES = None
+class UnknownHost(ValueError):
+    """The host is not one of the table's hosts, spelled exactly. There is no default and no normalisation."""
 
 
-def names() -> dict:
-    global _NAMES
-    if _NAMES is None:
+_TABLE = None
+_NAMES = {}
+
+
+def _table() -> dict:
+    global _TABLE
+    if _TABLE is None:
         with open(FEEDS / "names.toml", "rb") as f:
-            _NAMES = tomllib.load(f)
-    return _NAMES
+            _TABLE = tomllib.load(f)
+    return _TABLE
+
+
+def _with_host(x, host):
+    if isinstance(x, dict):
+        return {k: _with_host(v, host) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_with_host(v, host) for v in x]
+    if isinstance(x, str):
+        return x.replace("{host}", host)
+    return x
+
+
+def names(host) -> dict:
+    """The table for one host. `host` has no default: it must be, character for character, a key of [hosts]
+    (the rehearsal host or production). Anything else raises UnknownHost, so production names are produced only
+    when the caller says datumesh.com."""
+    table = _table()
+    hosts = table["hosts"]
+    if not isinstance(host, str) or host not in hosts:
+        raise UnknownHost(f"host {host!r} is not one of {sorted(hosts)}")
+    if host not in _NAMES:
+        body = {k: v for k, v in table.items() if k != "hosts"}
+        out = _with_host(body, host)
+        out["meta"] = {"host": host, "status": hosts[host]["status"], "takeover_base": f"https://{host}/takeover"}
+        _NAMES[host] = out
+    return _NAMES[host]
+
+
+def series(key: str) -> dict:
+    """The series of a relay source (policy_rates): host-independent data, read without a host."""
+    return _table()[key]["series"]
 
 
 def now_instant(epoch: float | None = None) -> str:
@@ -146,8 +182,18 @@ def http_get(url: str) -> bytes:
         raise
 
 
+def _host_arg(value: str) -> str:
+    try:
+        names(value)
+    except UnknownHost as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return value
+
+
 def base_parser(modes=()) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Fetch one source, check its shape, write a publish-stored file.")
+    p.add_argument("--host", required=True, type=_host_arg,
+                   help="the mesh host the names are spelled for: a host of the names table, spelled exactly (no default)")
     p.add_argument("--state-dir", required=True)
     p.add_argument("--out-dir", required=True)
     if modes:
