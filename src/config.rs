@@ -198,7 +198,7 @@ pub struct Config {
     pub pool_size: usize,
     /// The most cells in one `POST /cells` (default 1,000).
     pub batch_max: usize,
-    /// Whether each held test is a computed cell `<host>/test_case(function_hash, case)` (E5:
+    /// Whether each held test is a signed cell (trust `primary`) `<host>/test_case(function_hash, case)` (E5:
     /// `DATUMESH_TEST_CELLS=1`, mesh-test). Off on production: no test cells until named.
     pub test_cells: bool,
     /// The default JSON page of `GET /slice` (default 1,000; at most 10,000 with `limit=`).

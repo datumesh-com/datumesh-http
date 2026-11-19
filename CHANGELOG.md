@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.1 (unreleased)
 
 For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-build2-part5-feeds (F5, the http needs). Additive: `Config` gains `publish_domains` and `log_dir`, `PublishDomains` is new, `Client::key_document_live` is new, and the mesh document gains `endpoints.x_bundles`. A function's describe answer names its page in a `Link: <https://<host>/fn/<name>>; rel="describedby"` header, not in the answer: the answer is the spec's (16.8) and core checks it strictly.
 
@@ -11,6 +11,10 @@ For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-buil
 - **`publish-stored` `source` (F5, spec-0.6.0 C2).** A cell line may carry `source` `{name, url, retrieved, sha256?, takeover?}`; the receipt signs it (core's `ReceiptBuilder::source`), and a line that breaks the receipt's rules (`retrieved` after `issued`, a publisher that relays itself, an unknown member, a takeover that is not `https://`) is refused at its line with nothing written. A receipt with a `source` has the trust `relayed` (`TrustLabel::Relayed`).
 - **Bundle import** (`bundle::import_signed` and its siblings) gives a failed test run the code as the text's prefix: `E_TESTS_MISSING: ...` or `E_TESTS_FAILING: ...` (`BundleError::Tests`). The variants and signatures are unchanged.
 
+- **Feed jobs (Part 5, deploy only, not in the crate).** `deploy/prod/feeds/`: one fetch script per relayed source (ECB reference rates, €STR, ECB policy rates, US Treasury par yields, Bank of England Bank Rate), the CHIRPS regional summaries and the licence register. Each writes a `publish-stored` file of new values only, with `source` on every line, and runs it with the lanes from `.env`. Relay names come from one table, `names.toml`.
+
+## 0.4.0 (2026-11-19)
+
 For CONTRACT-build2-part3-calculus (datumesh-http part: E1 to E5 at the mesh). Requires datumesh-engine 0.5.0, datumesh-formula 0.5.0, datumesh-core 0.3.9 and datumesh-store 0.5.1 (its `function_tests`, the descriptor inputs index and the bound names). The public API is additive: `publish::publish_stored_checked`, `publish::publish_stored_checked_lanes`, `bundle::build_with_tests`, `BundleError::Tests`, `PublishErrorKind::TestsMissing` and `TestsFailing`, and `Config::test_cells`. `publish_stored*` and `build*` keep their behaviour and signatures.
 
 - **`POST /whatif` (E1, E2; spec-0.6.0 5.9).** The body `{"cell", "asof"?, "overrides", "solve"?}`: value overrides `{cell, value}` and slice overrides `{slice, add, remove}` (at most 64), and `solve` with `vary`, `target`, `equals`, `lo` and `hi`. Cells are calls, cell URI rests, or cell objects. The answer is a `scenario` `{asof, cell, overrides, type, value[, solved]}`, labelled a scenario: no receipt, no trust, never stored and never served at `/cell`. Bad requests answer `bad_request` with the codes of 5.9; a scenario with no solution, or a fault in scope, is `not_covered`. The mesh document lists `endpoints.whatif`, and the OpenAPI document has `/whatif`.
@@ -18,7 +22,7 @@ For CONTRACT-build2-part3-calculus (datumesh-http part: E1 to E5 at the mesh). R
 - **Tests for public functions (E5).** A `test` line in `publish-stored` (`{"test", "call", "asof"?, "inputs"?, "expect"}`), a bundle's signed `tests` member, and `publish-stored` (the binary) uses `publish_stored_checked`. A computed function is refused with `E_TESTS_MISSING` unless its tests cover the derived edge cases (zero divisors, absent inputs, negative numbers, declared extents and empty slices) and every branch arm; a failing test is refused with `E_TESTS_FAILING`. Stored functions are exempt. Refusals write nothing. Bundle import (`import_signed`) applies the same rule. The tests of a function are held in the store (`function_tests`), with their results.
 - **`describe` of a function (16.8).** `GET /describe/<function name>` answers `kind` `function` with `tests`: `count`, `branches`, `covered` and `counterexamples` (failing or erroring tests). A class method's name is not described.
 - **Rerun on rebind.** Binding a name reruns the tests of every function that reads it, transitively; the results are recorded, and failures never block the rebind.
-- **Tests as cells (mesh-test).** With `DATUMESH_TEST_CELLS=1`, each held test is a computed boolean cell `<host>/test_case(function_hash, case)`, signed by the mesh. Production names no test cells.
+- **Tests as cells (mesh-test).** With `DATUMESH_TEST_CELLS=1`, each held test is a boolean cell `<host>/test_case(function_hash, case)`, signed by the mesh, with trust `primary` (spec 5.5: host-signed, no inputs). Production names no test cells.
 
 For CONTRACT-build2-part2-read (datumesh-http part: R2, R3, R5). `GET /find` changes shape, and the rest is additive: `Config` gains `embed_url`, `bundle::build_with_catalog` is new, and `build`, `manifest_bytes`, `import_signed` keep their signatures. Requires datumesh-store 0.5.0 (the catalogue, the dictionaries, the embeddings and the find misses), and `datumesh-engine` and `datumesh-formula` built against it.
 

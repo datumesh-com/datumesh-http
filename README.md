@@ -121,7 +121,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_BUDGET_MS` | 1000 | the budget before `pending` |
 | `DATUMESH_POOL_SIZE` | 32 | the blocking pool, the concurrency limit, and the store's connections |
 | `DATUMESH_BATCH_MAX`, `DATUMESH_SLICE_PAGE`, `DATUMESH_SLICE_MAX`, `DATUMESH_EXPLAIN_DEPTH`, `DATUMESH_MAX_JOBS` | 1000, 1000, 1048576, 4, 10000 | bounds |
-| `DATUMESH_TEST_CELLS` | off | since 0.4.0, mesh-test only: each held function test is a computed cell `<host>/test_case(function_hash, case) -> boolean`, signed by the mesh (production names none) |
+| `DATUMESH_TEST_CELLS` | off | since 0.4.0, mesh-test only: each held function test is a signed cell (trust `primary`: host-signed, no inputs) `<host>/test_case(function_hash, case) -> boolean`, signed by the mesh (production names none) |
 | `DATUMESH_RATE_LIMITS`, `DATUMESH_RATE_PER_IP`, `DATUMESH_RATE_IP_BURST`, `DATUMESH_RATE_PER_KEY`, `DATUMESH_RATE_VERIFY_PER_IP` | on, 60, 120, 600, 60 | rate limits, per minute |
 | `DATUMESH_TRUST_PROXY` | off | the client IP from the last `X-Forwarded-For` entry (behind Caddy) |
 | `DATUMESH_PUBLISH_DOMAINS` | none | since 0.4.0: the hosts that may publish with `POST /bundles`, besides the mesh's own namespaces: a comma-separated list, or `*` for any host with a valid key document |
