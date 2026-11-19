@@ -15,7 +15,9 @@ name: datumesh-mesh-test
 
 services:
   postgres:
-    image: postgres:16
+    # PostgreSQL 16.15 on Debian 13 with pgvector 0.8.6 (Build 2): the same server and glibc as the
+    # postgres:16 it replaces, so the data volume is kept.
+    image: pgvector/pgvector@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b  # 0.8.6-pg16-trixie
     env_file: ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets/db.env
     environment:
       POSTGRES_DB: datumesh
@@ -33,8 +35,23 @@ services:
       resources:
         limits: {cpus: "3", memory: 4g}
 
+  embed:
+    # The embedding model for vector `find` (Build 2 R2): HF Text Embeddings Inference CPU 1.8, pinned
+    # by digest, serving the int8 ONNX of intfloat/multilingual-e5-small (MIT, 384 dimensions) from a
+    # read-only mount, with no network beyond the backend. fp32, or int8 with TEI's default warm-up
+    # batch, is OOM-killed at 1 GB (QUESTIONS-build2 D10).
+    image: ghcr.io/huggingface/text-embeddings-inference@sha256:8de25e75ce39617f17f2f6c77d60a4f75b65e779ed5005420eb1400072a15c1c  # cpu-1.8
+    command: [--model-id, /model, --pooling, mean, --max-batch-tokens, "2048", --max-client-batch-size, "32", --max-concurrent-requests, "16", --port, "8080"]
+    volumes:
+      - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/embed-model/e5-small-int8:/model:ro
+    networks: [backend]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 1g}
+
   mesh:
-    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:3812a53c61e7f97c2aab46a6c74e2581954386299517b3c771f5a844dffd8a3d}  # datumesh-http 0.3.3, published
+    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:6fe2f4ecaccd931a7f0c229b81cf1132cd52dbaa744fb9fc0858fe8b3b39ab85}  # datumesh-http 0.4.1, published
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +75,11 @@ services:
       DATUMESH_RATE_VERIFY_PER_IP: "60"
       DATUMESH_LICENCE: CC-BY-4.0
       DATUMESH_MIGRATE: "1"
+      # Build 2, mesh-test only: vector find through the embed service, each function test as a
+      # cell, and POST /bundles open to any host with a valid key document (D11).
+      DATUMESH_EMBED_URL: http://embed:8080
+      DATUMESH_TEST_CELLS: "1"
+      DATUMESH_PUBLISH_DOMAINS: "*"
       RUST_LOG: info
     volumes:
       - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets:/run/secrets:ro
