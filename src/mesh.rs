@@ -1,7 +1,7 @@
 //! [`Mesh`]: the engine, its store and everything the endpoints share; the blocking
 //! operations each endpoint is built on, usable as library calls.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -154,7 +154,11 @@ impl MeshBuilder {
         }
         let engine = b.build().map_err(BuildError::Engine)?;
         let config = self.config;
+        let embed = config.embed_url.as_deref().map(crate::embed::EmbedClient::new);
         let inner = Inner {
+            generic: RwLock::new(Arc::new(crate::find::stopwords())),
+            embed,
+            reindex: Mutex::new(()),
             pool: Arc::new(Pool::new(config.pool_size)),
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
             limiter: Limiter::new(config.rate.clone()),
@@ -175,7 +179,25 @@ impl MeshBuilder {
             started: Instant::now(),
             config,
         };
-        Ok(Mesh { inner: Arc::new(inner) })
+        let mesh = Mesh { inner: Arc::new(inner) };
+        // The operator's catalogue, then the index: now, and every 30 s (a bundle or a publish
+        // from another process reaches the index within that). The thread stops with the mesh.
+        // On a thread of its own: the store's synchronous client must not run on a runtime's thread.
+        std::thread::scope(|s| {
+            let inner = mesh.inner.clone();
+            let _ = s.spawn(move || crate::find::sync_operator_catalog(&inner)).join();
+        });
+        let weak = Arc::downgrade(&mesh.inner);
+        let spawned = std::thread::Builder::new().name("datumesh-index".into()).spawn(move || loop {
+            let Some(inner) = weak.upgrade() else { break };
+            crate::find::reindex(&inner);
+            drop(inner);
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the index thread is not started; find sees the catalogue as it is at start");
+        }
+        Ok(mesh)
     }
 }
 
@@ -219,6 +241,12 @@ pub(crate) struct Inner {
     /// The index of the objects the mesh knows (describe, short ids).
     pub(crate) known: Mutex<crate::describe::Index>,
     pub(crate) started: Instant,
+    /// The generic words `find` never matches values by (CONTRACT-build2-part2-read R3).
+    pub(crate) generic: RwLock<Arc<HashSet<String>>>,
+    /// The embedding service, when `DATUMESH_EMBED_URL` is set (R2).
+    pub(crate) embed: Option<crate::embed::EmbedClient>,
+    /// One index pass at a time.
+    pub(crate) reindex: Mutex<()>,
 }
 
 /// A Datumesh mesh: the engine behind the endpoints. Cheap to clone (shared).

@@ -73,6 +73,7 @@ impl core::fmt::Debug for datumesh_http::bundle::Imported
 pub fn datumesh_http::bundle::Imported::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::bundle::Imported
 pub fn datumesh_http::bundle::build(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
+pub fn datumesh_http::bundle::build_with_catalog(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::import_signed<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &[alloc::string::String], &dyn datumesh_engine::clock::Clock, &[u8]) -> core::result::Result<datumesh_http::bundle::Imported, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::manifest_bytes(&str, &[(alloc::string::String, alloc::string::String)], &[alloc::string::String]) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::call
@@ -283,6 +284,7 @@ pub datumesh_http::config::Config::budget: core::time::Duration
 pub datumesh_http::config::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub datumesh_http::config::Config::cross_mesh: bool
 pub datumesh_http::config::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub datumesh_http::config::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::explain_depth: usize
 pub datumesh_http::config::Config::host: alloc::string::String
 pub datumesh_http::config::Config::max_jobs: usize
@@ -644,6 +646,7 @@ pub datumesh_http::Config::budget: core::time::Duration
 pub datumesh_http::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub datumesh_http::Config::cross_mesh: bool
 pub datumesh_http::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub datumesh_http::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::explain_depth: usize
 pub datumesh_http::Config::host: alloc::string::String
 pub datumesh_http::Config::max_jobs: usize

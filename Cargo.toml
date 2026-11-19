@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.3.3"
+version = "0.4.0"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/datumesh-http"
 readme = "README.md"
 keywords = ["datumesh", "receipt", "provenance", "http", "mesh"]
 categories = ["web-programming::http-server"]
-include = ["/src/**/*.rs", "/Cargo.toml", "/LICENSE", "/README.md"]
+include = ["/src/**/*.rs", "/src/find_stopwords.txt", "/Cargo.toml", "/LICENSE", "/README.md"]
 
 [lib]
 name = "datumesh_http"
@@ -25,7 +25,7 @@ path = "src/bin/datumesh-mesh.rs"
 # `sign` for the keys the binary generates.
 datumesh-core = { version = "0.3.8", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
-datumesh-store = { version = "0.4.3", default-features = false }
+datumesh-store = { version = "0.5.0", default-features = false }
 datumesh-engine = "0.4.2"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
 datumesh-formula = "0.3.0"
@@ -48,12 +48,14 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+# NFC of queries and catalogue text (`find`, CONTRACT-build2-part2-read R3); already in the lock through idna.
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
 jsonschema = { version = "0.33.0", default-features = false }
 # SQLite stores for the 0.3.0 tests (CONTRACT-1.8b H1, H2); the library itself is PostgreSQL only.
-datumesh-store = { version = "0.4.3", features = ["sqlite"] }
+datumesh-store = { version = "0.5.0", features = ["sqlite"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
 
 # The engine signs and the store verifies many receipts in the tests: curve25519 and sha2

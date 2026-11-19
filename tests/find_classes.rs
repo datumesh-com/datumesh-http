@@ -158,9 +158,23 @@ async fn a_word_of_a_methods_description_finds_the_class() {
     assert_eq!(s(c, "class_hash"), m.class_hash);
     assert_eq!(s(c, "since"), m.class_tx);
     assert!(matches!(c.get("descriptor"), Some(Value::Object(_))), "the flattened class descriptor");
+    // 0.4.0 (R3): every result also has its `call`, `label`, `match` and `score`.
     assert_eq!(
         keys_of(c),
-        ["class_hash", "description", "descriptor", "kind", "methods", "name", "since"].map(String::from)
+        [
+            "call",
+            "class_hash",
+            "description",
+            "descriptor",
+            "kind",
+            "label",
+            "match",
+            "methods",
+            "name",
+            "score",
+            "since"
+        ]
+        .map(String::from)
     );
     // The method entry matches by its own description.
     kind_of(&rs, "method", RATE);
@@ -217,7 +231,8 @@ async fn a_method_entry_has_its_class_and_function() {
     assert!(matches!(r.get("descriptor"), Some(Value::Object(_))));
     assert_eq!(
         keys_of(r),
-        ["class", "description", "descriptor", "fn_hash", "kind", "name", "since"].map(String::from)
+        ["call", "class", "description", "descriptor", "fn_hash", "kind", "label", "match", "name", "score", "since"]
+            .map(String::from)
     );
 }
 
@@ -235,11 +250,15 @@ async fn a_function_result_is_unchanged_apart_from_kind() {
     assert_eq!(s(r, "fn_hash"), m.plain_hash);
     assert_eq!(s(r, "since"), m.plain_tx);
     assert!(matches!(r.get("descriptor"), Some(Value::Object(_))));
-    assert_eq!(keys_of(r), ["description", "descriptor", "fn_hash", "kind", "name", "since"].map(String::from));
+    assert_eq!(
+        keys_of(r),
+        ["call", "description", "descriptor", "fn_hash", "kind", "label", "match", "name", "score", "since"]
+            .map(String::from)
+    );
 }
 
 /// A catalog name unbound as of now is skipped, as before; the order is the catalog's (ascending
-/// name) and `limit` cuts it.
+/// name) and `limit` cuts it. (0.4.0: a blank query lists the entries; `limit` defaults to 10.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unbound_names_are_skipped_and_the_order_and_limit_hold() {
     let m = served().await;

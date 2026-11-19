@@ -461,8 +461,6 @@ dependencies = [
 [[package]]
 name = "datumesh-engine"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd551e2ceee1fae932e970380f13b47afb642cfa6afefb52d18103a5aa3bf480"
 dependencies = [
  "datumesh-core",
  "datumesh-store",
@@ -472,8 +470,6 @@ dependencies = [
 [[package]]
 name = "datumesh-formula"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfeb0873f4fd21902df9f381ed591126c2dce418cd03862de3d70bbd2bc32476"
 dependencies = [
  "datumesh-core",
  "datumesh-engine",
@@ -483,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-http"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -504,15 +500,14 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "ureq",
  "utoipa",
 ]
 
 [[package]]
 name = "datumesh-store"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "881697e96628df1bbc2bb3775643c7f015866f5fe1b60fdaca9c06795aa97be4"
+version = "0.5.0"
 dependencies = [
  "datumesh-core",
  "postgres",

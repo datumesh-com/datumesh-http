@@ -75,11 +75,15 @@ async fn indexing_is_idempotent() {
     assert!(first > 0);
     // a second mesh over the same store: same entries, same model
     let shared: std::sync::Arc<dyn datumesh_store::Store + Send + Sync> = m.store.clone();
-    let mesh2 = datumesh_http::Mesh::builder(config_with_embed(&fake.url()), shared)
-        .signing_key(common::key_for(common::lite::HOST))
-        .clock(std::sync::Arc::new(common::lite::FixedClock(MESH_NOW)))
-        .build()
-        .unwrap();
+    // Built on a thread of its own: the build reads the store with the synchronous client.
+    let cfg = config_with_embed(&fake.url());
+    let mesh2 = common::on_thread(move || {
+        datumesh_http::Mesh::builder(cfg, shared)
+            .signing_key(common::key_for(common::lite::HOST))
+            .clock(std::sync::Arc::new(common::lite::FixedClock(MESH_NOW)))
+            .build()
+            .unwrap()
+    });
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
     let t = tokio::spawn(async move {
@@ -87,7 +91,8 @@ async fn indexing_is_idempotent() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
     let v: serde_json::Value =
-        serde_json::from_slice(&reqwest::get(format!("{base}/find?q=kestrel")).await.unwrap().bytes().await.unwrap()).unwrap();
+        serde_json::from_slice(&reqwest::get(format!("{base}/find?q=kestrel")).await.unwrap().bytes().await.unwrap())
+            .unwrap();
     assert_eq!(v["vector"], json!(true), "{v}");
     assert_eq!(fake.passages().len(), first, "the second start embedded again");
     t.abort();

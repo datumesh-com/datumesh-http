@@ -153,18 +153,22 @@ fn importing_twice_is_idempotent() {
     assert_eq!((again.functions_bound, again.versions), (0, 0));
 }
 
+/// A tampering of a bundle's bytes.
+type Tamper = Box<dyn Fn(&[u8]) -> Vec<u8>>;
+
 /// The manifest signature covers the catalogue: any change to it, in the bundle as sent, fails
 /// the import with `Manifest` (E_SIGNATURE) and writes nothing.
 #[test]
 fn a_tampered_catalog_is_refused() {
-    let tampers: Vec<(&str, Box<dyn Fn(&[u8]) -> Vec<u8>>)> = vec![
+    let tampers: Vec<(&str, Tamper)> = vec![
         ("description", Box::new(|b| edit_catalog(b, |a| replace_in_entry(a, "osprey", "pelican")))),
         ("label", Box::new(|b| edit_catalog(b, |a| replace_in_entry(a, "Water level\"", "Free money\"")))),
         ("dictionary label", Box::new(|b| edit_catalog(b, |a| replace_in_entry(a, "North pier", "South pier")))),
         ("dictionary alias", Box::new(|b| edit_catalog(b, |a| replace_in_entry(a, "\"np\"", "\"sp\"")))),
-        ("an entry added", Box::new(|b| {
-            edit_catalog(b, |a| a.push(cj::parse(&entry(OTHER, "Other", "Another entry")).unwrap()))
-        })),
+        (
+            "an entry added",
+            Box::new(|b| edit_catalog(b, |a| a.push(cj::parse(&entry(OTHER, "Other", "Another entry")).unwrap()))),
+        ),
         ("the catalogue removed", Box::new(|b| edit_catalog(b, |a| a.clear()))),
     ];
     for (what, f) in tampers {

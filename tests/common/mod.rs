@@ -40,6 +40,12 @@ pub fn bl<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// Runs `f` on a thread of its own, whatever the caller's runtime: the synchronous PostgreSQL client
+/// starts a runtime, which a runtime's thread may not (0.4.0: the pgvector and miss tests use it).
+pub fn on_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::spawn(f).join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
 pub fn admin_url() -> String {
     std::env::var("DATABASE_URL").expect("DATABASE_URL names a PostgreSQL 16 database (see README)")
 }

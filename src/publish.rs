@@ -598,6 +598,8 @@ enum Op {
     Class { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool, methods: Vec<String> },
     /// A cell: its blob, its receipt, and the version when `version`.
     Cell { tx: String, id: String, receipt: Vec<u8>, blob: Option<Vec<u8>>, version: bool },
+    /// A catalogue line (R5): the entry, and its dictionaries (`publisher`, signed by the run's key).
+    Catalog { entry: datumesh_store::CatalogEntry, dictionaries: Vec<(String, Vec<datumesh_store::KeyValue>)> },
 }
 
 /// The lines of a file, numbered, without the blank ones.
@@ -612,6 +614,48 @@ fn read_lines(path: &Path) -> Result<Vec<(usize, String)>, PublishError> {
         }
     }
     Ok(out)
+}
+
+/// The dictionary values the file's cells have for the string arguments (CONTRACT-build2-part2-read
+/// R3): each distinct (function, key, value) that no dictionary has yet is stored with an empty label
+/// (the value stands for itself). A dictionary's label is never replaced by a cell's.
+fn index_cell_values<S: Store + ?Sized>(store: &S, ops: &[Op]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for op in ops {
+        if let Op::Cell { receipt, .. } = op {
+            if let Ok(r) = datumesh_core::Receipt::from_json(receipt) {
+                cell_string_values(&r, &mut seen);
+            }
+        }
+    }
+    store_cell_values(store, seen)
+}
+
+/// The (function, key, value) of each string argument of a receipt's cell, into `out`.
+pub(crate) fn cell_string_values(r: &datumesh_core::Receipt, out: &mut BTreeSet<(String, String, String)>) {
+    let cell = r.cell();
+    for (key, arg) in &cell.args {
+        if let datumesh_core::Arg::Value(datumesh_core::Scalar::String(v)) = arg {
+            if !v.is_empty() && v.len() <= 1024 {
+                out.insert((cell.function_name(), key.clone(), v.clone()));
+            }
+        }
+    }
+}
+
+/// Stores the values of [`cell_string_values`] that no dictionary has yet (R3).
+pub(crate) fn store_cell_values<S: Store + ?Sized>(
+    store: &S,
+    seen: BTreeSet<(String, String, String)>,
+) -> Result<(), String> {
+    for (owner, key, value) in seen {
+        if crate::find::has_value(store, &owner, &key, &value) {
+            continue;
+        }
+        let kv = datumesh_store::KeyValue { value, label: String::new(), aliases: Vec::new() };
+        store.upsert_key_values(&owner, &key, std::slice::from_ref(&kv)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Whether a line is a cell line: none of the other kinds (the dispatch order of `plan_line`).
@@ -728,6 +772,8 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             let start = bound_of(v, n, self.ctx.now)?;
             let fd = FunctionDescriptor::from_value(&stored_value(sig)).map_err(|e| err(e.to_string()))?;
             self.function(n, name, start, fd.hash(), fd.canonical())?;
+        } else if v.get("catalog").is_some() {
+            self.catalog_line(n, v)?;
         } else if let Some(name) = v.get("formula").and_then(Value::as_str) {
             let source =
                 v.get("source").and_then(Value::as_str).ok_or_else(|| err("a formula without source".into()))?;
@@ -746,6 +792,28 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         } else {
             return Err(err("neither a function nor a cell".into()));
         }
+        Ok(())
+    }
+
+    /// `{"catalog": <name>, "kind", "label", "description", "args", "examples", "dictionary"}` (R5):
+    /// the publisher's text for a function or class bound in this file or the store, under a host
+    /// this mesh owns. Checked here, so a refused line writes nothing.
+    fn catalog_line(&mut self, n: usize, v: &Value) -> Result<(), PublishError> {
+        let err = |d: String| PublishError::at(n, d);
+        let d = crate::catalog::parse(v, "catalog").map_err(err)?;
+        let host = host_of(&d.name);
+        if host != self.ctx.host && !self.ctx.owned.iter().any(|o| o == host) {
+            return Err(err(format!("{} is not under a host this mesh owns", d.name)));
+        }
+        let hash = match d.kind {
+            datumesh_store::CatalogKind::Class => current_class(self.store, &self.sim, &d.name).map_err(err)?,
+            _ => current_function(self.store, &self.sim, &d.name).map_err(err)?,
+        };
+        if hash.is_none() {
+            return Err(err(format!("{} is bound nowhere", d.name)));
+        }
+        let entry = d.entry(hash, datumesh_store::CatalogSource::Publisher, Some(self.key.key_id().to_string()));
+        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary });
         Ok(())
     }
 
@@ -1082,6 +1150,9 @@ fn write<S: Store + ?Sized>(
                     }
                 }
             }
+            Op::Catalog { entry, dictionaries } => {
+                crate::catalog::store_publisher(store, entry, dictionaries).map_err(err)?;
+            }
             Op::Cell { .. } => {
                 let mut j = i;
                 while j < ops.len() && j - i < CHUNK && matches!(ops[j], Op::Cell { .. }) {
@@ -1328,6 +1399,7 @@ fn publish_planned<S: Store + ?Sized>(
         backfill_check(store, &binds)?;
     }
     let (out, written) = write_ops(store, &ops)?;
+    index_cell_values(store, &ops).map_err(|e| PublishError::at(0, format!("catalogue: {e}")))?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

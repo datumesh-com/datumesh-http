@@ -128,11 +128,32 @@ pub fn lexicon_lines() -> Vec<String> {
 pub fn zoo_lines(more: usize) -> Vec<String> {
     let mut v = vec![
         function_line(BIRD_A, &site_sig(), None),
-        catalog_line(BIRD_A, "function", "Kestrel", "Counts of birds at a site", json!({"site": "the site"}), json!({})),
+        catalog_line(
+            BIRD_A,
+            "function",
+            "Kestrel",
+            "Counts of birds at a site",
+            json!({"site": "the site"}),
+            json!({}),
+        ),
         function_line(BIRD_B, &site_sig(), None),
-        catalog_line(BIRD_B, "function", "Weekly tally", "Weekly kestrel tally at a site", json!({"site": "the site"}), json!({})),
+        catalog_line(
+            BIRD_B,
+            "function",
+            "Weekly tally",
+            "Weekly kestrel tally at a site",
+            json!({"site": "the site"}),
+            json!({}),
+        ),
         function_line(BIRD_C, &site_sig(), None),
-        catalog_line(BIRD_C, "function", "Falcon watch", "Falcon sightings at a site", json!({"site": "the site"}), json!({})),
+        catalog_line(
+            BIRD_C,
+            "function",
+            "Falcon watch",
+            "Falcon sightings at a site",
+            json!({"site": "the site"}),
+            json!({}),
+        ),
     ];
     for i in 0..more {
         let name = format!("{NS}/zoo/flock_{i:02}");
@@ -275,10 +296,15 @@ pub struct PgServed {
 
 impl Drop for PgServed {
     fn drop(&mut self) {
+        // The store's pool closes its synchronous clients when its last handle goes, and that
+        // cannot happen on a runtime's thread (the abort below drops the mesh there). This extra
+        // handle is never dropped: the process ends with the pool, and DROP DATABASE .. WITH (FORCE)
+        // closes the sessions.
+        std::mem::forget(self.store.clone());
         self.task.abort();
         let admin = self.admin.clone();
         let name = self.name.clone();
-        super::bl(|| {
+        super::on_thread(move || {
             let cfg: PgConfig = admin.parse().unwrap();
             if let Ok(mut c) = cfg.connect(NoTls) {
                 let _ = c.batch_execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"));
@@ -306,11 +332,17 @@ pub async fn serve_pg(admin: &str, lines: &[String], config: Option<Config>) -> 
     let name = format!("dm_b2_{}_{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
     let url = db_url(admin, &name);
     let key = super::key_for(HOST);
-    let store = super::bl(|| {
-        let cfg: PgConfig = admin.parse().unwrap();
-        cfg.connect(NoTls).unwrap().batch_execute(&format!("CREATE DATABASE {name}")).unwrap();
-        let store = PgStore::connect_with(&url, PoolOptions::new().max_size(8)).unwrap();
-        migrate::apply(&store).unwrap();
+    let (adm, nm, ur) = (admin.to_string(), name.clone(), url.clone());
+    let store = super::on_thread(move || {
+        let cfg: PgConfig = adm.parse().unwrap();
+        cfg.connect(NoTls).unwrap().batch_execute(&format!("CREATE DATABASE {nm}")).unwrap();
+        // The store looks for the vector table when it is opened (`vector_available`): migrate
+        // through one handle, then open the one the mesh uses.
+        let first = PgStore::connect_with(&ur, PoolOptions::new().max_size(8)).unwrap();
+        migrate::apply(&first).unwrap();
+        drop(first);
+        let store = PgStore::connect_with(&ur, PoolOptions::new().max_size(8)).unwrap();
+        let key = super::key_for(HOST);
         store.put_namespace(HOST, &super::key_doc(HOST, &key), K_FROM).unwrap();
         store
     });
@@ -385,7 +417,7 @@ impl PgServed {
     /// Rows of a query on the database (first column of each row as text).
     pub fn column(&self, sql: &str) -> Vec<String> {
         let (url, sql) = (self.db_url.clone(), sql.to_string());
-        super::bl(move || {
+        super::on_thread(move || {
             let cfg: PgConfig = url.parse().unwrap();
             let mut c = cfg.connect(NoTls).unwrap();
             c.query(sql.as_str(), &[]).unwrap().iter().map(|r| r.get::<_, String>(0)).collect()

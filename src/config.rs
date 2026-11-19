@@ -229,6 +229,9 @@ pub struct Config {
     pub policy: Policy,
     /// Descriptions of the functions `GET /find` searches (name -> description).
     pub catalog: BTreeMap<String, String>,
+    /// The embedding service's base URL (`DATUMESH_EMBED_URL`, e.g. `http://embed:8080`): vector
+    /// `find` is on when it is set and the store has vectors (default none). Since 0.4.0.
+    pub embed_url: Option<String>,
     /// API keys (`Authorization: Bearer dm_...`).
     pub api_keys: ApiKeys,
 }
@@ -258,6 +261,7 @@ impl Config {
             aliases: BTreeMap::new(),
             policy: Policy::default(),
             catalog: BTreeMap::new(),
+            embed_url: None,
             api_keys: ApiKeys::default(),
         }
     }
@@ -348,6 +352,9 @@ impl Config {
         }
         if let Some(p) = get("DATUMESH_CATALOG_FILE") {
             c.catalog = string_map(&read_file(&p)?, "DATUMESH_CATALOG_FILE")?;
+        }
+        if let Some(v) = get("DATUMESH_EMBED_URL").filter(|v| !v.trim().is_empty()) {
+            c.embed_url = Some(v.trim().trim_end_matches('/').to_string());
         }
         if let Some(p) = get("DATUMESH_POLICY_FILE") {
             c.policy = Policy::from_json(&read_file(&p)?)?;

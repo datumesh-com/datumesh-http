@@ -1,0 +1,79 @@
+# Generic words that never fill an argument's value in `GET /find` (CONTRACT-build2-part2-read R3).
+# Words of catalogue names, labels and descriptions are added to these at index time.
+# English
+bible
+verse
+verses
+chapter
+chapters
+text
+texts
+rate
+rates
+price
+prices
+the
+of
+in
+a
+an
+and
+or
+to
+for
+on
+at
+by
+with
+# Arabic
+الكتاب
+المقدس
+الكتاب المقدس
+آية
+آيات
+اية
+ايات
+اصحاح
+إصحاح
+نص
+سعر
+اسعار
+أسعار
+في
+من
+على
+# Hebrew
+התנ"ך
+המקרא
+פסוק
+פסוקים
+פרק
+פרקים
+טקסט
+שער
+מחיר
+מחירים
+של
+ב
+ל
+# Greek
+βίβλος
+βιβλίο
+Βίβλος
+στίχος
+στίχοι
+στίχου
+κεφάλαιο
+κεφάλαια
+κείμενο
+τιμή
+τιμές
+ποσοστό
+ρυθμός
+ο
+η
+το
+του
+της
+και
+εν

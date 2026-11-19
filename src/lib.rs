@@ -142,11 +142,14 @@
 pub mod apikeys;
 pub mod bundle;
 pub mod call;
+mod catalog;
 pub mod client;
 pub mod config;
 mod describe;
 pub mod domain;
+mod embed;
 pub mod envelope;
+mod find;
 pub mod foreign;
 mod http;
 mod jobs;

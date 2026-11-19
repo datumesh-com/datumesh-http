@@ -149,7 +149,10 @@ fn embed_url_comes_from_the_environment() {
 /// removed from this fixture), and `/find` shows the operator's description.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_operator_file_describes_what_the_publisher_did_not() {
-    let lines: Vec<String> = lexicon_and_zoo().into_iter().filter(|l| !l.contains(r#""catalog":"mesh-test.datumesh.com/scratch_b2/zoo/bird_a""#)).collect();
+    let lines: Vec<String> = lexicon_and_zoo()
+        .into_iter()
+        .filter(|l| !l.contains(r#""catalog":"mesh-test.datumesh.com/scratch_b2/zoo/bird_a""#))
+        .collect();
     assert!(lines.len() < lexicon_and_zoo().len());
     let m = serve_lite("hy-9", &lines, None, |c| {
         c.catalog.insert(BIRD_A.to_string(), "Operator words about ospreys".to_string());

@@ -19,9 +19,8 @@ async fn a_miss_is_logged_with_its_query_text_only() {
     let rows = m.column("SELECT query FROM find_misses");
     assert_eq!(rows, ["quokka migration"]);
     // `at` is a timestamp; the table has no other column of a person or an address
-    let cols = m.column(
-        "SELECT column_name::text FROM information_schema.columns WHERE table_name = 'find_misses' ORDER BY 1",
-    );
+    let cols = m
+        .column("SELECT column_name::text FROM information_schema.columns WHERE table_name = 'find_misses' ORDER BY 1");
     for c in &cols {
         assert!(["at", "query", "id"].contains(&c.as_str()), "find_misses has a column {c}: {cols:?}");
     }

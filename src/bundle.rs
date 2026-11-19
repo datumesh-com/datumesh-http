@@ -3,7 +3,7 @@
 //! (Ed25519, RFC 8032, over the JCS bytes of the names, the namespace and the receipt hashes).
 //! Operator format, not spec: the body of the plan-3.1 write endpoint and of `import-signed`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
@@ -15,7 +15,7 @@ use datumesh_store::Store;
 /// After every binding.
 const END: &str = "9999-12-31T23:59:59.999999Z";
 
-/// The members of a bundle, in JCS order.
+/// The members of a bundle, in JCS order. `catalog` is optional (CONTRACT-build2-part2-read R5).
 const MEMBERS: [&str; 6] = ["bundle", "descriptors", "manifest", "names", "namespace", "receipts"];
 
 /// Why a bundle is refused. The first failing check is reported; nothing is written unless all pass.
@@ -130,12 +130,26 @@ fn name_value(name: &str, fn_hash: &str) -> Value {
 /// The bytes the manifest signs (CONTRACT-1.8b H2): the JCS object of the names (`(name, fn_hash)`,
 /// ascending by name), the namespace and the receipt hashes (ascending).
 pub fn manifest_bytes(namespace: &str, names: &[(String, String)], receipts: &[String]) -> Vec<u8> {
-    Value::Object(vec![
+    manifest_bytes_with(namespace, names, receipts, None)
+}
+
+/// As [`manifest_bytes`], and the catalogue member when the bundle has one (R5): the manifest signs
+/// the catalogue too, so a changed entry fails the signature.
+fn manifest_bytes_with(
+    namespace: &str,
+    names: &[(String, String)],
+    receipts: &[String],
+    catalog: Option<&Value>,
+) -> Vec<u8> {
+    let mut members = vec![
         ("names".into(), Value::Array(names.iter().map(|(n, h)| name_value(n, h)).collect())),
         ("namespace".into(), s(namespace)),
         ("receipts".into(), Value::Array(receipts.iter().map(|h| s(h)).collect())),
-    ])
-    .to_jcs()
+    ];
+    if let Some(c) = catalog {
+        members.push(("catalog".into(), c.clone()));
+    }
+    Value::Object(members).to_jcs()
 }
 
 /// Ed25519 (RFC 8032) over `message` with the key of `seed`, by `ed25519-dalek`: the signature
@@ -157,6 +171,31 @@ pub fn build(
     receipts: Vec<Vec<u8>>,
     seed: &[u8; 32],
 ) -> Result<Vec<u8>, BundleError> {
+    build_with_catalog(namespace, descriptors, names, receipts, Vec::new(), seed)
+}
+
+/// As [`build`], with the publisher's catalogue (CONTRACT-build2-part2-read R5): `catalog` is a list
+/// of entries `{"name", "kind", "label", "description", "args", "examples", "dictionary"}` (each a
+/// JSON object), checked as a publish's catalogue lines are, and sorted by name into the bundle's
+/// `catalog` member, which the manifest signs. An empty list makes a bundle without the member.
+/// Errors: `Format` for an entry that breaks its bounds.
+pub fn build_with_catalog(
+    namespace: &str,
+    descriptors: Vec<Vec<u8>>,
+    names: Vec<(String, String)>,
+    receipts: Vec<Vec<u8>>,
+    catalog: Vec<Vec<u8>>,
+    seed: &[u8; 32],
+) -> Result<Vec<u8>, BundleError> {
+    let mut catalog_entries: Vec<(String, Value)> = Vec::new();
+    for c in catalog {
+        let v = json::parse(&c).map_err(|e| BundleError::Format(format!("catalog: {e}")))?;
+        let d = crate::catalog::parse(&v, "name").map_err(|e| BundleError::Format(format!("catalog: {e}")))?;
+        catalog_entries.push((d.name.clone(), v));
+    }
+    catalog_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let catalog_value =
+        (!catalog_entries.is_empty()).then(|| Value::Array(catalog_entries.into_iter().map(|(_, v)| v).collect()));
     let mut names = names;
     names.sort();
     let mut signed: Vec<(String, Value)> = Vec::new();
@@ -167,14 +206,17 @@ pub fn build(
     }
     signed.sort_by(|a, b| a.0.cmp(&b.0));
     let hashes: Vec<String> = signed.iter().map(|(h, _)| h.clone()).collect();
-    let sig = sign(seed, &manifest_bytes(namespace, &names, &hashes));
+    let sig = sign(seed, &manifest_bytes_with(namespace, &names, &hashes, catalog_value.as_ref()));
     let key = SigningKey::from_seed(seed);
     let descriptors = descriptors
         .iter()
         .map(|d| json::parse(d).map_err(|e| BundleError::Format(format!("descriptor: {e}"))))
         .collect::<Result<Vec<Value>, _>>()?;
-    Ok(Value::Object(vec![
-        ("bundle".into(), number(1)),
+    let mut members = vec![("bundle".into(), number(1))];
+    if let Some(c) = catalog_value {
+        members.push(("catalog".into(), c));
+    }
+    members.extend([
         ("descriptors".into(), Value::Array(descriptors)),
         (
             "manifest".into(),
@@ -183,8 +225,8 @@ pub fn build(
         ("names".into(), Value::Array(names.iter().map(|(n, h)| name_value(n, h)).collect())),
         ("namespace".into(), s(namespace)),
         ("receipts".into(), Value::Array(signed.into_iter().map(|(_, v)| v).collect())),
-    ])
-    .to_jcs())
+    ]);
+    Ok(Value::Object(members).to_jcs())
 }
 
 /// The keys of an object's members, sorted.
@@ -233,6 +275,8 @@ pub fn import_signed_with<S: Store + ?Sized>(
     // 1. Format.
     let mut keys = member_names(&doc).ok_or_else(|| BundleError::Format("not an object".into()))?;
     keys.sort_unstable();
+    let has_catalog = keys.contains(&"catalog");
+    keys.retain(|k| *k != "catalog");
     let mut want = MEMBERS;
     want.sort_unstable();
     if keys != want {
@@ -288,6 +332,26 @@ pub fn import_signed_with<S: Store + ?Sized>(
         return Err(BundleError::Format("receipts are not in ascending order of their hashes".into()));
     }
     let hashes: Vec<String> = receipts.iter().map(|(_, r)| r.hash().to_string()).collect();
+    // The catalogue (R5): each entry checked as a publish's line is; a function's hash is its name's.
+    let mut catalog_entries: Vec<(crate::catalog::Described, Option<String>)> = Vec::new();
+    let catalog_doc = if has_catalog { doc.get("catalog").cloned() } else { None };
+    if let Some(Value::Array(items)) = &catalog_doc {
+        for item in items {
+            let d = crate::catalog::parse(item, "name").map_err(|e| BundleError::Format(format!("catalog: {e}")))?;
+            let hash =
+                match d.kind {
+                    datumesh_store::CatalogKind::Class => None,
+                    _ => {
+                        Some(names.iter().find(|(n, _)| *n == d.name).map(|(_, h)| h.clone()).ok_or_else(|| {
+                            BundleError::Format(format!("catalog: {} is not among the names", d.name))
+                        })?)
+                    }
+                };
+            catalog_entries.push((d, hash));
+        }
+    } else if has_catalog {
+        return Err(BundleError::Format("catalog is not an array".into()));
+    }
 
     // 2. NotOwned.
     let ns_host = host_of(&namespace);
@@ -296,6 +360,9 @@ pub fn import_signed_with<S: Store + ?Sized>(
     }
     if let Some((n, _)) = names.iter().find(|(n, _)| !n.starts_with(&format!("{namespace}/"))) {
         return Err(BundleError::NotOwned(format!("{n} is not under {namespace}/")));
+    }
+    if let Some((d, _)) = catalog_entries.iter().find(|(d, _)| !d.name.starts_with(&format!("{namespace}/"))) {
+        return Err(BundleError::NotOwned(format!("catalog: {} is not under {namespace}/", d.name)));
     }
 
     // 3. Manifest: the key of the namespace's host, valid now, signing the bundle's names and receipts.
@@ -314,7 +381,7 @@ pub fn import_signed_with<S: Store + ?Sized>(
     let mut keys_set = Keys::new();
     keys_set.insert(kd.clone());
     let sig: [u8; 64] = unhex(&signature).try_into().map_err(|_| BundleError::Format("signature length".into()))?;
-    if !verify_ed25519(&key.public, &manifest_bytes(&namespace, &names, &hashes), &sig) {
+    if !verify_ed25519(&key.public, &manifest_bytes_with(&namespace, &names, &hashes, catalog_doc.as_ref()), &sig) {
         return Err(BundleError::Manifest("the signature does not verify".into()));
     }
 
@@ -425,6 +492,16 @@ pub fn import_signed_with<S: Store + ?Sized>(
         store.bind_name(name, fh, &now).map_err(|e| BundleError::Bind(format!("{name}: {e}")))?;
         step()?;
     }
+    // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
+    for (d, hash) in &catalog_entries {
+        let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));
+        crate::catalog::store_publisher(store, &entry, &d.dictionary).map_err(BundleError::Store)?;
+    }
+    let mut cell_values = BTreeSet::new();
+    for (_, r) in &receipts {
+        crate::publish::cell_string_values(r, &mut cell_values);
+    }
+    crate::publish::store_cell_values(store, cell_values).map_err(BundleError::Store)?;
     Ok(Imported {
         namespace,
         functions_bound: binds.len(),
