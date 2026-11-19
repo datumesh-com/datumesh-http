@@ -291,13 +291,17 @@ pub fn rate_limited_reply(retry_after_seconds: u64) -> Reply {
     r
 }
 
-/// The trust label of spec-0.4.2 for a receipt this mesh serves (SPEC 5.5): `primary` exactly
+/// The trust label of spec-0.4.2 for a receipt this mesh serves (SPEC 5.5): `relayed` when the
+/// receipt has a `source` (spec-0.6.0); `primary` exactly
 /// when the signer's host is the namespace's host and there are no inputs; `computed` when
 /// this mesh signed it (it evaluated the cell); `unverified` otherwise (this mesh does not
 /// recompute other meshes' receipts).
 pub fn trust_label_of(receipt: &Receipt, mesh_host: &str) -> datumesh_core::TrustLabel {
     let ns_host = receipt.cell().ns.split('/').next().unwrap_or("");
-    if receipt.signer_host() == ns_host && receipt.inputs().is_empty() {
+    if receipt.source().is_some() {
+        // A relayed value (spec-0.6.0, 5.5): the publisher's host signed a value it took from another.
+        datumesh_core::TrustLabel::Relayed
+    } else if receipt.signer_host() == ns_host && receipt.inputs().is_empty() {
         datumesh_core::TrustLabel::Primary
     } else if receipt.signer_host() == mesh_host {
         datumesh_core::TrustLabel::Computed

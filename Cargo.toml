@@ -36,6 +36,8 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.6.11", features = ["compression-gzip"] }
+# The request body of `POST /bundles` is read frame by frame, so that an oversize one is drained and answered.
+http-body-util = "0.1.5"
 utoipa = "5.5.0"
 # Outgoing requests of cross-mesh resolution (sync: they run on the blocking pool, inside an
 # evaluation): rustls with the Mozilla roots, no redirects.

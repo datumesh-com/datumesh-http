@@ -29,7 +29,10 @@
 //!   (`computed_by` the mesh host, `publisher` the cell's namespace, `valid` its valid-time
 //!   arguments; `issued` defaults to the later of `asof` and the key's start) and stored with
 //!   `put_receipt` and `put_version`. `tx` and `asof` default to the run's clock now (since
-//!   0.3.1, H4), each independently.
+//!   0.3.1, H4), each independently. A `source` object (since 0.4.0, spec-0.6.0 C2: `name`, `url`,
+//!   `retrieved`, and optionally `sha256` and `takeover`, nothing else) marks the value as relayed: the
+//!   receipt signs it, and its trust is `relayed`; its rules are the receipt's (`retrieved` no later
+//!   than `issued`, a publisher that does not relay itself, `https://` URLs), refused at the line.
 //!
 //! The function of a cell is the one its name is bound to as of the cell's `tx`. Re-running a
 //! file changes nothing (a cell line without `tx` whose latest version states the same thing is
@@ -63,7 +66,8 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    sha256_hex, Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, Receipt, ReceiptBuilder, Scalar, SigningKey, Type,
+    sha256_hex, Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, Receipt, ReceiptBuilder, Scalar, SigningKey,
+    Source, Type,
 };
 use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
@@ -691,6 +695,34 @@ struct Pending {
     licence: String,
     summary: String,
     blob: Option<Vec<u8>>,
+    /// The `source` of a relayed value (spec-0.6.0, 8.1), as the line gives it.
+    source: Option<Source>,
+}
+
+/// The `source` object of a cell line (spec-0.6.0, C2): exactly `name`, `url` and `retrieved`, with
+/// `sha256` and `takeover` optional, all strings. Its rules (a DNS name, an instant, an `https://`
+/// takeover, a publisher that does not relay itself) are the receipt's, checked when it is signed.
+fn source_of_line(v: &Value) -> Result<Source, String> {
+    let Value::Object(m) = v else { return Err("source is an object".into()) };
+    for (k, x) in m {
+        if !matches!(k.as_str(), "name" | "url" | "retrieved" | "sha256" | "takeover") {
+            return Err(format!("source has no member {k}"));
+        }
+        if !matches!(x, Value::String(_)) {
+            return Err(format!("source.{k} is a string"));
+        }
+    }
+    let text = |k: &str| -> Result<&str, String> {
+        v.get(k).and_then(Value::as_str).ok_or_else(|| format!("source has no {k}"))
+    };
+    let mut out = Source::new(text("name")?, text("url")?, text("retrieved")?);
+    if let Some(h) = v.get("sha256").and_then(Value::as_str) {
+        out = out.with_sha256(h);
+    }
+    if let Some(t) = v.get("takeover").and_then(Value::as_str) {
+        out = out.with_takeover(t);
+    }
+    Ok(out)
 }
 
 impl Pending {
@@ -698,7 +730,7 @@ impl Pending {
     fn sign(self, key: &SigningKey, host: &str) -> Result<Signed, PublishError> {
         let line = self.line;
         let err = move |d: String| PublishError::at(line, d);
-        let r = ReceiptBuilder::new()
+        let b = ReceiptBuilder::new()
             .cell(self.cell.clone())
             .value(self.value)
             .valid(self.valid)
@@ -708,9 +740,12 @@ impl Pending {
             .publisher(self.ns.as_str())
             .signer_host(host)
             .licence(self.licence.as_str())
-            .summary(self.summary.as_str())
-            .sign(key)
-            .map_err(|e| err(e.to_string()))?;
+            .summary(self.summary.as_str());
+        let b = match self.source {
+            Some(s) => b.source(s),
+            None => b,
+        };
+        let r = b.sign(key).map_err(|e| err(e.to_string()))?;
         let receipt = receipt_json(&r);
         let hash = Receipt::from_json(&receipt).map_err(|e| err(e.to_string()))?.hash().to_string();
         let id = self.cell.id();
@@ -1015,6 +1050,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             .filter(|(k, _)| d.signature.args.get(*k).is_some_and(|x| x.valid))
             .map(|(k, a)| (k.clone(), a.clone()))
             .collect();
+        let source = match v.get("source") {
+            Some(sv) => Some(source_of_line(sv).map_err(err)?),
+            None => None,
+        };
         let value_v = v.get("value").ok_or_else(|| err("a cell without value".into()))?;
         let (value, blob) = match value_v.get("blob").and_then(Value::as_str) {
             Some(file) => {
@@ -1041,6 +1080,7 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             licence,
             summary,
             blob,
+            source,
         })
     }
 

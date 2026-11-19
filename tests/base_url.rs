@@ -62,7 +62,8 @@ const LOOPBACK: [&str; 5] =
     ["http://127.0.0.1:8787", "http://127.0.0.1", "http://[::1]:8787", "http://localhost:9", "http://localhost"];
 
 /// The mesh document of 0.3.0 for `A`, byte for byte: 0.1.2's, with the `describe` endpoint
-/// (spec-0.5.0, 9.6; `describe` sorts before `descriptor`).
+/// (spec-0.5.0, 9.6; `describe` sorts before `descriptor`) and, since 0.4.0, the `x_bundles` endpoint
+/// (Build 2 Part 4, P1: an unknown member, prefixed `x_`).
 const DOC_0_3_0: &str = concat!(
     r#"{"bindings":"https://mesh-a.example/bindings","endpoints":{"#,
     r#""blob":"https://mesh-a.example/blob/{sha256}","#,
@@ -78,7 +79,7 @@ const DOC_0_3_0: &str = concat!(
     r#""slice":"https://mesh-a.example/slice/{cell}","#,
     r#""verify":"https://mesh-a.example/verify","#,
     r#""versions":"https://mesh-a.example/versions/{cell}","#,
-    r#""whatif":"https://mesh-a.example/whatif"},"#,
+    r#""whatif":"https://mesh-a.example/whatif","x_bundles":"https://mesh-a.example/bundles"},"#,
     r#""host":"mesh-a.example","proto":"datumesh/1"}"#
 );
 

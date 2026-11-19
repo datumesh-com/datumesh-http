@@ -43,7 +43,8 @@ pub fn stored_fn() -> FunctionDescriptor {
 /// A receipt of `<ns>/level(site)` signed by `host`'s test key, at `tx` (asof = issued = tx).
 pub fn level_receipt(host: &str, site: &str, value: &str, tx: &str) -> Vec<u8> {
     let ns = ns_of(host);
-    let cell = Cell { ns: ns.clone(), fn_name: "level".into(), fn_hash: stored_fn().hash(), args: args(&[("site", s(site))]) };
+    let cell =
+        Cell { ns: ns.clone(), fn_name: "level".into(), fn_hash: stored_fn().hash(), args: args(&[("site", s(site))]) };
     let r = ReceiptBuilder::new()
         .cell(cell)
         .value(n(value))
@@ -73,7 +74,14 @@ pub fn level_cell_path(host: &str, site: &str) -> String {
 pub fn simple_bundle_with(host: &str, seed: &[u8; 32], receipts: Vec<Vec<u8>>, description: Option<&str>) -> Vec<u8> {
     let name = level_name(host);
     let catalog = match description {
-        Some(d) => vec![catalog_entry(&name, "function", "Level", d, serde_json::json!({"site": "the site"}), serde_json::json!({}))],
+        Some(d) => vec![catalog_entry(
+            &name,
+            "function",
+            "Level",
+            d,
+            serde_json::json!({"site": "the site"}),
+            serde_json::json!({}),
+        )],
         None => vec![],
     };
     bundle::build_with_catalog(
@@ -233,7 +241,8 @@ pub struct Reply4 {
 
 impl Reply4 {
     pub fn json(&self) -> serde_json::Value {
-        serde_json::from_slice(&self.body).unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&self.body)))
+        serde_json::from_slice(&self.body)
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&self.body)))
     }
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
@@ -317,8 +326,15 @@ pub fn computed_parts(c: &Calc, host: &str) -> (Vec<Vec<u8>>, Vec<(String, Strin
     let lite = Lite::new("p4src");
     lite.store.put_namespace(host, &key_doc(host, &key_for(host)), K_FROM).unwrap();
     let f = write(&lite, "f.jsonl", &[function_line(&c.reading, &reading_sig(), None), per_unit_line(c, None)]);
-    datumesh_http::publish::publish_stored_with(&*lite.store, &key_for(host), host, &[host.to_string()], &f, &opts(NOW))
-        .unwrap_or_else(|e| panic!("source refused: {e}"));
+    datumesh_http::publish::publish_stored_with(
+        &*lite.store,
+        &key_for(host),
+        host,
+        &[host.to_string()],
+        &f,
+        &opts(NOW),
+    )
+    .unwrap_or_else(|e| panic!("source refused: {e}"));
     let mut descriptors = Vec::new();
     let mut names = Vec::new();
     for nm in [&c.reading, &c.per_unit] {

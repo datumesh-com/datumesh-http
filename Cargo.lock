@@ -495,6 +495,7 @@ dependencies = [
  "datumesh-store",
  "ed25519-dalek",
  "getrandom 0.3.4",
+ "http-body-util",
  "jsonschema",
  "reqwest",
  "serde",

@@ -21,6 +21,8 @@
 //! | `GET /jobs/<id>` | a job: `pending`, or the envelope of the original request |
 //! | `GET /.well-known/datumesh.json`, `/.well-known/datumesh-mesh.json` | the key document (the store's namespace record for the host, SPEC 9.2) and the mesh document (SPEC 9.6; its URLs on [`Config::base_url`] when set: `http://` on a loopback address for an unrooted host only, local use, not valid under spec-0.4.3) |
 //! | `GET /bindings?name=&asof=` | which function a name denotes (SPEC 9.7), for names this mesh owns |
+//! | `POST /bundles` | a publisher's bundle, checked (its host's key document fetched now, the allow list, `import-signed`'s rules, the public test rule) and imported: `201` with the functions and their pages (Build 2 Part 4) |
+//! | `GET /fn/<function name>` | the function page: HTML for people (no script), or the same data as JSON by `Accept` or `?format=json` (Build 2 Part 4) |
 //! | `GET /health`, `/metrics`, `/openapi.json` | liveness and the store; Prometheus text; the OpenAPI document generated from the handlers |
 //!
 //! `Accept` is honoured: JSON (and, at `/slice`, `application/vnd.apache.arrow.stream`); a
@@ -141,6 +143,7 @@
 
 pub mod apikeys;
 pub mod bundle;
+mod bundles;
 pub mod call;
 mod catalog;
 pub mod client;
@@ -150,6 +153,7 @@ pub mod domain;
 mod embed;
 pub mod envelope;
 mod find;
+mod fnpage;
 pub mod foreign;
 mod http;
 mod jobs;

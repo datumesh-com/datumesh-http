@@ -11,9 +11,9 @@
 //!   `takeover`}, core 0.3.9 accepts it; its function page (HTML and JSON) names the source, "relayed by
 //!   <mesh host>" and the takeover page; a function that is not relayed has none of these.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 #[path = "common/publish4.rs"]
 mod publish4;
 
@@ -55,13 +55,24 @@ fn lines() -> Vec<String> {
         relayed("N", "1.0892", source()),
         function_line(OWN, &reading_sig(), None),
         site_cell(OWN, "N", "7"),
-        catalog_line(FX, "function", "Euro reference rate", "A reference rate relayed from the ECB.", json!({"site": "the site"}), json!({})),
+        catalog_line(
+            FX,
+            "function",
+            "Euro reference rate",
+            "A reference rate relayed from the ECB.",
+            json!({"site": "the site"}),
+            json!({}),
+        ),
     ]
 }
 
 fn core_keys() -> datumesh_core::Keys {
     let mut k = datumesh_core::Keys::new();
-    k.insert_response(HOST, 200, Some(&datumesh_http::keydoc::with_key(HOST, None, &common::key_for(HOST), K_FROM).unwrap()));
+    k.insert_response(
+        HOST,
+        200,
+        Some(&datumesh_http::keydoc::with_key(HOST, None, &common::key_for(HOST), K_FROM).unwrap()),
+    );
     k
 }
 
@@ -87,9 +98,10 @@ async fn a_relayed_cell_is_signed_with_its_source_and_trusted_as_relayed() {
     let v = datumesh_core::verify(&serde_json::to_vec(&forged).unwrap(), &core_keys(), None, None);
     assert!(!v.ok, "a changed source verifies");
     // the receipt is served byte for byte as signed
-    let hash = r.json["receipt"]["hash"].as_str().map(str::to_string).unwrap_or_else(|| {
-        datumesh_core::Receipt::from_json(&receipt).unwrap().hash().to_string()
-    });
+    let hash = r.json["receipt"]["hash"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| datumesh_core::Receipt::from_json(&receipt).unwrap().hash().to_string());
     let again = m.get_any(&format!("/receipt/{hash}")).await;
     assert_eq!(again.status, 200);
     assert_eq!(again.json["source"], source());
@@ -126,7 +138,12 @@ fn a_source_that_breaks_the_rules_is_refused() {
     refused_source("rs-self", with_source(|s| s["name"] = json!(HOST)));
     // an unknown member, a missing url, a takeover that is not https, a name that is not a host
     refused_source("rs-extra", with_source(|s| s["extra"] = json!("x")));
-    refused_source("rs-nourl", with_source(|s| { s.as_object_mut().unwrap().remove("url"); }));
+    refused_source(
+        "rs-nourl",
+        with_source(|s| {
+            s.as_object_mut().unwrap().remove("url");
+        }),
+    );
     refused_source("rs-http", with_source(|s| s["takeover"] = json!("http://mesh-test.datumesh.com/takeover")));
     refused_source("rs-name", with_source(|s| s["name"] = json!("not a host")));
     refused_source("rs-sha", with_source(|s| s["sha256"] = json!("abc")));
@@ -138,9 +155,22 @@ async fn describe_names_the_source_and_the_takeover() {
     let r = m.get_any(&format!("/describe/{}", call_path(FX))).await;
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     assert_eq!(r.json["kind"], "function");
-    assert_eq!(r.json["source"], json!({"name": "ecb.europa.eu", "relayed_by": HOST, "takeover": TAKEOVER}), "{}", r.json);
-    let held = datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{}", fn_hash(&m, FX))).await.body).unwrap();
-    let got = datumesh_core::check_describe_with(&r.body, &Default::default(), &[held]).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        r.json["source"],
+        json!({"name": "ecb.europa.eu", "relayed_by": HOST, "takeover": TAKEOVER}),
+        "{}",
+        r.json
+    );
+    let held = datumesh_core::FunctionDescriptor::from_json(
+        &m.get_any(&format!("/descriptor/{}", fn_hash(&m, FX))).await.body,
+    )
+    .unwrap();
+    // `page` is this mesh's own member of the http answer, not one of the spec's (P2): the spec's
+    // answer, which core checks, is the body without it.
+    let mut spec: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    spec.as_object_mut().unwrap().remove("page");
+    let got = datumesh_core::check_describe_with(&serde_json::to_vec(&spec).unwrap(), &Default::default(), &[held])
+        .unwrap_or_else(|e| panic!("{e}"));
     let s = got.source.expect("source");
     assert_eq!((s.name.as_str(), s.relayed_by.as_str(), s.takeover.as_str()), ("ecb.europa.eu", HOST, TAKEOVER));
     // a function that is not relayed has no source
@@ -163,10 +193,14 @@ async fn the_function_page_names_the_source_and_the_takeover() {
     assert!(lineage.contains(&format!("href=\"{TAKEOVER}\"")), "the takeover is a link: {lineage}");
     assert!(!text.to_lowercase().contains("<script"));
     let j = get(&m, &format!("/fn/{FX}?format=json"), &[]).await.json();
-    assert_eq!(j["lineage"]["source"], json!({"name": "ecb.europa.eu", "relayed_by": HOST, "takeover": TAKEOVER}), "{j}");
+    assert_eq!(
+        j["lineage"]["source"],
+        json!({"name": "ecb.europa.eu", "relayed_by": HOST, "takeover": TAKEOVER}),
+        "{j}"
+    );
     // not relayed: no source
     let own = get(&m, &format!("/fn/{OWN}?format=json"), &[]).await.json();
-    assert!(own["lineage"].get("source").map_or(true, Value::is_null), "{own}");
+    assert!(own["lineage"].get("source").is_none_or(Value::is_null), "{own}");
     let own_html = get(&m, &format!("/fn/{OWN}"), &[]).await.text();
     assert!(!own_html.contains("relayed by"), "{own_html}");
 }

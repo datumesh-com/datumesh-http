@@ -22,9 +22,9 @@
 //! * an unknown name is `404` with the not-covered shape (`outcome: not_covered`, `E_NAME_UNBOUND`);
 //! * `describe` of a function answers `page`: `https://<mesh host>/fn/<name>`.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 #[path = "common/publish4.rs"]
 mod publish4;
 
@@ -57,7 +57,14 @@ fn lines(c: &Calc) -> Vec<String> {
             "args": {"site": ARG_SITE, "units": ARG_UNITS}, "examples": ex, "dictionary": {}})
         .to_string(),
     );
-    v.push(catalog_line(&c.reading, "function", "Reading", "The raw reading at a site.", json!({"site": "the site"}), json!({})));
+    v.push(catalog_line(
+        &c.reading,
+        "function",
+        "Reading",
+        "The raw reading at a site.",
+        json!({"site": "the site"}),
+        json!({}),
+    ));
     v
 }
 
@@ -89,7 +96,17 @@ fn plain(h: &str) -> String {
             _ => {}
         }
     }
-    for (e, d) in [("&quot;", "\""), ("&#34;", "\""), ("&#x22;", "\""), ("&#39;", "'"), ("&#x27;", "'"), ("&apos;", "'"), ("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&")] {
+    for (e, d) in [
+        ("&quot;", "\""),
+        ("&#34;", "\""),
+        ("&#x22;", "\""),
+        ("&#39;", "'"),
+        ("&#x27;", "'"),
+        ("&apos;", "'"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&amp;", "&"),
+    ] {
         out = out.replace(e, d);
     }
     out
@@ -147,11 +164,14 @@ async fn the_page_for_people() {
 
     // lineage: the input, linked to its own page
     let l = section(&html, "lineage");
-    assert!(l.contains(&format!("href=\"")) && l.contains(&format!("/fn/{}", c.reading)), "{l}");
+    assert!(l.contains("href=\"") && l.contains(&format!("/fn/{}", c.reading)), "{l}");
 
     // examples: linked to /cell/
     let e = section(&html, "examples");
-    assert!(e.contains("/cell/") && norm(&plain(&e)).contains(&format!("{}(site: \"N\", units: 2)", c.per_unit)), "{e}");
+    assert!(
+        e.contains("/cell/") && norm(&plain(&e)).contains(&format!("{}(site: \"N\", units: 2)", c.per_unit)),
+        "{e}"
+    );
 
     // the licence and the declarations have their section
     let _ = section(&html, "licence");
@@ -171,8 +191,12 @@ async fn a_stored_function_and_its_dependants() {
     let l = section(&html, "lineage");
     assert!(l.contains(&format!("/fn/{}", c.per_unit)), "dependant not linked: {l}");
     let j = get(&m, &path(&c.reading), &[("accept", "application/json")]).await.json();
-    assert!(j.get("body").map_or(true, Value::is_null), "{j}");
-    assert_eq!(j["lineage"]["dependants"].as_array().unwrap().iter().map(|d| d["name"].clone()).collect::<Vec<_>>(), vec![json!(c.per_unit)], "{j}");
+    assert!(j.get("body").is_none_or(Value::is_null), "{j}");
+    assert_eq!(
+        j["lineage"]["dependants"].as_array().unwrap().iter().map(|d| d["name"].clone()).collect::<Vec<_>>(),
+        vec![json!(c.per_unit)],
+        "{j}"
+    );
 }
 
 /// No script, no script URL, no handler: and the publisher's text is escaped, not interpreted.
@@ -205,7 +229,8 @@ async fn the_json_form_is_the_same_data() {
     assert_eq!(by_accept.body, by_query.body);
     let j = by_accept.json();
     let hash = fn_hash(&m, &c.per_unit);
-    for k in ["name", "fn_hash", "description", "args", "signature", "body", "tests", "lineage", "examples", "licence"] {
+    for k in ["name", "fn_hash", "description", "args", "signature", "body", "tests", "lineage", "examples", "licence"]
+    {
         assert!(j.get(k).is_some(), "no {k}: {j}");
     }
     assert_eq!((j["name"].as_str(), j["fn_hash"].as_str()), (Some(c.per_unit.as_str()), Some(hash.as_str())));
@@ -218,7 +243,11 @@ async fn the_json_form_is_the_same_data() {
     assert_eq!(j["signature"]["bindings"], json!([{"fn_hash": hash, "since": lite_bound(&m, &c.per_unit)}]), "{j}");
     assert!(j["body"].as_str().unwrap().contains(&c.reading), "{j}");
     let t = &j["tests"];
-    assert_eq!((t["count"].as_u64(), t["branches"].as_u64(), t["covered"].as_u64(), t["counterexamples"].as_u64()), (Some(6), Some(2), Some(2), Some(0)), "{t}");
+    assert_eq!(
+        (t["count"].as_u64(), t["branches"].as_u64(), t["covered"].as_u64(), t["counterexamples"].as_u64()),
+        (Some(6), Some(2), Some(2), Some(0)),
+        "{t}"
+    );
     let derived = t["derived"].as_array().unwrap();
     assert_eq!(derived.len(), 3, "{t}");
     for case in ["zero(units)", "negative(units)", &format!("absent({})", c.reading)] {
@@ -229,7 +258,11 @@ async fn the_json_form_is_the_same_data() {
     assert_eq!(cases.len(), 6);
     assert!(cases.iter().all(|x| x["call"].is_string() && x.get("expect").is_some()), "{t}");
     assert!(t["last_run"]["result"].is_string(), "{t}");
-    assert_eq!(j["lineage"]["inputs"], json!([{"name": c.reading, "page": format!("https://{HOST}/fn/{}", c.reading)}]), "{j}");
+    assert_eq!(
+        j["lineage"]["inputs"],
+        json!([{"name": c.reading, "page": format!("https://{HOST}/fn/{}", c.reading)}]),
+        "{j}"
+    );
     assert_eq!(j["lineage"]["dependants"], json!([]));
     let ex = j["examples"].as_array().unwrap();
     assert_eq!(ex.len(), 1);
@@ -249,7 +282,9 @@ async fn the_json_form_is_the_same_data() {
 async fn an_unknown_function_is_not_covered() {
     let m = served("fp-404").await;
     for name in [format!("{PREFIX}/nothing"), "other.example/b4/nothing".to_string()] {
-        for (p, h) in [(path(&name), vec![("accept", "application/json")]), (format!("{}?format=json", path(&name)), vec![])] {
+        for (p, h) in
+            [(path(&name), vec![("accept", "application/json")]), (format!("{}?format=json", path(&name)), vec![])]
+        {
             let r = get(&m, &p, &h).await;
             assert_eq!(r.status, 404, "{p}: {}", r.text());
             let j = r.json();

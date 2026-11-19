@@ -612,6 +612,22 @@ impl Foreign {
         Ok(added)
     }
 
+    /// After `POST /bundles` imported a publisher's names and cells (Build 2 Part 4, P1), they are
+    /// confirmed as of now: the bundle was checked against the publisher's live key document, so the
+    /// reads that follow need not ask the publisher again until the TTLs run out.
+    pub(crate) fn confirm_imported(&self, names: &[String], cells: &[(String, String)], now: &str) {
+        let at = Instant::now();
+        let mut confirmed = self.names.lock().unwrap_or_else(|p| p.into_inner());
+        for n in names.iter().filter(|n| self.is_foreign(n)) {
+            confirmed.insert(n.clone(), Confirmed { at, instant: now.to_string() });
+        }
+        drop(confirmed);
+        let mut confirmed = self.cells.lock().unwrap_or_else(|p| p.into_inner());
+        for (_, id) in cells.iter().filter(|(f, _)| self.is_foreign(f)) {
+            confirmed.insert(id.clone(), Confirmed { at, instant: now.to_string() });
+        }
+    }
+
     /// For a request about a foreign name as of `asof` (now when `None`): its bindings and,
     /// for a stored function's cell, its versions, brought up to date when needed.
     pub fn prepare(&self, cell: &Cell, stored: bool, asof: Option<&str>) -> Result<(), ForeignError> {

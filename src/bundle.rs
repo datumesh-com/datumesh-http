@@ -50,7 +50,8 @@ pub enum BundleError {
     /// A test hook (`import_signed_with`'s `stop_after`): stopped after this many writes.
     Stopped(usize),
     /// The public rule (Build 2 Part 3, D8): a computed function of the bundle is not covered by its
-    /// tests (`E_TESTS_MISSING`), or one of its tests fails (`E_TESTS_FAILING`). The text lists them.
+    /// tests (`E_TESTS_MISSING`), or one of its tests fails (`E_TESTS_FAILING`). The text starts with
+    /// the code and lists them.
     Tests(String),
 }
 
@@ -316,6 +317,54 @@ pub fn import_signed_with<S: Store + ?Sized>(
     bytes: &[u8],
     stop_after: Option<usize>,
 ) -> Result<Imported, BundleError> {
+    import_with(store, host, owned, clock, bytes, None, stop_after, Stage::All)
+}
+
+/// How far an import goes: the domain proof only (`POST /bundles`'s first two checks), or all of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    Proof,
+    All,
+}
+
+/// The domain proof of a bundle (Build 2 Part 4, P1, checks 1 and 2): the bundle parses, every name
+/// and catalogue entry is under its namespace, and its manifest is signed by a key of `keydoc` (the
+/// publisher's key document, as fetched) that holds now. Writes nothing.
+pub(crate) fn prove<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    clock: &dyn Clock,
+    bytes: &[u8],
+    keydoc: &[u8],
+) -> Result<(), BundleError> {
+    import_with(store, host, &[], clock, bytes, Some(keydoc), None, Stage::Proof).map(|_| ())
+}
+
+/// The import of a bundle whose publisher's key document is `keydoc` (fetched for the request) or,
+/// when `None`, the store's record of its namespace's host. `owned` are the hosts that may publish
+/// here besides `host`.
+pub(crate) fn import_published<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    owned: &[String],
+    clock: &dyn Clock,
+    bytes: &[u8],
+    keydoc: Option<&[u8]>,
+) -> Result<Imported, BundleError> {
+    import_with(store, host, owned, clock, bytes, keydoc, None, Stage::All)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_with<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    owned: &[String],
+    clock: &dyn Clock,
+    bytes: &[u8],
+    keydoc: Option<&[u8]>,
+    stop_after: Option<usize>,
+    stage: Stage,
+) -> Result<Imported, BundleError> {
     let now = clock.now();
     let doc = json::parse(bytes).map_err(|e| BundleError::Format(format!("not JSON: {e}")))?;
 
@@ -403,7 +452,7 @@ pub fn import_signed_with<S: Store + ?Sized>(
 
     // 2. NotOwned.
     let ns_host = host_of(&namespace);
-    if ns_host != host && !owned.iter().any(|o| o == ns_host) {
+    if stage == Stage::All && ns_host != host && !owned.iter().any(|o| o == ns_host) {
         return Err(BundleError::NotOwned(format!("{ns_host} is neither this mesh's host nor owned")));
     }
     if let Some((n, _)) = names.iter().find(|(n, _)| !n.starts_with(&format!("{namespace}/"))) {
@@ -414,11 +463,17 @@ pub fn import_signed_with<S: Store + ?Sized>(
     }
 
     // 3. Manifest: the key of the namespace's host, valid now, signing the bundle's names and receipts.
-    let keydoc = store
-        .namespace(ns_host)
-        .map_err(|e| BundleError::Store(e.to_string()))?
-        .ok_or_else(|| BundleError::Manifest(format!("the store holds no key document of {ns_host}")))?
-        .keydoc;
+    let keydoc_fetched = keydoc;
+    let keydoc = match keydoc {
+        Some(d) => d.to_vec(),
+        None => {
+            store
+                .namespace(ns_host)
+                .map_err(|e| BundleError::Store(e.to_string()))?
+                .ok_or_else(|| BundleError::Manifest(format!("the store holds no key document of {ns_host}")))?
+                .keydoc
+        }
+    };
     let kd = keys_from_response(ns_host, 200, Some(&keydoc)).map_err(|e| BundleError::Manifest(e.to_string()))?;
     let key = kd
         .key(&key_id)
@@ -439,6 +494,9 @@ pub fn import_signed_with<S: Store + ?Sized>(
         &sig,
     ) {
         return Err(BundleError::Manifest("the signature does not verify".into()));
+    }
+    if stage == Stage::Proof {
+        return Ok(Imported { namespace, functions_bound: 0, receipts: 0, versions: 0, bound_at: now });
     }
 
     // 4. Descriptor.
@@ -524,8 +582,15 @@ pub fn import_signed_with<S: Store + ?Sized>(
         let spec = crate::testrun::parse_test(t).map_err(|e| BundleError::Format(format!("test: {e}")))?;
         test_specs.push((i + 1, spec));
     }
-    let test_rows = crate::publish::check_tests(store, &overlay, &test_specs, &formulas, host, &now, true)
-        .map_err(|e| BundleError::Tests(e.detail))?;
+    let test_rows =
+        crate::publish::check_tests(store, &overlay, &test_specs, &formulas, host, &now, true).map_err(|e| {
+            let code = match e.kind {
+                crate::publish::PublishErrorKind::TestsFailing(_) => "E_TESTS_FAILING",
+                crate::publish::PublishErrorKind::TestsMissing(_) => "E_TESTS_MISSING",
+                _ => "E_BUNDLE_TESTS",
+            };
+            BundleError::Tests(format!("{code}: {}", e.detail))
+        })?;
     // Plan: the binds, and the versions not already there; a conflict is refused before any write.
     let mut binds: Vec<&(String, String)> = Vec::new();
     for pair in &names {
@@ -559,6 +624,15 @@ pub fn import_signed_with<S: Store + ?Sized>(
         new_versions.push((id, tx.to_string(), r.hash().to_string()));
     }
 
+    // The publisher's key document, as fetched for this request, is the namespace's record before its
+    // receipts are written (the store checks each receipt's signer against it): written after every
+    // check has passed, as the bundle's first write.
+    if let Some(doc) = keydoc_fetched {
+        let stored = store.namespace(ns_host).map_err(|e| BundleError::Store(e.to_string()))?.map(|n| n.keydoc);
+        if stored.as_deref() != Some(doc) {
+            store.put_namespace(ns_host, doc, &now).map_err(|e| BundleError::Store(e.to_string()))?;
+        }
+    }
     // Writes: descriptors, receipts, versions, then the bindings (a version without its binding is
     // not answered, so a crash before the bindings leaves nothing answerable).
     let mut writes = 0usize;

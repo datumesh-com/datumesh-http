@@ -237,6 +237,56 @@ pub struct Config {
     pub embed_url: Option<String>,
     /// API keys (`Authorization: Bearer dm_...`).
     pub api_keys: ApiKeys,
+    /// The hosts that may publish with `POST /bundles` besides the mesh's own namespaces
+    /// (`DATUMESH_PUBLISH_DOMAINS`; Build 2 Part 4, D11). Default: none.
+    pub publish_domains: PublishDomains,
+    /// Where the operator's log of `POST /bundles` goes (`DATUMESH_LOG_DIR`, the file
+    /// `bundles.log` in it); default none, no log.
+    pub log_dir: Option<std::path::PathBuf>,
+}
+
+/// Which hosts may publish with `POST /bundles` (`DATUMESH_PUBLISH_DOMAINS`): the mesh's own
+/// namespaces always; then none (the default), named hosts, or any host with a valid key
+/// document (`*`).
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum PublishDomains {
+    /// The mesh's own namespaces only.
+    #[default]
+    Own,
+    /// These hosts, besides the mesh's own namespaces.
+    Hosts(Vec<String>),
+    /// Any host whose key document the mesh can check.
+    Any,
+}
+
+impl PublishDomains {
+    /// Parses the variable's value: empty is `Own`, `*` is `Any`, else a comma-separated list of
+    /// hosts (spaces allowed).
+    pub fn parse(v: &str) -> Result<PublishDomains, ConfigError> {
+        let v = v.trim();
+        if v.is_empty() {
+            return Ok(PublishDomains::Own);
+        }
+        if v == "*" {
+            return Ok(PublishDomains::Any);
+        }
+        let mut hosts = Vec::new();
+        for h in v.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+            lexical::check_dns_name(h, "$").map_err(|e| ConfigError::new("DATUMESH_PUBLISH_DOMAINS", e.to_string()))?;
+            hosts.push(h.to_string());
+        }
+        Ok(if hosts.is_empty() { PublishDomains::Own } else { PublishDomains::Hosts(hosts) })
+    }
+
+    /// Whether a bundle of `host` (not one of the mesh's own namespaces) may be published.
+    pub fn allows(&self, host: &str) -> bool {
+        match self {
+            PublishDomains::Own => false,
+            PublishDomains::Hosts(h) => h.iter().any(|x| x == host),
+            PublishDomains::Any => true,
+        }
+    }
 }
 
 impl Config {
@@ -267,6 +317,8 @@ impl Config {
             catalog: BTreeMap::new(),
             embed_url: None,
             api_keys: ApiKeys::default(),
+            publish_domains: PublishDomains::Own,
+            log_dir: None,
         }
     }
 
@@ -366,6 +418,10 @@ impl Config {
         }
         if let Some(p) = get("DATUMESH_API_KEYS_FILE") {
             c.api_keys = ApiKeys::parse(&read_secret_file(Path::new(&p))?)?;
+        }
+        c.publish_domains = PublishDomains::parse(&get("DATUMESH_PUBLISH_DOMAINS").unwrap_or_default())?;
+        if let Some(d) = get("DATUMESH_LOG_DIR").filter(|d| !d.trim().is_empty()) {
+            c.log_dir = Some(std::path::PathBuf::from(d));
         }
         c.check()?;
         Ok(c)

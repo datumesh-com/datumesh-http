@@ -26,9 +26,9 @@
 //!
 //! The tests that need `bundle::build_with_tests` (Part 3) are in `post_bundles_tests.rs`.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 #[path = "common/publish4.rs"]
 mod publish4;
 
@@ -54,7 +54,12 @@ async fn allowed(domains: &str) -> (Public, Stub) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bundle_of_an_allowed_host_is_accepted_and_served() {
     let (p, _stub) = allowed(PUB).await;
-    let b = simple_bundle_with(PUB, &seed_for(PUB), vec![level_receipt(PUB, "N", "42", TX)], Some("Levels, osprey edition"));
+    let b = simple_bundle_with(
+        PUB,
+        &seed_for(PUB),
+        vec![level_receipt(PUB, "N", "42", TX)],
+        Some("Levels, osprey edition"),
+    );
     let r = p.post(b.clone()).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let j = r.json();
@@ -81,7 +86,11 @@ async fn a_bundle_of_an_allowed_host_is_accepted_and_served() {
     let again = p.post(b).await;
     assert_eq!(again.status, 201, "{}", again.text());
     let a = again.json();
-    assert_eq!((a["imported"]["functions_bound"].as_u64(), a["imported"]["versions"].as_u64()), (Some(0), Some(0)), "{a}");
+    assert_eq!(
+        (a["imported"]["functions_bound"].as_u64(), a["imported"]["versions"].as_u64()),
+        (Some(0), Some(0)),
+        "{a}"
+    );
 }
 
 /// The mesh's own host needs no allow list: the default is its own namespaces only.
@@ -151,7 +160,13 @@ async fn a_bad_signature() {
         for (k, v) in m.iter_mut() {
             if k == "names" {
                 if let Value::Array(a) = v {
-                    a.insert(0, datumesh_core::json::parse(format!(r#"{{"fn_hash":"{}","name":"{PUB}/b4/aaa"}}"#, stored_fn().hash()).as_bytes()).unwrap());
+                    a.insert(
+                        0,
+                        datumesh_core::json::parse(
+                            format!(r#"{{"fn_hash":"{}","name":"{PUB}/b4/aaa"}}"#, stored_fn().hash()).as_bytes(),
+                        )
+                        .unwrap(),
+                    );
                 }
             }
         }
@@ -182,7 +197,8 @@ async fn the_key_must_be_in_the_key_document_and_valid() {
     // the key starts in the future
     let live = datumesh_core::SigningKey::from_seed(&[7; 32]);
     let d1 = datumesh_http::keydoc::with_key(PUB, None, &live, common::KEY_FROM).unwrap();
-    let future = datumesh_http::keydoc::with_key(PUB, Some(&d1), &common::key_for(PUB), "2030-01-01T00:00:00.000000Z").unwrap();
+    let future =
+        datumesh_http::keydoc::with_key(PUB, Some(&d1), &common::key_for(PUB), "2030-01-01T00:00:00.000000Z").unwrap();
     let stub = Stub::with_doc(PUB, future, &live).await;
     let p = public("pb-key2", &[stub.peer()], Some("*")).await;
     let r = p.post(b(&seed_for(PUB))).await;

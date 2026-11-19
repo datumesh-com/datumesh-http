@@ -285,8 +285,26 @@ impl Inner {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
         let tests = DescribeTests { count, branches, covered, counterexamples };
-        let Ok(answer) = answer.with_tests(tests) else { return envelope::error_reply(ErrorCode::InputUnavailable) };
-        Reply::json(200, answer.to_json(), Cache::NoStore)
+        let Ok(mut answer) = answer.with_tests(tests) else {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        };
+        // A relayed function names its source and the takeover page (spec-0.6.0, 16.8; core's
+        // DescribeSource needs the takeover). `page` is this mesh's own member (Build 2 Part 4, P2).
+        let now = self.now();
+        if let Some(relay) = crate::fnpage::relay_of(self, name, fn_hash, d, &now) {
+            if let Some(takeover) = relay.takeover {
+                let source =
+                    datumesh_core::DescribeSource { name: relay.name, relayed_by: self.config.host.clone(), takeover };
+                if let Ok(a) = answer.clone().with_source(source) {
+                    answer = a;
+                }
+            }
+        }
+        let Value::Object(mut members) = answer.to_value() else {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        };
+        members.push(("page".into(), Value::String(crate::fnpage::page_url(self, name))));
+        Reply::json(200, Value::Object(members).to_jcs(), Cache::NoStore)
     }
 
     fn class_answer(&self, name: &str, c: &BoundClass) -> Reply {

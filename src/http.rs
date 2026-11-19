@@ -1264,6 +1264,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/slice/{*rest}" => "/slice/{cell}".to_string(),
         "/explain/{*rest}" => "/explain/{cell}".to_string(),
         "/versions/{*rest}" => "/versions/{cell}".to_string(),
+        "/fn/{*name}" => "/fn/{name}".to_string(),
         _ => route,
     };
     let id = req
@@ -1280,7 +1281,9 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     let ip = client_ip(&mesh.inner, req.headers(), peer_of(&req));
     let method = req.method().clone();
     let also = if route == "/slice/{cell}" { Some(crate::slice::ARROW) } else { None };
-    let mut resp = if route != "/blob/{sha256}" && route != "/metrics" && !acceptable(req.headers(), also) {
+    // The function page is HTML for people (Build 2 Part 4, P2) as well as JSON for agents.
+    let html_ok = route == "/fn/{name}" && accepts(req.headers(), "text/html");
+    let mut resp = if route != "/blob/{sha256}" && route != "/metrics" && !html_ok && !acceptable(req.headers(), also) {
         let mut r = Reply::json(
             406,
             Value::Object(vec![("error".into(), Value::String("not acceptable: application/json only".into()))])
@@ -1358,6 +1361,32 @@ async fn describe(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: R
     }
 }
 
+/// `POST /bundles` (Build 2 Part 4, P1): a publisher's bundle, checked and imported (see `bundles`).
+async fn bundles(State(mesh): State<Mesh>, req: Request) -> Response {
+    to_response(crate::bundles::post(mesh.inner.clone(), req.into_body()).await)
+}
+
+/// `GET /fn/<name>` (Build 2 Part 4, P2): the function page, HTML or, by `Accept` or `?format=json`,
+/// the same data as JSON.
+async fn function_page(
+    State(mesh): State<Mesh>,
+    Path(name): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    req: Request,
+) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let format_json = uri.query().is_some_and(|q| q.split('&').any(|p| p == "format=json"));
+    let json_form = format_json || (accepts(&headers, JSON) && !accepts(&headers, "text/html"));
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::fnpage::respond(&mesh.inner, &name, json_form)).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 async fn fallback() -> Response {
     not_found("endpoint")
 }
@@ -1383,6 +1412,8 @@ impl Mesh {
             .route("/.well-known/datumesh-mesh.json", get(mesh_document))
             .route("/bindings", get(bindings))
             .route("/describe/{*id}", get(describe))
+            .route("/fn/{*name}", get(function_page))
+            .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
             .route("/health", get(health))
             .route("/metrics", get(metrics))

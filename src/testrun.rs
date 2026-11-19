@@ -649,18 +649,26 @@ fn derived(compiled: &Compiled, sig: &datumesh_formula::Signature, ran: Option<&
     out
 }
 
-/// The coverage of a function's tests: its derived cases (of `runs`), and its branch arms.
-pub fn coverage_of(compiled: &Compiled, sig: &datumesh_formula::Signature, runs: &[&Ran]) -> Covered {
+/// Every derived case of a function, ascending, each with whether one of `runs` exercises it.
+pub(crate) fn cases_of(compiled: &Compiled, sig: &datumesh_formula::Signature, runs: &[&Ran]) -> Vec<(Case, bool)> {
     let mut cases: BTreeMap<Case, bool> = BTreeMap::new();
     for (c, _) in derived(compiled, sig, None) {
         cases.insert(c, false);
     }
-    let mut arms = Coverage::new();
     for r in runs {
         for (c, ok) in derived(compiled, sig, Some(r)) {
             let e = cases.entry(c).or_insert(false);
             *e = *e || ok;
         }
+    }
+    cases.into_iter().collect()
+}
+
+/// The coverage of a function's tests: its derived cases (of `runs`), and its branch arms.
+pub fn coverage_of(compiled: &Compiled, sig: &datumesh_formula::Signature, runs: &[&Ran]) -> Covered {
+    let cases: BTreeMap<Case, bool> = cases_of(compiled, sig, runs).into_iter().collect();
+    let mut arms = Coverage::new();
+    for r in runs {
         arms.union(&r.coverage);
     }
     let points = coverage::branches(&compiled.ast);

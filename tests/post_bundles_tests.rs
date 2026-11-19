@@ -3,9 +3,9 @@
 //! and its function page is served; a failing test is E_TESTS_FAILING, with the list; nothing is
 //! written on a refusal. See `post_bundles.rs` for the rest of the endpoint.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 #[path = "common/publish4.rs"]
 mod publish4;
 

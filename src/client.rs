@@ -342,6 +342,39 @@ impl Client {
         Ok(doc)
     }
 
+    /// The bytes of `host`'s key document, fetched now (not from the cache) and given at most
+    /// `within` (the domain proof of `POST /bundles`, Build 2 Part 4, P1: 5 s). Nothing is cached.
+    /// A failure to get any HTTP answer, or a non-200 answer, is `E_KEY_UNAVAILABLE`.
+    pub fn key_document_live(&self, host: &str, within: Duration) -> Result<Vec<u8>, ClientError> {
+        self.check_host(host)?;
+        let url = format!("https://{host}/.well-known/datumesh.json");
+        let mut target = url.clone();
+        if let Some(origin) = self.inner.cfg.peers.get(host) {
+            target = format!("{origin}/.well-known/datumesh.json");
+        }
+        let resp = self
+            .inner
+            .agent
+            .get(&target)
+            .config()
+            .timeout_global(Some(within))
+            .build()
+            .call()
+            .map_err(|e| ClientError::new(ErrorCode::KeyUnavailable, format!("{url}: {e}")))?;
+        let mut resp = resp;
+        if resp.status().as_u16() != 200 {
+            return Err(ClientError::new(
+                ErrorCode::KeyUnavailable,
+                format!("{url}: status {}", resp.status().as_u16()),
+            ));
+        }
+        resp.body_mut()
+            .with_config()
+            .limit(MAX_DOC)
+            .read_to_vec()
+            .map_err(|e| ClientError::new(ErrorCode::KeyUnavailable, format!("{url}: {e}")))
+    }
+
     /// The bytes of `host`'s key document as last fetched.
     pub fn key_document_bytes(&self, host: &str) -> Option<Vec<u8>> {
         self.inner.keys.get(host).map(|(_, b, _)| b)
