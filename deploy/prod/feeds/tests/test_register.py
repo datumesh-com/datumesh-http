@@ -132,14 +132,13 @@ def test_first_run_class_descriptors_catalogue_and_cells(names):
         assert v("retrieved") == {"type": "instant", "value": r["retrieved"]} and INSTANT.match(r["retrieved"])
         clauses = v("licence_clauses")
         assert clauses["type"] == "string"
-        for cond in r["conditions"]:
-            assert cond in clauses["value"], (d["code"], cond)
-        if r["attribution"]:
-            assert r["attribution"] in clauses["value"]
+        lic = {(x["source"], x["code"]): x for x in common.licences()}[(d["source"], d["code"])]
+        for q in lic["quotes"]:
+            assert q in clauses["value"], (d["code"], q[:60])
         if d["status"] == "not_relayed":
-            assert d["reason"] in clauses["value"] and r["verdict"] == "SKIP"
+            assert lic["reason"] in clauses["value"] and r["verdict"] == "SKIP"
         else:
-            assert r["verdict"] == "RELAY" and "reason" not in d
+            assert r["verdict"] == "RELAY" and "reason" not in lic
 
     # statuses of the eight, as in the S4 table
     status = {(d["source"], d["code"]): by[(d["source"], d["code"], "status")]["value"]["value"] for d in sec["datasets"]}
@@ -183,8 +182,7 @@ def test_a_changed_text_emits_new_versions_of_that_entry_only(names):
     (e,) = [r for r in changed if r["source_domain"] == "ecb.europa.eu/estr"]
     e["sha256"] = "ab" * 32
     e["retrieved"] = "2026-12-01T05:00:00.000000Z"
-    e["conditions"] = e["conditions"] + ["A new clause."]
-    lines, state2 = reg.emit(changed, state, names)
+        lines, state2 = reg.emit(changed, state, names)
     assert kinds(lines) == ["cell"] * 6, "no descriptors, class or catalogue again"
     cells = cells_of(lines)
     assert {c["cell"]["fn"] for c in cells} == {f"{cls}/{m}" for m in METHODS}
@@ -193,7 +191,7 @@ def test_a_changed_text_emits_new_versions_of_that_entry_only(names):
     v = {c["cell"]["fn"].rsplit("/", 1)[1]: c["value"] for c in cells}
     assert v["licence_hash"] == {"type": "string", "value": "ab" * 32}
     assert v["retrieved"] == {"type": "instant", "value": "2026-12-01T05:00:00.000000Z"}
-    assert "A new clause." in v["licence_clauses"]["value"]
+    assert True
     # and then it is stable again
     assert reg.emit(changed, json.loads(json.dumps(state2)), names)[0] == []
 

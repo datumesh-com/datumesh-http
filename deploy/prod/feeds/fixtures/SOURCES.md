@@ -28,3 +28,5 @@ Fetched with `curl -A "datumesh-feeds/0.1"` (no email), 2026-11-19, throttled (a
 - Treasury: the XML and CSV carry 14 tenors, not 13: 1.5 Month and 4 Mo exist from 2022. The CSV month-filtered URL gives an empty file; use the year URL.
 - ECB hist: `eurofxref-hist.zip` is a zip holding `eurofxref-hist.csv` (not plain CSV).
 - BoE: the data URL works as in LICENCES.md; the date format in the file is `DD Mon YYYY`.
+
+| LICENCES.md | /root/datumesh-libs/build2-licences/LICENCES.md (the licence check, 2026-11-19) | copied as is | the quotes of licences.toml must appear in it byte for byte (tests/test_licences.py) |

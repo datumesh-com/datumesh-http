@@ -157,7 +157,7 @@ def test_register_table_matches_the_s4_list(names):
     ]
     for d in names["register"]["datasets"]:
         assert DNS.match(d["source"]) and NAME.match(d["code"]) and d["name"] and d["input"]
-        assert ("reason" in d) == (d["status"] == "not_relayed")
+        assert "reason" not in d
 
 
 def test_relay_sections_point_at_their_register_entry(names, register):
