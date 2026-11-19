@@ -289,7 +289,8 @@ impl Inner {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
         // A relayed function names its source and the takeover page (spec-0.6.0, 16.8; core's
-        // DescribeSource needs the takeover). `page` is this mesh's own member (Build 2 Part 4, P2).
+        // DescribeSource needs the takeover). The function page is not a member of the answer (16.8
+        // is strictly checked): it is the `Link` header of the response (see `http::describe`).
         let now = self.now();
         if let Some(relay) = crate::fnpage::relay_of(self, name, fn_hash, d, &now) {
             if let Some(takeover) = relay.takeover {
@@ -300,11 +301,7 @@ impl Inner {
                 }
             }
         }
-        let Value::Object(mut members) = answer.to_value() else {
-            return envelope::error_reply(ErrorCode::InputUnavailable);
-        };
-        members.push(("page".into(), Value::String(crate::fnpage::page_url(self, name))));
-        Reply::json(200, Value::Object(members).to_jcs(), Cache::NoStore)
+        Reply::json(200, answer.to_json(), Cache::NoStore)
     }
 
     fn class_answer(&self, name: &str, c: &BoundClass) -> Reply {

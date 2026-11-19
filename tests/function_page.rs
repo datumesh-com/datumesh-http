@@ -303,9 +303,13 @@ async fn describe_links_to_the_page() {
     let c = c();
     let m = served("fp-describe").await;
     for name in [&c.per_unit, &c.reading] {
-        let d = m.get(&format!("/describe/{}", call_path(name))).await;
-        assert_eq!(d["kind"], "function", "{d}");
-        assert_eq!(d["page"], format!("https://{HOST}/fn/{name}"), "{d}");
+        // The page is the `Link` header of the answer (rel="describedby"), not a member of it: the
+        // answer is the spec's (16.8), which core checks strictly.
+        let r = get(&m, &format!("/describe/{}", call_path(name)), &[]).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json()["kind"], "function", "{}", r.text());
+        assert!(r.json().get("page").is_none(), "page is not a member: {}", r.text());
+        assert_eq!(r.header("link"), Some(format!("<https://{HOST}/fn/{name}>; rel=\"describedby\"")), "{}", r.text());
     }
 }
 

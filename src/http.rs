@@ -1356,9 +1356,31 @@ async fn describe(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: R
     };
     let inner = mesh.inner.clone();
     match inner.pool.clone().run(move || mesh.describe(&id)).await {
-        Some(r) => to_response(r),
+        Some(r) => {
+            // A function's page is named by a `Link` header, not a member of the answer (16.8 is
+            // checked strictly by core; Build 2 Part 4, P2).
+            let link = function_describe_link(&inner, &r);
+            let mut resp = to_response(r);
+            if let Some(v) = link.and_then(|l| HeaderValue::from_str(&l).ok()) {
+                resp.headers_mut().insert(header::LINK, v);
+            }
+            resp
+        }
         None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
     }
+}
+
+/// The `Link` header of a describe answer for a function: its page, `rel="describedby"`.
+fn function_describe_link(inner: &Inner, r: &Reply) -> Option<String> {
+    if r.status != 200 {
+        return None;
+    }
+    let v = json::parse(&r.body).ok()?;
+    if v.get("kind")?.as_str()? != "function" {
+        return None;
+    }
+    let name = v.get("fn")?.as_str()?;
+    Some(format!("<{}>; rel=\"describedby\"", crate::fnpage::page_url(inner, name)))
 }
 
 /// `POST /bundles` (Build 2 Part 4, P1): a publisher's bundle, checked and imported (see `bundles`).

@@ -56,12 +56,7 @@ async fn describe_counts_the_tests_of_a_function() {
     // core 0.3.9 checks the shape, and the args and returns against the descriptor it holds
     let held =
         datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{hash}")).await.body).unwrap();
-    // `page` is this mesh's own member of the http answer (Build 2 Part 4, P2), not one of the spec's:
-    // the spec's answer, which core checks, is the body without it.
-    let mut spec: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-    spec.as_object_mut().unwrap().remove("page");
-    let got = datumesh_core::check_describe_with(&serde_json::to_vec(&spec).unwrap(), &BTreeMap::new(), &[held])
-        .unwrap_or_else(|e| panic!("{e}"));
+    let got = datumesh_core::check_describe_with(&r.body, &BTreeMap::new(), &[held]).unwrap_or_else(|e| panic!("{e}"));
     let t = got.tests.expect("tests");
     assert_eq!((t.count, t.branches, t.covered, t.counterexamples), (6, 2, 2, 0));
     assert_eq!(got.function.as_deref(), Some(c.per_unit.as_str()));

@@ -5,16 +5,20 @@
 //! The checks run in this order, nothing is written unless all pass:
 //! 1. the body is at most 16 MiB and at most 50,000 receipts (`E_TOO_LARGE`, 413); the body is read to
 //!    its end either way, so the client gets the answer;
-//! 2. it parses as a bundle (`E_BUNDLE_FORMAT`, 400), and its host is under the rate limits (10 an
-//!    hour per host, 60 an hour per mesh; `rate_limited`, 429 with `Retry-After`);
-//! 3. the domain proof: the publisher's key document is fetched now (a mesh's own namespaces read the
+//! 2. it parses as a bundle (`E_BUNDLE_FORMAT`, 400);
+//! 3. every name and catalogue entry is under the namespace (`E_NOT_OWNED`, 422), and the host is
+//!    allowed (`DATUMESH_PUBLISH_DOMAINS`; `E_DOMAIN_NOT_ALLOWED`, 403). A host that may not publish
+//!    here causes no outbound request;
+//! 4. the rate limits (10 an hour per host, 60 an hour per mesh; `rate_limited`, 429 with `Retry-After`);
+//! 5. the domain proof: the publisher's key document is fetched now (a mesh's own namespaces read the
 //!    store; another host's `https://<host>/.well-known/datumesh.json` within 5 s:
 //!    `E_KEY_UNAVAILABLE`, 422; a document that is not one, or holds no key of the manifest valid now:
-//!    `E_KEY_DOC`, 422); every name is under the namespace (`E_NOT_OWNED`, 422); the manifest signature
-//!    verifies (`E_BUNDLE_SIGNATURE`, 422);
-//! 4. the host is allowed (`DATUMESH_PUBLISH_DOMAINS`; `E_DOMAIN_NOT_ALLOWED`, 403);
-//! 5. the import rules (no backdating: `E_BACKDATED`, 422) and the public test rule
+//!    `E_KEY_DOC`, 422), and the manifest signature verifies (`E_BUNDLE_SIGNATURE`, 422);
+//! 6. the import rules (no backdating: `E_BACKDATED`, 422) and the public test rule
 //!    (`E_TESTS_MISSING` / `E_TESTS_FAILING`, 422), then the writes.
+//!
+//! An accepted host becomes hosted on this mesh (`Foreign::host`): its names and cells are served from
+//! the store from then on, and never fetched from the publisher again.
 //!
 //! Every attempt is one line of `<DATUMESH_LOG_DIR>/bundles.log`: the time, the host, the result and
 //! the counts, never the bundle's contents.
@@ -186,12 +190,20 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
     if seen.receipts > MAX_RECEIPTS {
         return fail(413, "E_TOO_LARGE", format!("a bundle has at most {MAX_RECEIPTS} receipts"));
     }
+    // Before any fetch: the names and catalogue entries are under the namespace (E_NOT_OWNED), and the
+    // host is allowed (E_DOMAIN_NOT_ALLOWED). A host that may not publish here causes no outbound request.
+    let own = inner.config.owns(&host);
+    if let Some(name) = outside_namespace(&doc, namespace) {
+        return fail(422, "E_NOT_OWNED", format!("{name} is not under {namespace}/"));
+    }
+    if !own && !inner.config.publish_domains.allows(&host) {
+        return fail(403, "E_DOMAIN_NOT_ALLOWED", format!("{host} may not publish to this mesh"));
+    }
     if let Err(wait) = inner.publish_limits.lock().unwrap_or_else(|p| p.into_inner()).admit(&host, Instant::now()) {
         return (envelope::rate_limited_reply(wait), "rate_limited".into());
     }
 
     // The domain proof: the publisher's key document, as it is now.
-    let own = inner.config.owns(&host);
     let keydoc: Vec<u8> = if own {
         match inner.store.namespace(&host) {
             Ok(Some(n)) => n.keydoc,
@@ -208,11 +220,6 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
         Err(e) => return refused(&e),
     }
 
-    // The allow list (the mesh's own namespaces need none).
-    if !own && !inner.config.publish_domains.allows(&host) {
-        return fail(403, "E_DOMAIN_NOT_ALLOWED", format!("{host} may not publish to this mesh"));
-    }
-
     // The import: nothing is written unless every check passes.
     let owned = vec![host.clone()];
     let imported = match bundle::import_published(
@@ -226,18 +233,12 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
         Ok(i) => i,
         Err(e) => return refused(&e),
     };
-    // The names and cells just imported are confirmed as of now (the publisher's bundle was checked
-    // against its live key document): see `Foreign::confirm_imported`.
-    let cells: Vec<(String, String)> = match doc.get("receipts") {
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter_map(|r| datumesh_core::Receipt::from_json(&r.to_jcs()).ok())
-            .map(|r| (r.cell().function_name(), r.cell().id()))
-            .collect(),
-        _ => Vec::new(),
-    };
-    let just: Vec<String> = names.iter().map(|(n, _)| n.clone()).collect();
-    inner.foreign.confirm_imported(&just, &cells, &inner.now());
+    // The host is hosted here from now on: its names and cells are the store's (Foreign::host).
+    if !own {
+        if let Err(e) = inner.foreign.host(&host) {
+            return fail(500, "error", e);
+        }
+    }
     let origin = inner.config.origin();
     let functions: Vec<Value> = names
         .iter()
@@ -255,6 +256,18 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
         ("functions".into(), Value::Array(functions)),
     ]);
     (Reply::json(201, body.to_jcs(), Cache::NoStore), "created".into())
+}
+
+/// The first name or catalogue entry of a bundle that is not under `namespace/`.
+fn outside_namespace(doc: &Value, namespace: &str) -> Option<String> {
+    let prefix = format!("{namespace}/");
+    let mut names: Vec<&str> = Vec::new();
+    for member in ["names", "catalog"] {
+        if let Some(Value::Array(a)) = doc.get(member) {
+            names.extend(a.iter().filter_map(|n| text(n, "name")));
+        }
+    }
+    names.into_iter().find(|n| !n.starts_with(&prefix)).map(str::to_string)
 }
 
 /// The refusal of an import or proof error: its status and code (`E_` names of Build 2 Part 4).

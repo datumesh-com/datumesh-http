@@ -145,6 +145,11 @@ impl KeyCache {
     }
 }
 
+/// The content of a hosted namespace's marker (see `Foreign::host`).
+pub(crate) fn hosted_marker(host: &str) -> Vec<u8> {
+    format!("datumesh hosted namespace 1\n{host}\n").into_bytes()
+}
+
 /// A failure of cross-mesh resolution: the client's error (its code is the `error`
 /// envelope's).
 pub type ForeignError = crate::client::ClientError;
@@ -197,6 +202,8 @@ pub struct Foreign {
     dirty: std::sync::atomic::AtomicBool,
     any: std::sync::atomic::AtomicBool,
     deps: Mutex<HashMap<String, Arc<Vec<Cell>>>>,
+    /// The namespaces this mesh hosts that it has seen (a hosted namespace never becomes foreign again).
+    hosted: Mutex<std::collections::HashSet<String>>,
     /// Counters for /metrics.
     pub(crate) fetches: std::sync::atomic::AtomicU64,
     pub(crate) failures: std::sync::atomic::AtomicU64,
@@ -243,6 +250,7 @@ impl Foreign {
             dirty: Default::default(),
             any: Default::default(),
             deps: Mutex::new(HashMap::new()),
+            hosted: Mutex::new(Default::default()),
             fetches: Default::default(),
             failures: Default::default(),
             imported: Default::default(),
@@ -258,7 +266,29 @@ impl Foreign {
     /// cross-mesh resolution is on (and allows that host).
     pub fn is_foreign(&self, name: &str) -> bool {
         let host = host_of(name);
-        self.enabled && !self.owned.iter().any(|h| h == host) && self.client.allowed(host)
+        self.enabled && !self.owned.iter().any(|h| h == host) && self.client.allowed(host) && !self.is_hosted(host)
+    }
+
+    /// The store's record that `host` is hosted here (Build 2 Part 4, P1): a blob whose content is
+    /// [`hosted_marker`], so the mark needs no table of its own. Positive answers are kept in memory.
+    fn is_hosted(&self, host: &str) -> bool {
+        if self.hosted.lock().unwrap_or_else(|p| p.into_inner()).contains(host) {
+            return true;
+        }
+        let key = datumesh_core::sha256_hex(&hosted_marker(host));
+        let hosted = matches!(self.store.blob(&key), Ok(Some(_)));
+        if hosted {
+            self.hosted.lock().unwrap_or_else(|p| p.into_inner()).insert(host.to_string());
+        }
+        hosted
+    }
+
+    /// Makes `host` hosted on this mesh (Build 2 Part 4, P1): its names and cells are then the store's,
+    /// and this mesh never asks the publisher for them again. Called once an accepted bundle is written.
+    pub(crate) fn host(&self, host: &str) -> Result<(), String> {
+        self.store.put_blob(&hosted_marker(host)).map_err(|e| format!("hosted marker of {host}: {e}"))?;
+        self.hosted.lock().unwrap_or_else(|p| p.into_inner()).insert(host.to_string());
+        Ok(())
     }
 
     /// Whether any foreign cell was ever imported (lineage checks are skipped otherwise).
@@ -610,22 +640,6 @@ impl Foreign {
             }
         }
         Ok(added)
-    }
-
-    /// After `POST /bundles` imported a publisher's names and cells (Build 2 Part 4, P1), they are
-    /// confirmed as of now: the bundle was checked against the publisher's live key document, so the
-    /// reads that follow need not ask the publisher again until the TTLs run out.
-    pub(crate) fn confirm_imported(&self, names: &[String], cells: &[(String, String)], now: &str) {
-        let at = Instant::now();
-        let mut confirmed = self.names.lock().unwrap_or_else(|p| p.into_inner());
-        for n in names.iter().filter(|n| self.is_foreign(n)) {
-            confirmed.insert(n.clone(), Confirmed { at, instant: now.to_string() });
-        }
-        drop(confirmed);
-        let mut confirmed = self.cells.lock().unwrap_or_else(|p| p.into_inner());
-        for (_, id) in cells.iter().filter(|(f, _)| self.is_foreign(f)) {
-            confirmed.insert(id.clone(), Confirmed { at, instant: now.to_string() });
-        }
     }
 
     /// For a request about a foreign name as of `asof` (now when `None`): its bindings and,

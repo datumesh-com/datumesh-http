@@ -57,6 +57,10 @@ pub(crate) fn relay_of(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDes
     found
 }
 
+/// A relay is found by reading the receipts of a function's first recorded cells. This is a heuristic
+/// for now (all cells of a relay carry the source; a mixed function is not a relay the rule names). A
+/// store index of the sources per function (filled by `publish-stored`) would answer without the
+/// scan: that is the step after this one.
 fn read_relay(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDescriptor, now: &str) -> Option<Relay> {
     let (ns, f) = name.rsplit_once('/')?;
     let args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();

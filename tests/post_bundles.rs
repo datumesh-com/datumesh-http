@@ -35,6 +35,7 @@ mod publish4;
 use std::time::{Duration, Instant};
 
 use common::lite::*;
+use common::readpath::build_served;
 use common::seed_for;
 use datumesh_core::json::Value;
 use datumesh_core::Receipt;
@@ -138,12 +139,11 @@ async fn the_mesh_document_lists_the_bundles_endpoint() {
 
 // ---- refused ------------------------------------------------------------------------------------
 
-/// A bundle changed after signing: E_BUNDLE_SIGNATURE (before the allow list: the host here is not
-/// allowed), nothing written. A body that is not a bundle is 400.
+/// A bundle changed after signing: E_BUNDLE_SIGNATURE (the host is allowed here), nothing written. A body that is not a bundle is 400.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bad_signature() {
     let stub = Stub::start(PUB).await;
-    let p = public("pb-sig", &[stub.peer()], None).await;
+    let p = public("pb-sig", &[stub.peer()], Some(PUB)).await;
     let good = simple_bundle_with(PUB, &seed_for(PUB), vec![level_receipt(PUB, "N", "42", TX)], Some("Levels"));
     let tampered = edit(&good, |m| {
         for (k, v) in m.iter_mut() {
@@ -398,4 +398,47 @@ async fn every_attempt_is_logged_without_contents() {
         assert!(l.contains("20"), "a time: {l}");
         assert!(!l.contains(secret) && !l.contains(&stored_fn().hash()), "contents in the log: {l}");
     }
+}
+
+/// A host that may not publish here is refused before anything is fetched from it: E_DOMAIN_NOT_ALLOWED
+/// even when the host does not answer at all (no outbound request is made for it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disallowed_host_is_refused_without_a_fetch() {
+    let origin = closed_origin();
+    let p = public("pb-nofetch", &[(PUB.into(), origin)], None).await;
+    let r = p.post(simple_bundle(PUB)).await;
+    p.refused(&r, "E_DOMAIN_NOT_ALLOWED");
+    assert_eq!(r.status, 403, "{}", r.text());
+    p.nothing_of(PUB);
+    // a bad signature from a host that may not publish: the allow list answers first
+    let tampered = edit(&simple_bundle(PUB), |m| m.retain(|(k, _)| k != "catalog"));
+    p.refused(&p.post(tampered).await, "E_DOMAIN_NOT_ALLOWED");
+}
+
+/// A hosted namespace: once an accepted bundle is written, its cells answer from the store after the
+/// cross-mesh TTLs have run out, with the publisher gone (never fetched from it again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_namespace_answers_after_the_ttl_without_the_publisher() {
+    let stub = Stub::start(PUB).await;
+    let lite = Lite::new("pb-hosted");
+    let log_dir = lite.path("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let cfg = public_config(&[stub.peer()], Some(PUB), Some(log_dir.as_path()));
+    let m = build_served(lite, Some(cfg), |c| {
+        c.ttl.binding = Duration::ZERO;
+        c.ttl.current = Duration::ZERO;
+    })
+    .await;
+    let p = Public { m, log_dir };
+    assert_eq!(p.post(simple_bundle(PUB)).await.status, 201);
+    drop(stub); // the publisher is gone
+    let c = p.get(&level_cell_path(PUB, "N"), &[]).await;
+    assert_eq!(c.status, 200, "{}", c.text());
+    assert_eq!(
+        (c.json()["outcome"].as_str(), c.json()["receipt"]["value"].as_str()),
+        (Some("ok"), Some("42")),
+        "{}",
+        c.text()
+    );
+    assert_eq!(c.json()["trust"], "primary");
 }

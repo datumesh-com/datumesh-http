@@ -47,7 +47,9 @@ async fn a_computed_function_with_full_tests_is_accepted() {
     // the tests are held: describe counts them, the page shows them
     let d = p.get(&format!("/describe/{}", common::world::call_path(&c.per_unit)), &[]).await.json();
     assert_eq!(d["tests"]["count"], 4, "{d}");
-    assert_eq!(d["page"], f["page"], "{d}");
+    assert!(d.get("page").is_none(), "page is a header, not a member: {d}");
+    let link = p.get(&format!("/describe/{}", common::world::call_path(&c.per_unit)), &[]).await.header("link");
+    assert_eq!(link.as_deref(), Some(format!("<{}>; rel=\"describedby\"", f["page"].as_str().unwrap()).as_str()));
     let page = p.get(&format!("/fn/{}", c.per_unit), &[("accept", "application/json")]).await;
     assert_eq!(page.status, 200, "{}", page.text());
     assert_eq!(page.json()["tests"]["count"], 4);

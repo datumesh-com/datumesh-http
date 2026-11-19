@@ -165,12 +165,8 @@ async fn describe_names_the_source_and_the_takeover() {
         &m.get_any(&format!("/descriptor/{}", fn_hash(&m, FX))).await.body,
     )
     .unwrap();
-    // `page` is this mesh's own member of the http answer, not one of the spec's (P2): the spec's
-    // answer, which core checks, is the body without it.
-    let mut spec: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-    spec.as_object_mut().unwrap().remove("page");
-    let got = datumesh_core::check_describe_with(&serde_json::to_vec(&spec).unwrap(), &Default::default(), &[held])
-        .unwrap_or_else(|e| panic!("{e}"));
+    let got =
+        datumesh_core::check_describe_with(&r.body, &Default::default(), &[held]).unwrap_or_else(|e| panic!("{e}"));
     let s = got.source.expect("source");
     assert_eq!((s.name.as_str(), s.relayed_by.as_str(), s.takeover.as_str()), ("ecb.europa.eu", HOST, TAKEOVER));
     // a function that is not relayed has no source
