@@ -560,11 +560,16 @@ pub fn run_test<S: Store + ?Sized>(store: &S, overlay: &Overlay, now: &str, spec
     }
     let mut coverage = Coverage::new();
     let r = run.evaluate(&b, &args, &asof, &mut coverage);
+    // A run that does not answer a value (a fault, or no evaluation) takes no branch arms into
+    // account: an arm entered on the way to a fault does not exercise the branch (Build 2 Part 3,
+    // E5; the derived cases of the run still count).
+    let answered = r.is_ok();
     let (got, error) = match r {
         Ok(o) => (Ok(o.value), None),
         Err(Stop::Code(c)) => (Err(c.as_str().to_string()), None),
         Err(Stop::World(RunError(e))) => (Err(String::new()), Some(e)),
     };
+    let coverage = if answered { coverage } else { Coverage::new() };
     Ran { args, got, error, coverage, events: run.events }
 }
 
