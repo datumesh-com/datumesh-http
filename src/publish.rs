@@ -69,6 +69,8 @@ use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
 use datumesh_store::{Binding, CellWrite, Namespace, Store};
 
+use crate::testrun::{self, run_test, Overlay, Ran, RowWrite, TestSpec};
+
 use crate::config::ConfigError;
 
 /// The end of time: a binding as of it is the latest one.
@@ -154,6 +156,12 @@ pub enum PublishErrorKind {
     Backfill(String),
     /// `import-vectors`: a name the vectors would bind is under a namespace the mesh owns.
     OwnedVectorName(String),
+    /// The public rule (D8, Build 2 Part 3, `publish_stored_checked`): a computed function's tests
+    /// do not cover the derived cases or every branch. The text lists what is missing.
+    TestsMissing(String),
+    /// The public rule: a test of a computed function fails. The text names the case and the
+    /// numbers.
+    TestsFailing(String),
 }
 
 impl std::fmt::Display for PublishErrorKind {
@@ -167,6 +175,8 @@ impl std::fmt::Display for PublishErrorKind {
             PublishErrorKind::OwnedVectorName(name) => {
                 write!(f, "{name} is under a namespace the mesh owns: import-vectors does not bind it")
             }
+            PublishErrorKind::TestsMissing(text) => write!(f, "E_TESTS_MISSING: {text}"),
+            PublishErrorKind::TestsFailing(text) => write!(f, "E_TESTS_FAILING: {text}"),
         }
     }
 }
@@ -729,6 +739,10 @@ struct Planner<'a, S: Store + ?Sized> {
     reads: Reads,
     ops: Vec<Op>,
     binds: Vec<Bind>,
+    /// The test lines of the file, with their lines (Build 2 Part 3).
+    tests: Vec<(usize, TestSpec)>,
+    /// The computed functions the file defines: (line, name, function hash).
+    formulas: Vec<(usize, String, String)>,
 }
 
 impl<S: Store + ?Sized> Planner<'_, S> {
@@ -788,7 +802,12 @@ impl<S: Store + ?Sized> Planner<'_, S> {
                 &start,
             )
             .map_err(|e| err(format!("define {name}: {e}")))?;
+            let hash = def.fn_hash.clone();
             self.function(n, name, start, def.fn_hash, def.bytes)?;
+            self.formulas.push((n, name.to_string(), hash));
+        } else if v.get("test").is_some() {
+            let spec = testrun::parse_test(v).map_err(err)?;
+            self.tests.push((n, spec));
         } else {
             return Err(err("neither a function nor a cell".into()));
         }
@@ -1331,7 +1350,26 @@ pub fn publish_stored_with<S: Store + ?Sized>(
     path: &Path,
     opts: &PublishOptions,
 ) -> Result<Published, PublishError> {
-    publish_planned(store, key, host, owned, path, opts, |s, ops| {
+    publish_planned(store, key, host, owned, path, opts, false, |s, ops| {
+        write(s, ops, |s, g, out| write_cells_one_lane(s, g, out))
+    })
+}
+
+/// As [`publish_stored_with`], with the public rule (Build 2 Part 3, D8: datumesh-http always
+/// enforces it; `publish-stored` calls this). A file that defines a computed function (formula)
+/// is refused unless the tests of the function (the file's, and those already held for the same
+/// function hash) exercise every derived edge case and every branch, and all of the file's tests
+/// pass: [`PublishErrorKind::TestsMissing`] at the function's line, [`PublishErrorKind::TestsFailing`]
+/// at the failing test's line. Stored functions are exempt. Nothing is written when refused.
+pub fn publish_stored_checked<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    path: &Path,
+    opts: &PublishOptions,
+) -> Result<Published, PublishError> {
+    publish_planned(store, key, host, owned, path, opts, true, |s, ops| {
         write(s, ops, |s, g, out| write_cells_one_lane(s, g, out))
     })
 }
@@ -1349,12 +1387,151 @@ pub fn publish_stored_lanes<S: Store + Sync + ?Sized>(
     opts: &PublishOptions,
 ) -> Result<Published, PublishError> {
     let lanes = publish_lanes()?;
-    publish_planned(store, key, host, owned, path, opts, |s, ops| {
+    publish_planned(store, key, host, owned, path, opts, false, |s, ops| {
+        write(s, ops, |s, g, out| write_cells(s, g, lanes, out))
+    })
+}
+
+/// The planned writes of a run as the tests see them (see [`Overlay`]).
+fn overlay_of(ops: &[Op]) -> Result<Overlay, PublishError> {
+    let mut overlay = Overlay::default();
+    for op in ops {
+        match op {
+            Op::Function { name, start, hash, bytes, bind } => {
+                overlay.descriptors.insert(hash.clone(), bytes.clone());
+                if *bind {
+                    overlay.functions.entry(name.clone()).or_default().push((start.clone(), hash.clone()));
+                }
+            }
+            Op::Descriptor { hash, bytes, .. } => {
+                overlay.descriptors.insert(hash.clone(), bytes.clone());
+            }
+            Op::Cell { receipt, .. } => {
+                overlay.cell(receipt).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
+            }
+            Op::Class { .. } | Op::Catalog { .. } => {}
+        }
+    }
+    Ok(overlay)
+}
+
+/// The public rule over a file (Build 2 Part 3, E5): runs the tests of each computed function the
+/// file defines, over the store and the file's planned writes, and refuses the file when `checked`
+/// and a test fails or the tests leave a derived case or a branch arm unexercised. Returns the
+/// rows of the tests to hold (the file's and the held ones of those functions).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_tests<S: Store + ?Sized>(
+    store: &S,
+    overlay: &Overlay,
+    tests: &[(usize, TestSpec)],
+    formulas: &[(usize, String, String)],
+    host: &str,
+    now: &str,
+    checked: bool,
+) -> Result<Vec<RowWrite>, PublishError> {
+    if formulas.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut file_tests: Vec<(usize, TestSpec, String)> = Vec::new();
+    for (n, spec) in tests {
+        let at = spec.asof.clone().unwrap_or_else(|| now.to_string());
+        match testrun::binding_of(store, overlay, &spec.function, &at) {
+            Ok(Some((hash, _))) => file_tests.push((*n, spec.clone(), hash)),
+            Ok(None) => {
+                return Err(PublishError::at(
+                    *n,
+                    format!("a test of {}: no function of that name is bound", spec.function),
+                ))
+            }
+            Err(e) => return Err(PublishError::at(*n, e)),
+        }
+    }
+    let mut rows = Vec::new();
+    for (line, name, hash) in formulas {
+        let own: Vec<(usize, TestSpec)> =
+            file_tests.iter().filter(|t| &t.2 == hash).map(|t| (t.0, t.1.clone())).collect();
+        let held = testrun::held_tests(store, hash).map_err(|e| PublishError::at(*line, e))?;
+        if !checked && own.is_empty() && held.is_empty() {
+            continue;
+        }
+        let mut specs: Vec<(Option<usize>, TestSpec)> = own.into_iter().map(|(n, s)| (Some(n), s)).collect();
+        for (_, spec) in held {
+            if !specs.iter().any(|(_, s)| s.case == spec.case) {
+                specs.push((None, spec));
+            }
+        }
+        let ran: Vec<Ran> = specs.iter().map(|(_, s)| run_test(store, overlay, now, s)).collect();
+        let mut run = testrun::Run::new(store, overlay, now);
+        let built = run.built(name, hash).map_err(|e| PublishError::at(*line, format!("{name}: {}", e.0)))?;
+        let Some(compiled) = built.compiled.as_ref() else { continue };
+        if checked {
+            let mut failing: Vec<(usize, String)> = Vec::new();
+            for ((n, spec), r) in specs.iter().zip(&ran) {
+                if let Some(n) = n {
+                    let (result, detail) = testrun::result_of(spec, r);
+                    if result != "pass" {
+                        failing.push((*n, format!("{name}: test {} {detail}", spec.case)));
+                    }
+                }
+            }
+            failing.sort_by_key(|f| f.0);
+            if let Some((n, detail)) = failing.into_iter().next() {
+                return Err(PublishError::typed(n, PublishErrorKind::TestsFailing(detail)));
+            }
+            let refs: Vec<&Ran> = ran.iter().collect();
+            let cov = testrun::coverage_of(compiled, &built.function.signature, &refs);
+            if !cov.uncovered.is_empty() || !cov.unexercised.is_empty() {
+                let mut text = format!("{name} is missing tests:");
+                if !cov.uncovered.is_empty() {
+                    let cases: Vec<&str> = cov.uncovered.iter().map(|c| c.0.as_str()).collect();
+                    text += &format!(" uncovered cases {};", cases.join(", "));
+                }
+                if !cov.unexercised.is_empty() {
+                    text += &format!(" unexercised branches {}", cov.unexercised.join(", "));
+                }
+                return Err(PublishError::typed(
+                    *line,
+                    PublishErrorKind::TestsMissing(text.trim_end_matches(';').to_string()),
+                ));
+            }
+        }
+        let refs: Vec<&Ran> = ran.iter().collect();
+        let cov = testrun::coverage_of(compiled, &built.function.signature, &refs);
+        for ((_, spec), r) in specs.iter().zip(&ran) {
+            let (result, detail) = testrun::result_of(spec, r);
+            rows.push(RowWrite {
+                fn_hash: hash.clone(),
+                case: spec.case.clone(),
+                jcs: spec.jcs.clone(),
+                signed_by: host.to_string(),
+                result,
+                detail,
+                branches_total: cov.branches,
+                branches_covered: cov.covered,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// As [`publish_stored_lanes`], with the public rule (see [`publish_stored_checked`]): the path of
+/// `datumesh-mesh publish-stored` (D8).
+pub fn publish_stored_checked_lanes<S: Store + Sync + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    path: &Path,
+    opts: &PublishOptions,
+) -> Result<Published, PublishError> {
+    let lanes = publish_lanes()?;
+    publish_planned(store, key, host, owned, path, opts, true, |s, ops| {
         write(s, ops, |s, g, out| write_cells(s, g, lanes, out))
     })
 }
 
 /// The first pass (the planner) and the second pass (`write_ops`) of a publish.
+#[allow(clippy::too_many_arguments)]
 fn publish_planned<S: Store + ?Sized>(
     store: &S,
     key: &SigningKey,
@@ -1362,6 +1539,7 @@ fn publish_planned<S: Store + ?Sized>(
     owned: &[String],
     path: &Path,
     opts: &PublishOptions,
+    checked: bool,
     write_ops: impl FnOnce(&S, &[Op]) -> Result<(Published, Written), PublishError>,
 ) -> Result<Published, PublishError> {
     let lines = read_lines(path)?;
@@ -1392,14 +1570,28 @@ fn publish_planned<S: Store + ?Sized>(
         reads: Reads::default(),
         ops: Vec::new(),
         binds: Vec::new(),
+        tests: Vec::new(),
+        formulas: Vec::new(),
     };
     planner.run(&lines)?;
-    let Planner { ops, binds, .. } = planner;
+    let Planner { ops, binds, tests, formulas, .. } = planner;
     if opts.backfill.is_some() {
         backfill_check(store, &binds)?;
     }
+    // The tests of the file's computed functions, run over the store and the file's own writes:
+    // refused before anything is written (Build 2 Part 3, D8).
+    let rows = check_tests(store, &overlay_of(&ops)?, &tests, &formulas, host, &now, checked)?;
     let (out, written) = write_ops(store, &ops)?;
     index_cell_values(store, &ops).map_err(|e| PublishError::at(0, format!("catalogue: {e}")))?;
+    testrun::apply_rows(store, &rows, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
+    let rebound: Vec<String> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Function { name, bind: true, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    testrun::rerun_readers(store, &rebound, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

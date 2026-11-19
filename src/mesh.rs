@@ -140,6 +140,11 @@ impl MeshBuilder {
         if self.formula {
             runtimes.push(Arc::new(FormulaRuntime::new(self.store.clone())));
         }
+        if self.config.test_cells {
+            crate::testrun::install_test_cases(&*self.store, &self.config.host)
+                .map_err(|e| BuildError::Config(ConfigError::new("DATUMESH_TEST_CELLS", e)))?;
+            runtimes.push(Arc::new(crate::testrun::TestCases { store: self.store.clone() }));
+        }
         for rt in runtimes {
             b = b.runtime(Arc::new(CrossMesh::new(rt, foreign.clone())));
         }
@@ -593,7 +598,7 @@ fn last_good_key(t: &Target) -> String {
 }
 
 /// The engine's error as an envelope code (the engine's table, "For the HTTP layer").
-fn engine_code(e: &EngineError) -> (bool, ErrorCode) {
+pub(crate) fn engine_code(e: &EngineError) -> (bool, ErrorCode) {
     match e {
         EngineError::Invalid(e) if envelope::is_request_code(e.code()) => (true, e.code()),
         EngineError::Invalid(e) if envelope::is_error_code(e.code()) => (false, e.code()),
@@ -744,7 +749,7 @@ impl Inner {
 
     /// The licence and payment rules for a target and principal: a refusal, and whether the
     /// answer depends on who asks.
-    fn policy(&self, target: &Target, principal: Option<&Principal>) -> (Option<Reply>, bool) {
+    pub(crate) fn policy(&self, target: &Target, principal: Option<&Principal>) -> (Option<Reply>, bool) {
         if self.config.policy.rules.is_empty() {
             return (None, false);
         }
@@ -895,6 +900,9 @@ impl Inner {
                     let cache =
                         if private { Cache::Private } else { Cache::Public(self.config.ttl.latest_max_age.as_secs()) };
                     envelope::answer_reply(&a, cache)
+                }
+                Err(EngineError::Cycle { path }) => {
+                    return self.cycle_reply(&path, Some(a), Some(&target.bound.fn_hash))
                 }
                 Err(e) => {
                     let (bad, code) = engine_code(&e);
@@ -1122,6 +1130,11 @@ impl Mesh {
         self.inner.describe(id)
     }
 
+    /// `POST /whatif` (5.9): the scenario answer to the request's body (see [`crate::scenario`]).
+    pub(crate) fn whatif(&self, body: &[u8], principal: Option<&Principal>) -> Reply {
+        self.inner.whatif(body, principal)
+    }
+
     /// Verifies a receipt (SPEC 10.1) with the mesh's keys; at level `recomputed` with the
     /// engine as the resolver unless `signed_only`; `blob` is content for step 7.7.
     pub fn verify(&self, receipt: &[u8], signed_only: bool, blob: Option<&[u8]>) -> Verified {
@@ -1197,6 +1210,7 @@ impl Mesh {
             ("receipt", format!("{o}/receipt/{{hash}}")),
             ("slice", format!("{o}/slice/{{cell}}")),
             ("verify", format!("{o}/verify")),
+            ("whatif", format!("{o}/whatif")),
             ("versions", format!("{o}/versions/{{cell}}")),
         ]
         .into_iter()

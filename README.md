@@ -89,6 +89,7 @@ It prints `200` and the `ok` envelope with the publisher's receipt (`"trust":"pr
 | `GET /.well-known/datumesh-mesh.json` | the mesh document (SPEC 9.6) |
 | `GET /bindings?name=<name>&asof=` | SPEC 9.7, for names under the hosts the mesh owns (a class name answers `class_hash`, since 0.2.2) |
 | `GET /describe/<id>` | since 0.2.2, SPEC 16.8: `{id}` is a class name (`describe-class`), an object's key encoding, an object id, a cell id or a short id (`describe-object`); a class hash is none of them (404); a short id naming more than one object or cell is `bad_request` `E_SHORT_ID_AMBIGUOUS` (400); the objects the mesh knows are those of a bound class with a recorded cell of any of its methods, stored or computed (since 0.3.0, CONTRACT-1.8b H4; at most 1,000,000 cells per method, read from the store; nothing is evaluated) |
+| `POST /whatif` | since 0.4.0, spec-0.6.0 5.9: the body `{"cell", "asof"?, "overrides", "solve"?}` (value overrides `{cell, value}`, slice overrides `{slice, add, remove}`, at most 64; `solve` with `vary`, `target`, `equals`, `lo`, `hi`): a scenario `{asof, cell, overrides, type, value[, solved]}` with no receipt, never stored and never a fact; `bad_request` codes as 5.9 (`E_CANON_TYPE`, `E_SLICE_MEMBER`, `E_CANON_ARG_DUPLICATE`, `E_CANON_LIMIT`, `E_SCHEMA`, ...); `not_covered` (404) with the fault, or `E_WHATIF_NO_SOLUTION` |
 | `GET /versions/<uri>` | SPEC 9.8: a cell's versions `{"cell", "versions": [{"tx", "asof", "receipt"}], "next"}`, oldest first, 1,000 a page (`from=`, `to=` instants) |
 | `GET /health`, `/metrics`, `/openapi.json` | the store's health; Prometheus text; the OpenAPI document (generated from the handlers, utoipa) |
 
@@ -118,6 +119,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_BUDGET_MS` | 1000 | the budget before `pending` |
 | `DATUMESH_POOL_SIZE` | 32 | the blocking pool, the concurrency limit, and the store's connections |
 | `DATUMESH_BATCH_MAX`, `DATUMESH_SLICE_PAGE`, `DATUMESH_SLICE_MAX`, `DATUMESH_EXPLAIN_DEPTH`, `DATUMESH_MAX_JOBS` | 1000, 1000, 1048576, 4, 10000 | bounds |
+| `DATUMESH_TEST_CELLS` | off | since 0.4.0, mesh-test only: each held function test is a computed cell `<host>/test_case(function_hash, case) -> boolean`, signed by the mesh (production names none) |
 | `DATUMESH_RATE_LIMITS`, `DATUMESH_RATE_PER_IP`, `DATUMESH_RATE_IP_BURST`, `DATUMESH_RATE_PER_KEY`, `DATUMESH_RATE_VERIFY_PER_IP` | on, 60, 120, 600, 60 | rate limits, per minute |
 | `DATUMESH_TRUST_PROXY` | off | the client IP from the last `X-Forwarded-For` entry (behind Caddy) |
 | `DATUMESH_CROSS_MESH`, `DATUMESH_CROSS_MESH_HOSTS`, `DATUMESH_PEER_TIMEOUT_MS`, `DATUMESH_PEERS` | on, every host, 10000, none | cross-mesh resolution; the hosts it may fetch from (comma-separated: others are `not_covered`); its time limit; `host=origin` pairs overriding `https://<host>` (tests, private networks) |

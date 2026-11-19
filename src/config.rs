@@ -198,6 +198,9 @@ pub struct Config {
     pub pool_size: usize,
     /// The most cells in one `POST /cells` (default 1,000).
     pub batch_max: usize,
+    /// Whether each held test is a computed cell `<host>/test_case(function_hash, case)` (E5:
+    /// `DATUMESH_TEST_CELLS=1`, mesh-test). Off on production: no test cells until named.
+    pub test_cells: bool,
     /// The default JSON page of `GET /slice` (default 1,000; at most 10,000 with `limit=`).
     pub slice_page: usize,
     /// The most members one slice read serves (default 1,048,576).
@@ -247,6 +250,7 @@ impl Config {
             budget: DEFAULT_BUDGET,
             pool_size: DEFAULT_POOL_SIZE,
             batch_max: DEFAULT_BATCH_MAX,
+            test_cells: false,
             slice_page: DEFAULT_SLICE_PAGE,
             slice_max: MAX_SLICE_MEMBERS,
             explain_depth: 4,
@@ -319,6 +323,7 @@ impl Config {
         c.budget = ms("DATUMESH_BUDGET_MS", c.budget)?;
         c.pool_size = num("DATUMESH_POOL_SIZE", c.pool_size)?;
         c.batch_max = num("DATUMESH_BATCH_MAX", c.batch_max)?;
+        c.test_cells = flag("DATUMESH_TEST_CELLS", c.test_cells)?;
         c.slice_page = num("DATUMESH_SLICE_PAGE", c.slice_page)?;
         c.slice_max = num("DATUMESH_SLICE_MAX", c.slice_max)?;
         c.explain_depth = num("DATUMESH_EXPLAIN_DEPTH", c.explain_depth)?;

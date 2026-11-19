@@ -20,9 +20,9 @@
 //! * nothing is written (the store file is byte-identical), and a scenario is never served at
 //!   `/cell` afterwards.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
@@ -43,14 +43,17 @@ fn reading(c: &Calc, m: &Served, site: &str) -> Value {
 }
 
 fn call(c: &Calc, f: &str, args: &str) -> String {
-    format!("{}({args})", match f {
-        "double" => &c.double,
-        "inverse" => &c.inverse,
-        "square" => &c.square,
-        "all_sum" => &c.all_sum,
-        "reading" => &c.reading,
-        _ => panic!(),
-    })
+    format!(
+        "{}({args})",
+        match f {
+            "double" => &c.double,
+            "inverse" => &c.inverse,
+            "square" => &c.square,
+            "all_sum" => &c.all_sum,
+            "reading" => &c.reading,
+            _ => panic!(),
+        }
+    )
 }
 
 fn body(cell: &str, overrides: Value) -> Value {
@@ -71,13 +74,16 @@ async fn the_mesh_document_lists_the_whatif_endpoint() {
     // core 0.3.9 reads it
     let kd = m.raw("/.well-known/datumesh.json").await;
     let mdb = m.raw("/.well-known/datumesh-mesh.json").await;
-    let resolved = core039::resolve_mesh(
+    let resolved = datumesh_core::resolve_mesh(
         HOST,
-        core039::Retrieval::Response { status: 200, body: Some(&kd.1) },
-        core039::Retrieval::Response { status: 200, body: Some(&mdb.1) },
+        datumesh_core::Retrieval::Response { status: 200, body: Some(&kd.1) },
+        datumesh_core::Retrieval::Response { status: 200, body: Some(&mdb.1) },
     )
     .unwrap();
-    assert_eq!(resolved.mesh.endpoints.get("whatif").map(String::as_str), Some(format!("https://{HOST}/whatif").as_str()));
+    assert_eq!(
+        resolved.mesh.endpoints.get("whatif").map(String::as_str),
+        Some(format!("https://{HOST}/whatif").as_str())
+    );
 }
 
 // ---- value overrides --------------------------------------------------------------------------
@@ -151,18 +157,21 @@ async fn slice_overrides_add_and_remove_members() {
     let slice_text = format!("{}(site: *)", c.reading);
     let mk = |add: &[(Value, &str)], remove: &[Value]| {
         let ov = Value::Array(vec![canonical_slice_override(&slice, add, remove)]);
-        let b = body(&call(&c, "all_sum", "scale: 1"), json!([{
-            "slice": slice_text,
-            "add": add.iter().map(|(cell, v)| json!({"cell": format!("{}(site: \"{}\")", c.reading, cell["args"]["site"]["value"].as_str().unwrap()), "value": n(v)})).collect::<Vec<_>>(),
-            "remove": remove.iter().map(|cell| json!(format!("{}(site: \"{}\")", c.reading, cell["args"]["site"]["value"].as_str().unwrap()))).collect::<Vec<_>>(),
-        }]));
+        let b = body(
+            &call(&c, "all_sum", "scale: 1"),
+            json!([{
+                "slice": slice_text,
+                "add": add.iter().map(|(cell, v)| json!({"cell": format!("{}(site: \"{}\")", c.reading, cell["args"]["site"]["value"].as_str().unwrap()), "value": n(v)})).collect::<Vec<_>>(),
+                "remove": remove.iter().map(|cell| json!(format!("{}(site: \"{}\")", c.reading, cell["args"]["site"]["value"].as_str().unwrap()))).collect::<Vec<_>>(),
+            }]),
+        );
         (b, ov)
     };
     // baseline: 10 + 30
-    let r = m.whatif(&body(&call(&c, "all_sum", "scale: 1"), json!([])) ).await;
+    let r = m.whatif(&body(&call(&c, "all_sum", "scale: 1"), json!([]))).await;
     assert_eq!(r.json["outcome"], "bad_request", "empty overrides need solve: {}", r.json);
     // remove N
-    let (b, ov) = mk(&[], &[n_cell.clone()]);
+    let (b, ov) = mk(&[], std::slice::from_ref(&n_cell));
     let r = m.whatif(&b).await;
     assert_eq!(scenario_value(&r), "30", "{}", String::from_utf8_lossy(&r.body));
     check_scenario(&r, &cell, None, &ov, None);
@@ -204,7 +213,12 @@ async fn slice_member_errors() {
     ];
     for (what, ov) in cases {
         let r = m.whatif(&body(&cell, ov)).await;
-        assert_eq!((r.status, r.json["outcome"].as_str(), r.json["error"].as_str()), (400, Some("bad_request"), Some("E_SLICE_MEMBER")), "{what}: {}", r.json);
+        assert_eq!(
+            (r.status, r.json["outcome"].as_str(), r.json["error"].as_str()),
+            (400, Some("bad_request"), Some("E_SLICE_MEMBER")),
+            "{what}: {}",
+            r.json
+        );
     }
 }
 
@@ -265,13 +279,18 @@ async fn solve_without_a_root_is_not_covered_no_solution() {
     let target = call(&c, "double", "site: \"N\"");
     // double(N) lies in [0, 200] for reading(N) in [0, 100]: 1000 is out of reach
     let r = m.whatif(&solve_body(&c, &target, "1000", "0", "100")).await;
-    assert_eq!((r.status, r.json["outcome"].as_str(), r.json["fault"].as_str()), (404, Some("not_covered"), Some("E_WHATIF_NO_SOLUTION")), "{}", r.json);
+    assert_eq!(
+        (r.status, r.json["outcome"].as_str(), r.json["fault"].as_str()),
+        (404, Some("not_covered"), Some("E_WHATIF_NO_SOLUTION")),
+        "{}",
+        r.json
+    );
     let vary_id = core_id(&reading(&c, &m, "N"));
     let a = check_scenario_not_covered(&r, &dbl(&c, &m), &vary_id);
     assert_eq!(a.fault.map(|f| f.as_str().to_string()), Some("E_WHATIF_NO_SOLUTION".into()));
 }
 
-fn check_scenario_not_covered(r: &Reply, cell: &Value, vary_id: &str) -> core039::Answer {
+fn check_scenario_not_covered(r: &Reply, cell: &Value, vary_id: &str) -> datumesh_core::Answer {
     check_scenario(r, cell, None, &json!([]), Some(vary_id))
 }
 
@@ -284,11 +303,18 @@ async fn bad_requests_have_their_codes() {
     let target = call(&c, "double", "site: \"N\"");
     let q = |site: &str| format!("{}(site: \"{site}\")", c.reading);
     let ok_ov = json!([{"cell": q("N"), "value": n("1")}]);
-    let many: Vec<Value> =
-        (0..65).map(|i| json!({"cell": q(&format!("S{i:02}")), "value": n("1")})).collect();
+    let many: Vec<Value> = (0..65).map(|i| json!({"cell": q(&format!("S{i:02}")), "value": n("1")})).collect();
     let cases: Vec<(&str, Value, &str)> = vec![
-        ("a string for a number cell", body(&target, json!([{"cell": q("N"), "value": {"type": "string", "value": "x"}}])), "E_CANON_TYPE"),
-        ("a malformed number", body(&target, json!([{"cell": q("N"), "value": {"type": "number", "value": "01"}}])), "E_CANON_NUMBER"),
+        (
+            "a string for a number cell",
+            body(&target, json!([{"cell": q("N"), "value": {"type": "string", "value": "x"}}])),
+            "E_CANON_TYPE",
+        ),
+        (
+            "a malformed number",
+            body(&target, json!([{"cell": q("N"), "value": {"type": "number", "value": "01"}}])),
+            "E_CANON_NUMBER",
+        ),
         (
             "two overrides of one cell",
             body(&target, json!([{"cell": q("N"), "value": n("1")}, {"cell": q("N"), "value": n("2")}])),
@@ -301,7 +327,11 @@ async fn bad_requests_have_their_codes() {
         ("an unknown member", json!({"cell": target, "overrides": ok_ov, "extra": 1}), "E_SCHEMA"),
         ("a bad asof", json!({"cell": target, "overrides": ok_ov, "asof": "yesterday"}), "E_CANON_INSTANT"),
         ("a cell that is not a call", body("not a call", ok_ov.clone()), "E_PARSE_URI"),
-        ("an override cell that is not a call", body(&target, json!([{"cell": "(((", "value": n("1")}])), "E_PARSE_URI"),
+        (
+            "an override cell that is not a call",
+            body(&target, json!([{"cell": "(((", "value": n("1")}])),
+            "E_PARSE_URI",
+        ),
         (
             "an unknown argument in the cell",
             body(&format!("{}(site: \"N\", nope: 1)", c.double), ok_ov.clone()),
@@ -331,7 +361,10 @@ async fn bad_requests_have_their_codes() {
     check_scenario(&r, &dbl(&c, &m), None, &ov, None);
     // not JSON; not a POST
     let r = m.post_raw("/whatif", b"{not json".to_vec()).await;
-    assert_eq!((r.status, r.json["outcome"].as_str(), r.json["error"].as_str()), (400, Some("bad_request"), Some("E_PARSE_JSON")));
+    assert_eq!(
+        (r.status, r.json["outcome"].as_str(), r.json["error"].as_str()),
+        (400, Some("bad_request"), Some("E_PARSE_JSON"))
+    );
     let r = m.post_raw("/whatif", br#"{"cell": "x", "cell": "y", "overrides": []}"#.to_vec()).await;
     assert_eq!((r.status, r.json["error"].as_str()), (400, Some("E_PARSE_DUPLICATE_KEY")));
     assert_eq!(m.get_any("/whatif").await.status, 405);
@@ -348,9 +381,15 @@ async fn an_unbound_name_and_a_fault_in_scope_are_not_covered() {
     // 1 / reading with reading overridden to 0: a fault of the scenario, as for a get
     let zero = canonical_overrides(&[(reading(&c, &m, "N"), "0")]);
     let r = m.whatif(&body(&call(&c, "inverse", "site: \"N\""), zero.clone())).await;
-    assert_eq!((r.status, r.json["outcome"].as_str(), r.json["fault"].as_str()), (404, Some("not_covered"), Some("E_FORMULA_DIV_ZERO")), "{}", r.json);
+    assert_eq!(
+        (r.status, r.json["outcome"].as_str(), r.json["fault"].as_str()),
+        (404, Some("not_covered"), Some("E_FORMULA_DIV_ZERO")),
+        "{}",
+        r.json
+    );
     // the same cell without the override is an ordinary value
-    let r = m.whatif(&body(&call(&c, "inverse", "site: \"N\""), canonical_overrides(&[(reading(&c, &m, "N"), "4")]))).await;
+    let r =
+        m.whatif(&body(&call(&c, "inverse", "site: \"N\""), canonical_overrides(&[(reading(&c, &m, "N"), "4")]))).await;
     assert_eq!(scenario_value(&r), "0.25");
 }
 

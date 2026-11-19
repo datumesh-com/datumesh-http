@@ -77,7 +77,8 @@ const DOC_0_3_0: &str = concat!(
     r#""receipt":"https://mesh-a.example/receipt/{hash}","#,
     r#""slice":"https://mesh-a.example/slice/{cell}","#,
     r#""verify":"https://mesh-a.example/verify","#,
-    r#""versions":"https://mesh-a.example/versions/{cell}"},"#,
+    r#""versions":"https://mesh-a.example/versions/{cell}","#,
+    r#""whatif":"https://mesh-a.example/whatif"},"#,
     r#""host":"mesh-a.example","proto":"datumesh/1"}"#
 );
 

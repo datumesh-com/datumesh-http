@@ -199,6 +199,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         mesh_document,
         bindings,
         describe,
+        whatif,
         health,
         metrics,
         openapi_json
@@ -1309,6 +1310,37 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
 /// describe (SPEC 16.8): a class or an object, by class name, key encoding, object id, cell id or
 /// short id (`{id}`, percent-encoded as a path). A class's method table gives each method its
 /// `description` from the catalog entry `{class}/{method}` when that is 1 to 1,024 bytes.
+/// `POST /whatif` (spec-0.6.0, 5.9): the scenario of a cell under overrides, labelled a scenario,
+/// never a fact.
+#[utoipa::path(post, path = "/whatif",
+    request_body(content = String, description = "The JSON of 5.9: `cell`, `asof`?, `overrides`, `solve`?", content_type = "application/json"),
+    responses(
+        (status = 200, description = "`scenario`: `{asof, cell, overrides, type, value[, solved]}`, no receipt", content_type = "application/json"),
+        (status = 400, description = "`bad_request`", content_type = "application/json"),
+        (status = 404, description = "`not_covered`, with `fault` when the scenario faulted or has no solution", content_type = "application/json"),
+        (status = 500, description = "`error`", content_type = "application/json"),
+    ))]
+async fn whatif(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Response {
+    let inner = mesh.inner.clone();
+    let peer = peer_of(&req);
+    let (client, principal) = match who(&inner, &headers, peer) {
+        Ok(x) => x,
+        Err(r) => return to_response(r),
+    };
+    if let Err(r) = admit(&inner, &client, 1) {
+        return to_response(r);
+    }
+    let body = match axum::body::to_bytes(req.into_body(), 1 << 20).await {
+        Ok(b) => b,
+        Err(_) => return to_response(envelope::bad_request_reply(ErrorCode::CanonLimit)),
+    };
+    let mesh2 = mesh.clone();
+    match inner.pool.clone().run(move || mesh2.whatif(&body, principal.as_ref())).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 #[utoipa::path(get, path = "/describe/{id}",
     params(("id" = String, Path, description = "A class name, an object's key encoding, an object id, a cell id or a short id (12 hex digits).")),
     responses((status = 200, description = "A describe-class or describe-object document (SPEC 16.8)", content_type = "application/json"), (status = 400, description = "`E_KEY_ENCODING`, `E_KEY_NORMALISATION` or `E_SHORT_ID_AMBIGUOUS`", content_type = "application/json"), (status = 404, description = "An id the mesh does not know", content_type = "application/json")))]
@@ -1351,6 +1383,7 @@ impl Mesh {
             .route("/.well-known/datumesh-mesh.json", get(mesh_document))
             .route("/bindings", get(bindings))
             .route("/describe/{*id}", get(describe))
+            .route("/whatif", post(whatif))
             .route("/health", get(health))
             .route("/metrics", get(metrics))
             .route("/openapi.json", get(openapi_json))

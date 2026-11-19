@@ -41,6 +41,7 @@ pub datumesh_http::bundle::BundleError::NotOwned(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Receipt(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Stopped(usize)
 pub datumesh_http::bundle::BundleError::Store(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Tests(alloc::string::String)
 pub datumesh_http::bundle::BundleError::TxInFuture
 pub datumesh_http::bundle::BundleError::TxInFuture::now: alloc::string::String
 pub datumesh_http::bundle::BundleError::TxInFuture::receipt: alloc::string::String
@@ -74,6 +75,7 @@ pub fn datumesh_http::bundle::Imported::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::marker::StructuralPartialEq for datumesh_http::bundle::Imported
 pub fn datumesh_http::bundle::build(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::build_with_catalog(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
+pub fn datumesh_http::bundle::build_with_tests(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::import_signed<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &[alloc::string::String], &dyn datumesh_engine::clock::Clock, &[u8]) -> core::result::Result<datumesh_http::bundle::Imported, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::manifest_bytes(&str, &[(alloc::string::String, alloc::string::String)], &[alloc::string::String]) -> alloc::vec::Vec<u8>
 pub mod datumesh_http::call
@@ -296,6 +298,7 @@ pub datumesh_http::config::Config::pool_size: usize
 pub datumesh_http::config::Config::rate: datumesh_http::config::RateLimits
 pub datumesh_http::config::Config::slice_max: usize
 pub datumesh_http::config::Config::slice_page: usize
+pub datumesh_http::config::Config::test_cells: bool
 pub datumesh_http::config::Config::trust_proxy: bool
 pub datumesh_http::config::Config::ttl: datumesh_http::config::Ttls
 impl datumesh_http::config::Config
@@ -566,6 +569,8 @@ pub datumesh_http::publish::PublishErrorKind::StartBeforeNow
 pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::name: alloc::string::String
 pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::now: alloc::string::String
 pub datumesh_http::publish::PublishErrorKind::StartBeforeNow::start: alloc::string::String
+pub datumesh_http::publish::PublishErrorKind::TestsFailing(alloc::string::String)
+pub datumesh_http::publish::PublishErrorKind::TestsMissing(alloc::string::String)
 impl core::clone::Clone for datumesh_http::publish::PublishErrorKind
 pub fn datumesh_http::publish::PublishErrorKind::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_http::publish::PublishErrorKind
@@ -618,6 +623,8 @@ impl core::fmt::Debug for datumesh_http::publish::Published
 pub fn datumesh_http::publish::Published::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for datumesh_http::publish::Published
 pub fn datumesh_http::publish::publish_stored<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_checked<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
+pub fn datumesh_http::publish::publish_stored_checked_lanes<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::publish_stored_in<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::publish_stored_lanes<S: datumesh_store::Store + core::marker::Sync + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
 pub fn datumesh_http::publish::publish_stored_with<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &[alloc::string::String], &std::path::Path, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError>
@@ -658,6 +665,7 @@ pub datumesh_http::Config::pool_size: usize
 pub datumesh_http::Config::rate: datumesh_http::config::RateLimits
 pub datumesh_http::Config::slice_max: usize
 pub datumesh_http::Config::slice_page: usize
+pub datumesh_http::Config::test_cells: bool
 pub datumesh_http::Config::trust_proxy: bool
 pub datumesh_http::Config::ttl: datumesh_http::config::Ttls
 impl datumesh_http::config::Config

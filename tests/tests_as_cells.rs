@@ -15,9 +15,9 @@
 //!   when it does not. Production (no variable) has no such cells (`not_covered`, the name is
 //!   unbound), and still counts the tests in `describe`.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use std::collections::BTreeMap;
 
@@ -25,6 +25,7 @@ use calculus::*;
 use common::lite::*;
 use common::readpath::*;
 use common::world::call_path;
+use serde_json::json;
 
 fn lines(c: &Calc) -> Vec<String> {
     let mut v = data_lines(c);
@@ -46,14 +47,16 @@ async fn describe_counts_the_tests_of_a_function() {
     let (r, hash) = (m.get_any(&describe_path(&c.per_unit)).await, fn_hash(&m, &c.per_unit));
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     let d = &r.json;
-    assert_eq!((d["kind"].as_str(), d["fn"].as_str(), d["fn_hash"].as_str()), (Some("function"), Some(c.per_unit.as_str()), Some(hash.as_str())), "{d}");
+    assert_eq!(
+        (d["kind"].as_str(), d["fn"].as_str(), d["fn_hash"].as_str()),
+        (Some("function"), Some(c.per_unit.as_str()), Some(hash.as_str())),
+        "{d}"
+    );
     assert_eq!(d["tests"], serde_json::json!({"count": 6, "branches": 2, "covered": 2, "counterexamples": 0}), "{d}");
     // core 0.3.9 checks the shape, and the args and returns against the descriptor it holds
-    let held = core039::FunctionDescriptor::from_json(
-        &m.get_any(&format!("/descriptor/{hash}")).await.body,
-    )
-    .unwrap();
-    let got = core039::check_describe_with(&r.body, &BTreeMap::new(), &[held]).unwrap_or_else(|e| panic!("{e}"));
+    let held =
+        datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{hash}")).await.body).unwrap();
+    let got = datumesh_core::check_describe_with(&r.body, &BTreeMap::new(), &[held]).unwrap_or_else(|e| panic!("{e}"));
     let t = got.tests.expect("tests");
     assert_eq!((t.count, t.branches, t.covered, t.counterexamples), (6, 2, 2, 0));
     assert_eq!(got.function.as_deref(), Some(c.per_unit.as_str()));
@@ -95,14 +98,16 @@ async fn on_mesh_test_each_test_is_a_cell() {
     for t in per_unit_tests(&c) {
         let v = m.get(&test_cell_path(&m, &c, &t)).await;
         assert_eq!(v["outcome"], "ok", "{t}: {v}");
-        assert_eq!((v["receipt"]["type"].as_str(), v["receipt"]["value"].as_str()), (Some("boolean"), Some("true")), "{v}");
+        assert_eq!((v["receipt"]["type"].as_str(), &v["receipt"]["value"]), (Some("boolean"), &json!(true)), "{v}");
         assert_eq!(v["trust"], "computed", "{v}");
         assert!(v["receipt"]["computed_by"].as_str().unwrap().starts_with(&format!("{HOST}#")), "{v}");
         assert_eq!(v["receipt"]["cell"]["fn"], "test_case");
         assert_eq!(v["receipt"]["cell"]["ns"], HOST);
     }
     // the cell of a case that no test of the function has is not a value
-    let v = m.get_any(&format!("/cell/{}", call_path(&test_case_call(&fn_hash(&m, &c.per_unit), "0000000000000000")))).await;
+    let v = m
+        .get_any(&format!("/cell/{}", call_path(&test_case_call(&fn_hash(&m, &c.per_unit), "0000000000000000"))))
+        .await;
     assert_ne!(v.json["outcome"], "ok", "{}", v.json);
     assert!((400..600).contains(&v.status), "{}", v.status);
 }
@@ -117,7 +122,7 @@ async fn a_failing_test_is_a_false_cell() {
     v.push(wrong.clone());
     let m = serve_lite("tac-false", &v, Some(test_cells_config()), |_| {}).await;
     let cell = m.get(&test_cell_path(&m, &c, &wrong)).await;
-    assert_eq!((cell["outcome"].as_str(), cell["receipt"]["value"].as_str()), (Some("ok"), Some("false")), "{cell}");
+    assert_eq!((cell["outcome"].as_str(), &cell["receipt"]["value"]), (Some("ok"), &json!(false)), "{cell}");
 }
 
 /// Production names no test cells: not covered; the tests are still counted by describe.

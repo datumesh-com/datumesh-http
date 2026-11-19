@@ -11,9 +11,9 @@
 //! runs (the rerun is done by every write path that rebinds a name, the local one included, and is
 //! done before the publish returns).
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
@@ -45,12 +45,8 @@ async fn counterexamples(m: &Served, name: &str) -> (u64, u64) {
 async fn a_rebind_reruns_the_tests_of_its_dependants_and_shows_the_failures() {
     let c = calc();
     // run 1: all well; run 2: the rebind
-    let m = serve_runs(
-        "rr-1",
-        &[(NOW, run1(&c)), (T1, vec![per_unit_v2_line(&c, None)])],
-        Some(test_cells_config()),
-    )
-    .await;
+    let m =
+        serve_runs("rr-1", &[(NOW, run1(&c)), (T1, vec![per_unit_v2_line(&c, None)])], Some(test_cells_config())).await;
 
     // the rebind took effect: it is not blocked by the dependants' failures
     let v = m.get(&format!("/cell/{}?site=N&units=2", c.per_unit)).await;
@@ -65,8 +61,8 @@ async fn a_rebind_reruns_the_tests_of_its_dependants_and_shows_the_failures() {
         let hash = fn_hash(&m, f);
         let n_case = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(&tests[0]))))).await;
         let absent = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(&tests[1]))))).await;
-        assert_eq!(n_case["receipt"]["value"], "false", "{f}: {n_case}");
-        assert_eq!(absent["receipt"]["value"], "true", "{f}: {absent}");
+        assert_eq!(n_case["receipt"]["value"], false, "{f}: {n_case}");
+        assert_eq!(absent["receipt"]["value"], true, "{f}: {absent}");
     }
 
     // run 3 rebinds per_unit back to the first body (the same function hash as run 1): the

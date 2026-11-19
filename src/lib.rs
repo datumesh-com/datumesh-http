@@ -159,7 +159,9 @@ mod mesh;
 mod metrics;
 mod pool;
 pub mod publish;
+mod scenario;
 pub mod slice;
+mod testrun;
 pub mod vectors;
 
 pub use config::Config;

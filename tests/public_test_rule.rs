@@ -27,9 +27,9 @@
 //! * either refusal writes nothing (the store file is byte-identical);
 //! * stored functions are exempt.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
@@ -184,7 +184,10 @@ fn an_unexercised_branch_is_refused_alone() {
         "E_TESTS_MISSING",
         &["unexercised branches"],
     );
-    assert!(!e.detail.contains("negative(x)") && !e.detail.contains("uncovered cases"), "the negative case is covered: {e}");
+    assert!(
+        !e.detail.contains("negative(x)") && !e.detail.contains("uncovered cases"),
+        "the negative case is covered: {e}"
+    );
     // and with no negative test but every arm: the negative case alone
     let only = vec![t[1].clone(), t[2].clone(), test_line(&c.band, &format!("{}(x: 0)", c.band), None, None, num("0"))];
     let e = refused("ptr-negative", &with_tests(&c, band_line(&c), only), FN_LINE, "E_TESTS_MISSING", &["negative(x)"]);
@@ -196,8 +199,20 @@ fn an_unexercised_branch_is_refused_alone() {
 fn extents_and_empty_slices_are_derived_cases() {
     let c = calc();
     let q = quarter_tests(&c);
-    refused("ptr-lo", &with_tests(&c, quarter_line(&c), vec![q[0].clone()]), FN_LINE, "E_TESTS_MISSING", &["extent_hi(d)"]);
-    refused("ptr-hi", &with_tests(&c, quarter_line(&c), vec![q[1].clone()]), FN_LINE, "E_TESTS_MISSING", &["extent_lo(d)"]);
+    refused(
+        "ptr-lo",
+        &with_tests(&c, quarter_line(&c), vec![q[0].clone()]),
+        FN_LINE,
+        "E_TESTS_MISSING",
+        &["extent_hi(d)"],
+    );
+    refused(
+        "ptr-hi",
+        &with_tests(&c, quarter_line(&c), vec![q[1].clone()]),
+        FN_LINE,
+        "E_TESTS_MISSING",
+        &["extent_lo(d)"],
+    );
     let a = avg_log_tests(&c);
     let e = refused(
         "ptr-empty",
@@ -265,7 +280,13 @@ fn a_failing_test_is_refused_with_its_case() {
     let mut t = per_unit_tests(&c);
     let wrong = test_line(&c.per_unit, &pu_call(&c, "ZZ", "2"), None, None, num("0"));
     t[3] = wrong.clone();
-    refused("ptr-fail-value", &with_tests(&c, per_unit_line(&c, None), t), FN_LINE + 4, "E_TESTS_FAILING", &[&case_id(&wrong)]);
+    refused(
+        "ptr-fail-value",
+        &with_tests(&c, per_unit_line(&c, None), t),
+        FN_LINE + 4,
+        "E_TESTS_FAILING",
+        &[&case_id(&wrong)],
+    );
 }
 
 /// A test with supplied inputs runs in a scope: its failure is a failure too, and the inputs
@@ -283,5 +304,11 @@ fn tests_with_inputs_run_in_a_scope() {
         num("5"),
     );
     t[4] = wrong.clone();
-    refused("ptr-fail-inputs", &with_tests(&c, per_unit_line(&c, None), t), FN_LINE + 5, "E_TESTS_FAILING", &[&case_id(&wrong)]);
+    refused(
+        "ptr-fail-inputs",
+        &with_tests(&c, per_unit_line(&c, None), t),
+        FN_LINE + 5,
+        "E_TESTS_FAILING",
+        &[&case_id(&wrong)],
+    );
 }

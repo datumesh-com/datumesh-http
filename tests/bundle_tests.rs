@@ -10,18 +10,18 @@
 //! `E_TESTS_FAILING`: `BundleError::Tests(String)` whose text names the code and lists as
 //! `public_test_rule.rs` says. A bundle of stored functions only is as before.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
-use common::seed_for;
-use datumesh_core::Resolver;
 use common::pub031::{run, write};
 use common::readpath::*;
+use common::seed_for;
 use datumesh_core::json::{self, Value};
 use datumesh_core::FunctionDescriptor;
+use datumesh_core::Resolver;
 use datumesh_http::bundle::{self, BundleError};
 use datumesh_store::Store;
 use serde_json::json;
@@ -48,10 +48,11 @@ fn tests(c: &Calc) -> Vec<String> {
 /// the fixture was published on, as a publisher's tooling would.
 fn parts(c: &Calc) -> (Vec<Vec<u8>>, Vec<(String, String)>) {
     let lite = Lite::new("bt-src");
-    let f = write(&lite, "f.jsonl", &[
-        common::pub031::function_line(&c.reading, &reading_sig(), None),
-        per_unit_line(c, None),
-    ]);
+    let f = write(
+        &lite,
+        "f.jsonl",
+        &[common::pub031::function_line(&c.reading, &reading_sig(), None), per_unit_line(c, None)],
+    );
     run(&lite, &f, NOW).unwrap();
     let mut descriptors = Vec::new();
     let mut names = Vec::new();
@@ -191,7 +192,14 @@ fn a_tampered_test_is_refused() {
                 })
             }),
         ),
-        ("a test removed", Box::new(|b| edit_tests(b, |a| { a.pop(); }))),
+        (
+            "a test removed",
+            Box::new(|b| {
+                edit_tests(b, |a| {
+                    a.pop();
+                })
+            }),
+        ),
         ("all tests removed", Box::new(|b| edit_tests(b, |a| a.clear()))),
         (
             "a test added",

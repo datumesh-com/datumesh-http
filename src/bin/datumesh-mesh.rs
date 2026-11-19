@@ -108,7 +108,7 @@ fn main() {
             let opts = datumesh_http::publish::PublishOptions { clock: Arc::new(SystemClock), backfill };
             let s = store(4);
             let t = std::time::Instant::now();
-            let p = datumesh_http::publish::publish_stored_lanes(&s, &key, &host, &owned, std::path::Path::new(file), &opts)
+            let p = datumesh_http::publish::publish_stored_checked_lanes(&s, &key, &host, &owned, std::path::Path::new(file), &opts)
                 .unwrap_or_else(|e| fail(e));
             println!(
                 "{{\"blob_bytes\":{},\"blobs\":{},\"cells\":{},\"classes\":{},\"descriptors\":{},\"functions\":{},\"receipts\":{},\"seconds\":{:.1},\"versions\":{}}}",

@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    lexical, parse_object_key, short_id, Arg, Cell, ClassDescriptor, ClassKey, ErrorCode, KeyValue, ObjectKey, Scalar,
-    Slice,
+    lexical, parse_object_key, short_id, Arg, Cell, ClassDescriptor, ClassKey, DescribeTests, ErrorCode,
+    FunctionAnswer, KeyValue, ObjectKey, Scalar, Slice,
 };
 
 use crate::call::{Bindings, BoundClass};
@@ -213,7 +213,21 @@ impl Inner {
         if lexical::check_function_name(id, "$").is_ok() {
             return match Bindings::class(self, id, &now) {
                 Ok(Some(c)) => self.class_answer(id, &c),
-                Ok(None) => not_found(),
+                Ok(None) => {
+                    // A method of a class is not a function the mesh describes (16.8): its name is
+                    // under the class's name.
+                    let method = id
+                        .rsplit_once('/')
+                        .is_some_and(|(ns, _)| matches!(Bindings::class(self, ns, &now), Ok(Some(_))));
+                    if method {
+                        return not_found();
+                    }
+                    match Bindings::binding(self, id, &now) {
+                        Ok(Some(f)) => self.function_answer(id, &f.fn_hash, &f.descriptor),
+                        Ok(None) => not_found(),
+                        Err(code) => envelope::error_reply(code),
+                    }
+                }
                 Err(code) => envelope::error_reply(code),
             };
         }
@@ -260,6 +274,21 @@ impl Inner {
     }
 
     /// The class answer (16.8): the flattened descriptor and the method table.
+    /// The function answer of spec 16.8 (`spec-0.6.0`): the function, and its `tests` (Build 2 Part 3,
+    /// E5): the tests held for its hash, their branch arms, the arms they take, and the failing ones.
+    fn function_answer(&self, name: &str, fn_hash: &str, d: &datumesh_core::FunctionDescriptor) -> Reply {
+        let Ok(answer) = FunctionAnswer::new(name, d) else {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        };
+        let counts = crate::testrun::counts(&*self.store, fn_hash);
+        let Ok((count, branches, covered, counterexamples)) = counts else {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        };
+        let tests = DescribeTests { count, branches, covered, counterexamples };
+        let Ok(answer) = answer.with_tests(tests) else { return envelope::error_reply(ErrorCode::InputUnavailable) };
+        Reply::json(200, answer.to_json(), Cache::NoStore)
+    }
+
     fn class_answer(&self, name: &str, c: &BoundClass) -> Reply {
         let Ok(descriptor) = json::parse(&c.descriptor.canonical()) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);

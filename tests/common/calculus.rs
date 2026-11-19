@@ -90,7 +90,8 @@ pub fn x_sig() -> String {
 }
 
 pub fn formula_line(name: &str, source: &str, signature: &str, bound: Option<&str>) -> String {
-    let mut v = json!({"formula": name, "source": source, "signature": serde_json::from_str::<Value>(signature).unwrap()});
+    let mut v =
+        json!({"formula": name, "source": source, "signature": serde_json::from_str::<Value>(signature).unwrap()});
     if let Some(b) = bound {
         v["bound"] = json!(b);
     }
@@ -339,13 +340,13 @@ pub fn slice_json(m: &Served, name: &str, args: &[(&str, &str, &str)], open: &[&
 }
 
 pub fn core_id(v: &Value) -> String {
-    let c = core039::json::parse(&serde_json::to_vec(v).unwrap()).unwrap();
-    core039::Cell::from_value(&c).unwrap().id()
+    let c = datumesh_core::json::parse(&serde_json::to_vec(v).unwrap()).unwrap();
+    datumesh_core::Cell::from_value(&c).unwrap().id()
 }
 
 pub fn core_slice_id(v: &Value) -> String {
-    let c = core039::json::parse(&serde_json::to_vec(v).unwrap()).unwrap();
-    core039::Slice::from_value(&c).unwrap().id().to_string()
+    let c = datumesh_core::json::parse(&serde_json::to_vec(v).unwrap()).unwrap();
+    datumesh_core::Slice::from_value(&c).unwrap().id().to_string()
 }
 
 /// The canonical request override array (5.9): value overrides `(cell, value)`, sorted by id.
@@ -416,12 +417,12 @@ pub fn check_scenario(
     asof: Option<&str>,
     overrides: &Value,
     solve: Option<&str>,
-) -> core039::Answer {
-    let req = core039::Request::new(&core_id(cell), asof)
+) -> datumesh_core::Answer {
+    let req = datumesh_core::Request::new(&core_id(cell), asof)
         .unwrap()
-        .with_whatif(&core039::json::parse(&serde_json::to_vec(overrides).unwrap()).unwrap(), solve)
+        .with_whatif(&datumesh_core::json::parse(&serde_json::to_vec(overrides).unwrap()).unwrap(), solve)
         .unwrap();
-    core039::check_answer(r.status, &r.body, &core039::Keys::new(), &req)
+    datumesh_core::check_answer(r.status, &r.body, &datumesh_core::Keys::new(), &req)
         .unwrap_or_else(|e| panic!("check_answer: {e}: {}", String::from_utf8_lossy(&r.body)))
 }
 
@@ -445,7 +446,7 @@ pub fn test_cells_config() -> datumesh_http::Config {
 /// `test_case(fn_hash: string, case: string)`, but 5.1 reserves `fn_hash` (E_CANON_ARG_NAME). The
 /// implementer settles the name with the contract's owner; this constant is the one place that
 /// follows.
-pub const HASH_ARG: &str = "fn_hash";
+pub const HASH_ARG: &str = "function_hash";
 
 /// The call of the test cell of `case` of the function with hash `fn_hash`.
 pub fn test_case_call(fn_hash: &str, case: &str) -> String {
@@ -453,7 +454,11 @@ pub fn test_case_call(fn_hash: &str, case: &str) -> String {
 }
 
 /// Publishes the fixture runs `(clock, lines)` in order on one store and serves it.
-pub async fn serve_runs(label: &str, runs: &[(&'static str, Vec<String>)], base: Option<datumesh_http::Config>) -> Served {
+pub async fn serve_runs(
+    label: &str,
+    runs: &[(&'static str, Vec<String>)],
+    base: Option<datumesh_http::Config>,
+) -> Served {
     let lite = Lite::new(label);
     for (i, (clock, lines)) in runs.iter().enumerate() {
         let f = write(&lite, &format!("run{i}.jsonl"), lines);

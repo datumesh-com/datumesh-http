@@ -409,6 +409,7 @@ async fn every_endpoint_and_outcome() {
         "/.well-known/datumesh.json",
         "/.well-known/datumesh-mesh.json",
         "/bindings",
+        "/whatif",
         "/health",
         "/metrics",
         "/openapi.json",

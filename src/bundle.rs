@@ -49,6 +49,9 @@ pub enum BundleError {
     Store(String),
     /// A test hook (`import_signed_with`'s `stop_after`): stopped after this many writes.
     Stopped(usize),
+    /// The public rule (Build 2 Part 3, D8): a computed function of the bundle is not covered by its
+    /// tests (`E_TESTS_MISSING`), or one of its tests fails (`E_TESTS_FAILING`). The text lists them.
+    Tests(String),
 }
 
 impl std::fmt::Display for BundleError {
@@ -65,6 +68,7 @@ impl std::fmt::Display for BundleError {
             BundleError::Bind(s) => write!(f, "binding: {s}"),
             BundleError::Store(s) => write!(f, "store: {s}"),
             BundleError::Stopped(n) => write!(f, "stopped after write {n}"),
+            BundleError::Tests(s) => write!(f, "tests: {s}"),
         }
     }
 }
@@ -130,7 +134,7 @@ fn name_value(name: &str, fn_hash: &str) -> Value {
 /// The bytes the manifest signs (CONTRACT-1.8b H2): the JCS object of the names (`(name, fn_hash)`,
 /// ascending by name), the namespace and the receipt hashes (ascending).
 pub fn manifest_bytes(namespace: &str, names: &[(String, String)], receipts: &[String]) -> Vec<u8> {
-    manifest_bytes_with(namespace, names, receipts, None)
+    manifest_bytes_with(namespace, names, receipts, None, None)
 }
 
 /// As [`manifest_bytes`], and the catalogue member when the bundle has one (R5): the manifest signs
@@ -140,6 +144,7 @@ fn manifest_bytes_with(
     names: &[(String, String)],
     receipts: &[String],
     catalog: Option<&Value>,
+    tests: Option<&Value>,
 ) -> Vec<u8> {
     let mut members = vec![
         ("names".into(), Value::Array(names.iter().map(|(n, h)| name_value(n, h)).collect())),
@@ -148,6 +153,9 @@ fn manifest_bytes_with(
     ];
     if let Some(c) = catalog {
         members.push(("catalog".into(), c.clone()));
+    }
+    if let Some(t) = tests {
+        members.push(("tests".into(), t.clone()));
     }
     Value::Object(members).to_jcs()
 }
@@ -174,6 +182,30 @@ pub fn build(
     build_with_catalog(namespace, descriptors, names, receipts, Vec::new(), seed)
 }
 
+/// As [`build_with_catalog`], with the bundle's tests (Build 2 Part 3, E5): `tests` are the test
+/// objects of `test` lines (each `{"test", "call", "asof"?, "inputs"?, "expect"}`), sorted by function
+/// name then by case id into the bundle's `tests` member, which the manifest signs. No tests make a
+/// bundle without the member. Errors: `Format` for a test that is not a test.
+pub fn build_with_tests(
+    namespace: &str,
+    descriptors: Vec<Vec<u8>>,
+    names: Vec<(String, String)>,
+    receipts: Vec<Vec<u8>>,
+    catalog: Vec<Vec<u8>>,
+    tests: Vec<Vec<u8>>,
+    seed: &[u8; 32],
+) -> Result<Vec<u8>, BundleError> {
+    let mut entries: Vec<(String, String, Value)> = Vec::new();
+    for t in tests {
+        let v = json::parse(&t).map_err(|e| BundleError::Format(format!("test: {e}")))?;
+        let spec = crate::testrun::parse_test(&v).map_err(|e| BundleError::Format(format!("test: {e}")))?;
+        entries.push((spec.function.clone(), spec.case.clone(), v));
+    }
+    entries.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+    let tests_value = (!entries.is_empty()).then(|| Value::Array(entries.into_iter().map(|(_, _, v)| v).collect()));
+    build_inner(namespace, descriptors, names, receipts, catalog, tests_value, seed)
+}
+
 /// As [`build`], with the publisher's catalogue (CONTRACT-build2-part2-read R5): `catalog` is a list
 /// of entries `{"name", "kind", "label", "description", "args", "examples", "dictionary"}` (each a
 /// JSON object), checked as a publish's catalogue lines are, and sorted by name into the bundle's
@@ -185,6 +217,18 @@ pub fn build_with_catalog(
     names: Vec<(String, String)>,
     receipts: Vec<Vec<u8>>,
     catalog: Vec<Vec<u8>>,
+    seed: &[u8; 32],
+) -> Result<Vec<u8>, BundleError> {
+    build_inner(namespace, descriptors, names, receipts, catalog, None, seed)
+}
+
+fn build_inner(
+    namespace: &str,
+    descriptors: Vec<Vec<u8>>,
+    names: Vec<(String, String)>,
+    receipts: Vec<Vec<u8>>,
+    catalog: Vec<Vec<u8>>,
+    tests: Option<Value>,
     seed: &[u8; 32],
 ) -> Result<Vec<u8>, BundleError> {
     let mut catalog_entries: Vec<(String, Value)> = Vec::new();
@@ -206,7 +250,7 @@ pub fn build_with_catalog(
     }
     signed.sort_by(|a, b| a.0.cmp(&b.0));
     let hashes: Vec<String> = signed.iter().map(|(h, _)| h.clone()).collect();
-    let sig = sign(seed, &manifest_bytes_with(namespace, &names, &hashes, catalog_value.as_ref()));
+    let sig = sign(seed, &manifest_bytes_with(namespace, &names, &hashes, catalog_value.as_ref(), tests.as_ref()));
     let key = SigningKey::from_seed(seed);
     let descriptors = descriptors
         .iter()
@@ -215,6 +259,9 @@ pub fn build_with_catalog(
     let mut members = vec![("bundle".into(), number(1))];
     if let Some(c) = catalog_value {
         members.push(("catalog".into(), c));
+    }
+    if let Some(t) = tests {
+        members.push(("tests".into(), t));
     }
     members.extend([
         ("descriptors".into(), Value::Array(descriptors)),
@@ -276,7 +323,8 @@ pub fn import_signed_with<S: Store + ?Sized>(
     let mut keys = member_names(&doc).ok_or_else(|| BundleError::Format("not an object".into()))?;
     keys.sort_unstable();
     let has_catalog = keys.contains(&"catalog");
-    keys.retain(|k| *k != "catalog");
+    let has_tests = keys.contains(&"tests");
+    keys.retain(|k| *k != "catalog" && *k != "tests");
     let mut want = MEMBERS;
     want.sort_unstable();
     if keys != want {
@@ -381,7 +429,15 @@ pub fn import_signed_with<S: Store + ?Sized>(
     let mut keys_set = Keys::new();
     keys_set.insert(kd.clone());
     let sig: [u8; 64] = unhex(&signature).try_into().map_err(|_| BundleError::Format("signature length".into()))?;
-    if !verify_ed25519(&key.public, &manifest_bytes_with(&namespace, &names, &hashes, catalog_doc.as_ref()), &sig) {
+    let tests_doc = if has_tests { doc.get("tests").cloned() } else { None };
+    if tests_doc.as_ref().is_some_and(|t| !matches!(t, Value::Array(_))) {
+        return Err(BundleError::Format("tests is not an array".into()));
+    }
+    if !verify_ed25519(
+        &key.public,
+        &manifest_bytes_with(&namespace, &names, &hashes, catalog_doc.as_ref(), tests_doc.as_ref()),
+        &sig,
+    ) {
         return Err(BundleError::Manifest("the signature does not verify".into()));
     }
 
@@ -433,6 +489,43 @@ pub fn import_signed_with<S: Store + ?Sized>(
         }
     }
 
+    // The public rule (D8): every computed function of the bundle is covered by its tests, and they pass.
+    let mut overlay = crate::testrun::Overlay::default();
+    for (name, fh) in &names {
+        overlay.functions.entry(name.clone()).or_default().push((now.clone(), fh.clone()));
+    }
+    for (fh, db) in &descriptors {
+        overlay.descriptors.insert(fh.clone(), db.clone());
+    }
+    for (rb, _) in &receipts {
+        overlay.cell(rb).map_err(BundleError::Receipt)?;
+    }
+    let mut formulas = Vec::new();
+    for (name, fh) in &names {
+        let bytes = match descriptors.get(fh) {
+            Some(b) => Some(b.clone()),
+            None => store.descriptor(fh).map(|b| b.into_owned()),
+        };
+        let Some(bytes) = bytes else { continue };
+        let fd = FunctionDescriptor::from_json(&bytes).map_err(|e| BundleError::Descriptor(e.to_string()))?;
+        if fd.lang != "stored" {
+            formulas.push((0usize, name.clone(), fh.clone()));
+        }
+    }
+    let mut test_specs = Vec::new();
+    for (i, t) in tests_doc
+        .iter()
+        .flat_map(|v| match v {
+            Value::Array(a) => a.iter().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .enumerate()
+    {
+        let spec = crate::testrun::parse_test(t).map_err(|e| BundleError::Format(format!("test: {e}")))?;
+        test_specs.push((i + 1, spec));
+    }
+    let test_rows = crate::publish::check_tests(store, &overlay, &test_specs, &formulas, host, &now, true)
+        .map_err(|e| BundleError::Tests(e.detail))?;
     // Plan: the binds, and the versions not already there; a conflict is refused before any write.
     let mut binds: Vec<&(String, String)> = Vec::new();
     for pair in &names {
@@ -492,6 +585,9 @@ pub fn import_signed_with<S: Store + ?Sized>(
         store.bind_name(name, fh, &now).map_err(|e| BundleError::Bind(format!("{name}: {e}")))?;
         step()?;
     }
+    crate::testrun::apply_rows(store, &test_rows, &now).map_err(BundleError::Store)?;
+    let rebound: Vec<String> = binds.iter().map(|(n, _)| (*n).clone()).collect();
+    crate::testrun::rerun_readers(store, &rebound, &now).map_err(BundleError::Store)?;
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));

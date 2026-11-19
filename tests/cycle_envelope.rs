@@ -14,9 +14,9 @@
 //! `n: number`. Run 1 binds `a` (reads the stored `reading`) and `b` (reads `a`). Run 2, later,
 //! rebinds `a`: naively to `b(...)`, or to `asof(b(...), T)` with T between the runs.
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::pub031::function_line;
@@ -103,15 +103,16 @@ impl World {
         vec![formula_line(&self.a, &format!("asof({}({}), {T})", self.b, self.passing()), &self.sig(), None)]
     }
 
+    /// The query, its arguments in ascending order of name (SPEC 5.1: `d`, `n`, `site`).
     fn query(&self) -> String {
-        let mut q = "site=N".to_string();
+        let mut q = String::new();
         if self.date {
-            q += "&d=2026-03-02";
+            q += "d=2026-03-02&";
         }
         if self.number {
-            q += "&n=1";
+            q += "n=1&";
         }
-        q
+        q + "site=N"
     }
 
     fn call(&self, f: &str) -> String {
@@ -180,7 +181,7 @@ async fn a_cycle_at_an_asof_and_in_a_batch() {
     assert_eq!(r.json["cycle"]["path"].as_array().unwrap().len(), 3);
     let r = m.post_raw("/cells", json!([format!("cell://{}?{}", w.a, w.query())]).to_string().into_bytes()).await;
     assert_eq!(r.status, 200, "{}", r.json);
-    let text = r.json["results"][0].to_string();
+    let text = r.json[0].to_string();
     assert!(text.contains("E_EVAL_UNAVAILABLE") && text.contains("cycle"), "{text}");
 }
 
