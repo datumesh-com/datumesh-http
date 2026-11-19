@@ -80,8 +80,18 @@ register = "chc.ucsb.edu/chirps"
 licence = "https://www.chc.ucsb.edu/data/chirps3"
 # {year} and {month} are 4 and 2 digits
 raster_url = "https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/tifs/chirps-v3.0.{year}.{month}.tif"
+# stored cells beside the means (F3, D15): the raster file's SHA-256 and size per month, the region's WKT once
+raster_sha_function = "chirps_raster_sha256"
+raster_bytes_function = "chirps_raster_bytes"
+region_wkt_function = "chirps_region_wkt"
+region_source_url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson"
+region_source_sha256 = "69a0e06e640b2d505858ae1cb63034e4677f3000b35a98e16312932b98c426b9"
+region_licence = "CC0-1.0"
 [chirps.regions]
 "US-KS" = "Kansas, United States"
+# the polygon of each region, WKT, as converted from the Natural Earth file above (path from feeds/)
+[chirps.region_files]
+"US-KS" = "fixtures/ne_admin1_kansas.wkt"
 
 # The licence register (F4), a stored function under datumesh.com.
 [register]
