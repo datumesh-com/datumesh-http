@@ -70,3 +70,8 @@ The site block lists Cloudflare's address ranges. Cloudflare changes them rarely
 - The only write path is `datumesh-mesh publish-stored` (http ≥ 0.3.1, which writes nothing from a refused file), run on quran-box against the project's network.
 - The scripture load is `scripture_prod.py`, checked by `check_scripture_prod.py`, in the files' order: 00, 10, 20, 30.
 - There is no network write endpoint.
+- From http 0.3.3, `publish-stored` writes on parallel lanes. `.env` sets `DATUMESH_PUBLISH_LANES=2` (half of the 4 CPUs, the rest left for khatm). `docker compose run --rm datumesh-mesh publish-stored …` picks it up through `compose.yml`; a plain `docker run` must pass `-e DATUMESH_PUBLISH_LANES=2` itself.
+
+## PostgreSQL memory
+- `compose.yml` starts Postgres with `-c` arguments sized to its 2 GiB limit: `shared_buffers=512MB`, `effective_cache_size=1536MB`, `work_mem=16MB`, `maintenance_work_mem=128MB` (since 2026-11-19).
+- They live in `compose.yml`, not in the data directory, so a restore into a fresh volume keeps them. If the container's memory limit changes, scale `shared_buffers` (a quarter) and `effective_cache_size` (three quarters) with it.

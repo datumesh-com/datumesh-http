@@ -34,7 +34,7 @@ services:
         limits: {cpus: "3", memory: 4g}
 
   mesh:
-    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:925b11482a54e7e184b67c0f25e3ae5d553d4dcf0bf521d68775e6deda85723c}  # datumesh-http 0.3.0, published
+    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:3812a53c61e7f97c2aab46a6c74e2581954386299517b3c771f5a844dffd8a3d}  # datumesh-http 0.3.3, published
     depends_on:
       postgres:
         condition: service_healthy

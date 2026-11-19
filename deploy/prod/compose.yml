@@ -19,6 +19,20 @@ name: datumesh
 services:
   datumesh-postgres:
     image: postgres:16@sha256:${POSTGRES_DIGEST:?set POSTGRES_DIGEST in .env}
+    # Memory sized to this container's 2 GiB limit (perf release, 2026-11-19): shared_buffers a
+    # quarter of it, effective_cache_size three quarters (planner hint only). Set here rather
+    # than by ALTER SYSTEM so they are visible in /srv/datumesh and survive a restore into a
+    # fresh volume.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
     env_file: /srv/datumesh/env/db.env
     environment:
       POSTGRES_DB: datumesh
@@ -61,6 +75,9 @@ services:
       DATUMESH_RATE_VERIFY_PER_IP: "60"
       DATUMESH_LICENCE: CC-BY-4.0
       DATUMESH_MIGRATE: "1"
+      # Lanes for `publish-stored` (http >= 0.3.3), from .env: the machine is shared with
+      # khatm, so a large load uses half of its 4 CPUs.
+      DATUMESH_PUBLISH_LANES: ${DATUMESH_PUBLISH_LANES:-2}
       RUST_LOG: info
     volumes:
       - /srv/datumesh/secrets:/run/secrets:ro
