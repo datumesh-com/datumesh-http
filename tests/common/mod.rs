@@ -19,8 +19,10 @@ use datumesh_http::{Config, Mesh, MeshBuilder};
 use datumesh_store::pg_unstable::postgres::{Config as PgConfig, NoTls};
 use datumesh_store::{migrate, PgStore, PoolOptions, Store};
 
+pub mod fake_embed;
 pub mod lite;
 pub mod pub031;
+pub mod readpath;
 pub mod world;
 
 pub use datumesh_core::Resolver;
