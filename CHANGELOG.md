@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2 (unreleased)
+
+For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datumesh-core 0.3.10 (`FunctionAnswer::with_publisher`, `Described::publisher`) and datumesh-formula 0.5.1. Additive: no signature of the public API changes.
+
+- **DNS segments in names (S1, spec 2.3).** A namespace segment after the host may be a DNS name, as core 0.3.10 and formula 0.5.1 read it. A stored or computed function under `…/relay/ecb.europa.eu/fx_reference` publishes, is served by URI and by call, has its slices, its function page and its receipts verified; a formula reads it beside a divide or a minus. A DNS name in the last segment, or one that breaks 2.3's rules, is refused at publish with `E_CANON_NAME`.
+- **`describe` names its publisher (S3, spec 16.8).** A function's and a class's answer gains `publisher`, the host of the namespace. A relayed function's `source` is its source domain, as before; a domain inside a name is never the publisher.
+- **`find` names its publisher and source (S3, spec 9.6).** Each result gains `publisher` (the host), and a relayed function's result gains `source` (the domain), as separate members.
+- **Counterexamples (S2, spec 7.3).** `tests.counterexamples` in `describe` and on the function page counts this mesh's own failing or erroring tests and the `false` `<host>/test_case` cells held for the function's hash, from any host: the latest version of each cell, each cell once. The function page's JSON gains `tests.open_counterexamples` (`signer`, `case`) and its HTML lists each one as an open counterexample with its signer. The store is not changed: the cells are read as a slice per held `<host>/test_case` binding, through the store's typed-argument index on `function_hash`. Counting does not depend on `DATUMESH_TEST_CELLS`.
+- **`POST /bundles` and bundle import: the bare host for test cases (D20).** A bundle whose namespace is a bare host is accepted when it has at least one name and every name and catalogue entry is `<host>/test_case`; any other bundle of a bare host is refused as before (`E_BUNDLE_FORMAT`, 400). The domain proof, the signature and the rate limits are unchanged.
+- **URI error code (spec 5.4).** A cell URI whose function name core refuses (a segment over 64 characters, a non-canonical name) is answered with core's canonical code (`E_CANON_LIMIT`, `E_CANON_NAME`), not `not_covered`.
+
 ## 0.4.1 (unreleased)
 
 For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-build2-part5-feeds (F5, the http needs). Additive: `Config` gains `publish_domains` and `log_dir`, `PublishDomains` is new, `Client::key_document_live` is new, and the mesh document gains `endpoints.x_bundles`. A function's describe answer names its page in a `Link: <https://<host>/fn/<name>>; rel="describedby"` header, not in the answer: the answer is the spec's (16.8) and core checks it strictly.

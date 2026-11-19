@@ -172,7 +172,8 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
         return fail(400, "E_BUNDLE_FORMAT", "a bundle has a namespace".into());
     };
     let host = namespace.split('/').next().unwrap_or("").to_string();
-    if namespace.split('/').count() < 2 || host.is_empty() {
+    // A bare host is a namespace only for the test cases of D20 (spec-0.6.1 7.3).
+    if host.is_empty() || (!namespace.contains('/') && !crate::bundle::bare_host_test_cases(&doc, namespace)) {
         return fail(400, "E_BUNDLE_FORMAT", "the namespace has a host and a name".into());
     }
     seen.host = host.clone();

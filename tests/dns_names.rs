@@ -140,10 +140,8 @@ async fn a_stored_function_with_a_dns_segment_is_served_by_uri_and_by_call() {
     let v = datumesh_core::verify(&serde_json::to_vec(&r.json["receipt"]).unwrap(), &core_keys(), None, None);
     assert!(v.ok, "{:?}", v.error());
     // the receipt by its hash
-    let hash = datumesh_core::Receipt::from_json(&serde_json::to_vec(&r.json["receipt"]).unwrap())
-        .unwrap()
-        .hash()
-        .to_string();
+    let hash =
+        datumesh_core::Receipt::from_json(&serde_json::to_vec(&r.json["receipt"]).unwrap()).unwrap().hash().to_string();
     assert_eq!(m.get_any(&format!("/receipt/{hash}")).await.status, 200);
 }
 
@@ -205,7 +203,8 @@ async fn describe_of_a_function_names_the_host_as_publisher_and_the_domain_as_so
         &m.get_any(&format!("/descriptor/{}", fn_hash(&m, FXR))).await.body,
     )
     .unwrap();
-    let got = datumesh_core::check_describe_with(&r.body, &Default::default(), &[held]).unwrap_or_else(|e| panic!("{e}"));
+    let got =
+        datumesh_core::check_describe_with(&r.body, &Default::default(), &[held]).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(got.publisher.as_deref(), Some(HOST));
     assert_eq!(got.function.as_deref(), Some(FXR));
     assert_eq!(got.source.expect("source").name, DOMAIN);
@@ -375,7 +374,12 @@ const B_NAME: &str = "pub.example/relay/ecb.europa.eu/level";
 
 fn dns_bundle(name: &str, ns: &str) -> Vec<u8> {
     use datumesh_core::{Cell, ReceiptBuilder};
-    let cell = Cell { ns: ns.to_string(), fn_name: "level".into(), fn_hash: stored_fn().hash(), args: common::args(&[("site", common::s("N"))]) };
+    let cell = Cell {
+        ns: ns.to_string(),
+        fn_name: "level".into(),
+        fn_hash: stored_fn().hash(),
+        args: common::args(&[("site", common::s("N"))]),
+    };
     let r = ReceiptBuilder::new()
         .cell(cell)
         .value(common::n("42"))

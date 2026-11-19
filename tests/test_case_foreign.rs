@@ -197,10 +197,8 @@ async fn a_foreign_false_test_cell_is_an_open_counterexample() {
             r.json
         );
         // core 0.3.10 accepts the answer and reads the count
-        let held = datumesh_core::FunctionDescriptor::from_json(
-            &m.get_any(&format!("/descriptor/{pu}")).await.body,
-        )
-        .unwrap();
+        let held =
+            datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{pu}")).await.body).unwrap();
         let got = datumesh_core::check_describe_with(&r.body, &Default::default(), &[held])
             .unwrap_or_else(|e| panic!("{label}: {e}"));
         let t = got.tests.expect("tests");
