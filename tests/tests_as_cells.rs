@@ -9,7 +9,7 @@
 //!   `branches` (arms in its body), `covered` (arms the held tests take), `counterexamples` (failing
 //!   reruns, below). Core 0.3.9's `check_describe_with` accepts it. A stored function has no `tests`
 //!   member (or all zeros).
-//! * On a mesh with `DATUMESH_TEST_CELLS=1` (mesh-test), each test is also a computed cell
+//! * On a mesh with `DATUMESH_TEST_CELLS=1` (mesh-test), each test is also a signed cell (trust `primary`)
 //!   `<host>/test_case(<hash arg>: string, case: string) -> boolean`, signed by the mesh: `true`
 //!   when the function under test, run as the test says, gives what the test expects, `false`
 //!   when it does not. Production (no variable) has no such cells (`not_covered`, the name is
@@ -90,7 +90,7 @@ fn test_cell_path(m: &Served, c: &Calc, line: &str) -> String {
     format!("/cell/{}", call_path(&test_case_call(&fn_hash(m, &c.per_unit), &case_id(line))))
 }
 
-/// On mesh-test: each test is a signed computed boolean cell, `true` for a test that passes.
+/// On mesh-test: each test is a signed boolean cell, trust `primary` (spec 5.5: host-signed, no inputs; QUESTIONS D16), `true` for a test that passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn on_mesh_test_each_test_is_a_cell() {
     let c = calc();
@@ -99,7 +99,7 @@ async fn on_mesh_test_each_test_is_a_cell() {
         let v = m.get(&test_cell_path(&m, &c, &t)).await;
         assert_eq!(v["outcome"], "ok", "{t}: {v}");
         assert_eq!((v["receipt"]["type"].as_str(), &v["receipt"]["value"]), (Some("boolean"), &json!(true)), "{v}");
-        assert_eq!(v["trust"], "computed", "{v}");
+        assert_eq!(v["trust"], "primary", "{v}");
         assert!(v["receipt"]["computed_by"].as_str().unwrap().starts_with(&format!("{HOST}#")), "{v}");
         assert_eq!(v["receipt"]["cell"]["fn"], "test_case");
         assert_eq!(v["receipt"]["cell"]["ns"], HOST);
