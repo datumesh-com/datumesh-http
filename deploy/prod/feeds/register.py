@@ -1,8 +1,9 @@
 """The licence register (answer 3): the class `<host>/register/dataset(source, code)`, a stored method per fact,
 and one entry per dataset examined: the sources relayed, the one computed from, and those not relayed.
 
-Input: the register.json of the licence check (every verdict: RELAY and SKIP). Every name, the entries, the
-methods' texts and where each value comes from are in names.toml. There is no `retrieved` key: `retrieved` is a
+Input: the register.json of the licence check (every verdict: RELAY and SKIP: the page, hash and date), and
+licences.toml (the verbatim clauses of LICENCES.md and the reasons). Every name, the entries, the methods' texts and
+where each value comes from are in names.toml. There is no `retrieved` key: `retrieved` is a
 method. A new check that finds the same licence text emits nothing; a changed text emits new versions of that
 entry's cells (the same cells, a later version), and `asof` gives the history."""
 import hashlib
@@ -45,20 +46,18 @@ def jcs(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _clauses(d, e) -> str:
-    parts = []
-    if d["status"] == "not_relayed":
-        parts.append(f"Not relayed. Reason: {d['reason']}")
-    parts.append("Clauses: " + " | ".join(e["conditions"]))
-    if e["attribution"]:
-        parts.append(f"Attribution: {e['attribution']}")
-    return " ".join(parts)
+def _clauses(lic) -> str:
+    """The verbatim quotes of licences.toml, joined by " | "; a source not relayed starts with its reason."""
+    text = " | ".join(lic["quotes"])
+    if "reason" in lic:
+        text = f"Not relayed. Reason: {lic['reason']} Clauses: {text}"
+    return text
 
 
-def _value(sec, method, d, e):
+def _value(sec, method, d, e, lic):
     where = sec["value"][method]
     if where == "clauses":
-        text = _clauses(d, e)
+        text = _clauses(lic)
     else:
         scope, field = where.split(".")
         text = {"dataset": d, "entry": e}[scope][field]
@@ -94,38 +93,43 @@ def _class_lines(sec, cls):
     return lines
 
 
-def _cell_lines(sec, cls, d, e):
+def _cell_lines(sec, cls, d, e, lic):
     args = {"source": {"type": "string", "value": d["source"]}, "code": {"type": "string", "value": d["code"]}}
     fields = {"source": d["source"], "code": d["code"], "name": d["name"], "status": d["status"],
               "retrieved": e["retrieved"], "licence_page": e["licence_url"]}
     lines = []
     for m in sec["methods"]:
         summary = common.nfc(sec["method_text"][m]["summary"].format(**fields))
-        lines.append({"cell": {"fn": f"{cls}/{m}", "args": dict(args)}, "value": _value(sec, m, d, e),
+        lines.append({"cell": {"fn": f"{cls}/{m}", "args": dict(args)}, "value": _value(sec, m, d, e, lic),
                       "licence": sec["licence"], "summary": summary})
     return lines
 
 
-def emit(entries, state, names):
+def emit(entries, state, names, licences=None):
     """-> (lines, state). The first call writes the method descriptors, the class and the catalogue; every call
     writes the six cells of each dataset whose licence text (its SHA-256) is not the one in the state."""
     sec = names[KEY]
     cls = f"{sec['namespace']}/{sec['class']}"
+    lics = {(x["source"], x["code"]): x for x in (common.licences() if licences is None else licences)}
     by_input = {e["source_domain"]: e for e in entries}
     done = dict(state.get("done", {}))
     todo = []
     for d in sec["datasets"]:
         e = by_input.get(d["input"])
         shape(e is not None, f"register: no entry {d['input']!r} for {d['source']} {d['code']}")
+        lic = lics.get((d["source"], d["code"]))
+        shape(lic is not None and lic["quotes"], f"register: no licence quotes for {d['source']} {d['code']}")
+        shape((e["verdict"] == "SKIP") == ("reason" in lic) and lic["page"] == e["licence_url"],
+              f"register: licences.toml does not fit register.json for {d['code']}")
         shape((e["verdict"] == "SKIP") == (d["status"] == "not_relayed"),
               f"register: verdict {e['verdict']} does not fit status {d['status']} for {d['code']}")
         if done.get(f"{d['source']}|{d['code']}") != e["sha256"]:
-            todo.append((d, e))
+            todo.append((d, e, lic))
     if not todo:
         return [], state
     lines = [] if state.get("class") else _class_lines(sec, cls)
-    for d, e in todo:
-        lines += _cell_lines(sec, cls, d, e)
+    for d, e, lic in todo:
+        lines += _cell_lines(sec, cls, d, e, lic)
         done[f"{d['source']}|{d['code']}"] = e["sha256"]
     new_state = dict(state)
     new_state["class"] = True

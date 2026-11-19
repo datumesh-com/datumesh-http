@@ -211,7 +211,6 @@ code = "commodity_prices"
 name = "World Bank Commodity Price Data (Pink Sheet)"
 status = "not_relayed"
 input = "worldbank.org/pink-sheet"
-reason = "The Pink Sheet page states no licence, the dataset terms page resolves to generic site terms that forbid commercial use and redistribution, and some price series come from third parties. Not clear enough to relay."
 
 [[register.datasets]]
 source = "fao.org"
@@ -219,4 +218,3 @@ code = "asis"
 name = "FAO Agricultural Stress Index System (ASIS)"
 status = "not_relayed"
 input = "fao.org/giews/asis"
-reason = "ASIS pages carry no licence and are not shown to be in the FAO statistical databases CC BY regime. The default FAO web terms permit only non-commercial use, and commercial use needs a licence request."

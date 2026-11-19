@@ -147,6 +147,19 @@ def names(host) -> dict:
     return _NAMES[host]
 
 
+def licences() -> list:
+    """The licence facts of the register's entries (licences.toml): page, verbatim quotes, and a reason when the
+    source is not relayed. Host-independent."""
+    global _LICENCES
+    if _LICENCES is None:
+        with open(FEEDS / "licences.toml", "rb") as f:
+            _LICENCES = tomllib.load(f)["licence"]
+    return _LICENCES
+
+
+_LICENCES = None
+
+
 def series(key: str) -> dict:
     """The series of a relay source (policy_rates): host-independent data, read without a host."""
     return _table()[key]["series"]

@@ -1,0 +1,111 @@
+# The licence facts of each register entry: the licence page, the clauses quoted exactly as in LICENCES.md
+# (the licence check of 2026-11-19, copied to fixtures/LICENCES.md), and for a source not relayed, the reason.
+# register.py builds licence_clauses from these quotes, joined by " | ". Every quote must appear byte for byte in
+# LICENCES.md (tests/test_licences.py).
+
+[[licence]]
+source = "ecb.europa.eu"
+code = "reference_rates"
+page = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
+
+quotes = [
+  "Copyright © for the entire content of this website: European Central Bank, Frankfurt am Main, Germany.",
+  "Subject to the exception below, users of this website may make free use of the information obtained directly from it subject to the following conditions:",
+  "When such information is distributed or reproduced, it must appear accurately and the ECB must be cited as the source.",
+  "Where the information is incorporated in documents that are sold (regardless of the medium), the natural or legal person publishing the information must inform buyers, both before they pay any subscription or fee and each time they access the information taken from this website, that the information may be obtained free of charge through this website.",
+  "If the information is modified by the user (e.g. by seasonal adjustment of statistical data or calculation of growth rates) this must be stated explicitly.",
+  "While the euro short-term rate (€STR), the euro foreign exchange reference rates and other price information published on this website are based on sources which the ECB considers to be reliable, the ECB accepts no responsibility or liability for any loss, damage, expense or claim incurred in connection with any decision made or action or inaction on the part of any party in reliance upon such publication.",
+]
+
+[[licence]]
+source = "ecb.europa.eu"
+code = "estr"
+page = "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html"
+
+quotes = [
+  "The ECB does not charge for the €STR or license its use.",
+  "The euro short-term rate, and any re-publication thereof (the “rate”) and all other related data and information, including the compounded euro short-term rate average rates and the compounded euro short-term rate index, (the “information”) are published by the European Central Bank (ECB) for public information purposes only.",
+  "The ECB and the Eurosystem national central banks, in so far as they contribute to the euro short-term rate determination process, shall not be liable for any error or inaccuracy in the rate or the information, for any delay in updating the rate or the information, nor shall they be liable or responsible for any reliance on or use of or inability to use the rate or the information in any financial instrument, contract, trade or any other commercial activity or investment decision.",
+  "Copyright © for the entire content of this website: European Central Bank, Frankfurt am Main, Germany.",
+  "Subject to the exception below, users of this website may make free use of the information obtained directly from it subject to the following conditions:",
+  "When such information is distributed or reproduced, it must appear accurately and the ECB must be cited as the source.",
+  "Where the information is incorporated in documents that are sold (regardless of the medium), the natural or legal person publishing the information must inform buyers, both before they pay any subscription or fee and each time they access the information taken from this website, that the information may be obtained free of charge through this website.",
+  "If the information is modified by the user (e.g. by seasonal adjustment of statistical data or calculation of growth rates) this must be stated explicitly.",
+]
+
+[[licence]]
+source = "ecb.europa.eu"
+code = "policy_rates"
+page = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
+
+quotes = [
+  "Copyright © for the entire content of this website: European Central Bank, Frankfurt am Main, Germany.",
+  "Subject to the exception below, users of this website may make free use of the information obtained directly from it subject to the following conditions:",
+  "When such information is distributed or reproduced, it must appear accurately and the ECB must be cited as the source.",
+  "Where the information is incorporated in documents that are sold (regardless of the medium), the natural or legal person publishing the information must inform buyers, both before they pay any subscription or fee and each time they access the information taken from this website, that the information may be obtained free of charge through this website.",
+  "If the information is modified by the user (e.g. by seasonal adjustment of statistical data or calculation of growth rates) this must be stated explicitly.",
+  "While the euro short-term rate (€STR), the euro foreign exchange reference rates and other price information published on this website are based on sources which the ECB considers to be reliable, the ECB accepts no responsibility or liability for any loss, damage, expense or claim incurred in connection with any decision made or action or inaction on the part of any party in reliance upon such publication.",
+]
+
+[[licence]]
+source = "treasury.gov"
+code = "par_yield_curve"
+page = "https://www.law.cornell.edu/uscode/text/17/105"
+
+quotes = [
+  "Copyright protection under this title is not available for any work of the United States Government",
+  "The United States Government (including the Department of the Treasury) makes no warranty, express or implied, including the warranties of merchantability and fitness for a particular purpose and assumes no legal liability or responsibility for the accuracy, completeness, or usefulness of any information, apparatus, product, or process described or depicted on this web site and does not represent that its use would not infringe privately owned rights.",
+  "The Department of the Treasury does not endorse any commercial product, service, process, or enterprise.",
+]
+
+[[licence]]
+source = "bankofengland.co.uk"
+code = "bank_rate"
+page = "https://www.bankofengland.co.uk/legal"
+
+quotes = [
+  "The information made available via the Database is the copyright of the Governor and Company of the Bank, unless otherwise stated. Reproduction of data in the Database is subject to the terms of the UK Open Government Licence, allowing and encouraging free and flexible data reuse.",
+  "Please note that selected exchange rate data and series are excluded from this licence as they are reproduced by the Bank under licence from third parties.",
+  "gives no assurance that information currently published will continue to be published in the future",
+  "You are free to: copy, publish, distribute and transmit the Information; adapt the Information; exploit the Information commercially and non-commercially for example, by combining it with other Information, or by including it in your own product or application.",
+  "You must (where you do any of the above): acknowledge the source of the Information in your product or application by including or linking to any attribution statement specified by the Information Provider(s) and, where possible, provide a link to this licence;",
+  "If the Information Provider does not provide a specific attribution statement, you must use the following: Contains public sector information licensed under the Open Government Licence v3.0.",
+]
+
+[[licence]]
+source = "chc.ucsb.edu"
+code = "chirps"
+page = "https://www.chc.ucsb.edu/data/chirps3"
+
+quotes = [
+  "CHIRPS3 is in the public domain, as registered with Creative Commons, and is licensed under a Creative Commons Attribution 4.0 International License. To the extent possible under the law, the Climate Hazards Center has waived all copyright and related or neighboring rights to CHIRPS3. This work is published from the United States.",
+]
+
+[[licence]]
+source = "worldbank.org"
+code = "commodity_prices"
+page = "https://datacatalog.worldbank.org/public-licenses"
+
+reason = "The Pink Sheet page states no licence, the dataset terms page resolves to generic site terms that forbid commercial use and redistribution, and some price series come from third parties. Not clear enough to relay."
+
+quotes = [
+  "The World Bank Group makes data publicly available according to open data standards and licenses datasets under the Creative Commons Attribution 4.0 International license (CC-BY 4.0). Many datasets are available under other licenses. They are labeled accordingly",
+  "The Creative Commons Attribution 4.0 International license allows users to copy, modify and distribute data in any format for any purpose, including commercial use. Users are only obligated to give appropriate credit (attribution) and indicate if they have made any changes, including translations. CC-BY 4.0, with the additional terms below, is the default license for all Datasets produced by the World Bank itself and distributed as open data.",
+  "The content available on this platform is provided for informational and non-commercial purposes only, unless otherwise stated.",
+  "For the remainder of the Materials, you may make non-commercial uses thereof, but you may not make any derivative work or commercial use, including without limitation reselling them, charging to access them, charging to redistribute them, or charging for derivative works based on them, without the prior written consent of the relevant member institution(s).",
+  "For use of the APIs in connection with some of the Materials (such as Datasets listed in The World Bank [Group] Data Catalog), The World Bank Group has specific terms of use, all of which are hereby incorporated by reference.",
+]
+
+[[licence]]
+source = "fao.org"
+code = "asis"
+page = "https://www.fao.org/contact-us/terms/en/"
+
+reason = "ASIS pages carry no licence and are not shown to be in the FAO statistical databases CC BY regime. The default FAO web terms permit only non-commercial use, and commercial use needs a licence request."
+
+quotes = [
+  "All other content on the FAO website (except where otherwise indicated), may be copied, printed and downloaded for private study, research and teaching purposes, and for use in non-commercial products or services, provided that appropriate acknowledgement of FAO as the source and copyright holder is given and that FAO's endorsement of users' views, products or services is not stated or implied in any way.",
+  "All requests for translation and adaptation rights, and for resale and other commercial use rights should be addressed to",
+  "Unless specified otherwise in their metadata or webpage, all datasets disseminated through FAO corporate statistical databases (see examples in Annex 1) are licensed under the Creative Commons Attribution-4.0 International licence (CC BY 4.0)",
+  "Datasets shall not be used for or in conjunction with the promotion of a commercial enterprise and/or its product(s) or services (s), and/or in any way that suggests that FAO endorses any specific company, products or services.",
+]

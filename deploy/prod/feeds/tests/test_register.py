@@ -182,7 +182,7 @@ def test_a_changed_text_emits_new_versions_of_that_entry_only(names):
     (e,) = [r for r in changed if r["source_domain"] == "ecb.europa.eu/estr"]
     e["sha256"] = "ab" * 32
     e["retrieved"] = "2026-12-01T05:00:00.000000Z"
-        lines, state2 = reg.emit(changed, state, names)
+    lines, state2 = reg.emit(changed, state, names)
     assert kinds(lines) == ["cell"] * 6, "no descriptors, class or catalogue again"
     cells = cells_of(lines)
     assert {c["cell"]["fn"] for c in cells} == {f"{cls}/{m}" for m in METHODS}
@@ -191,7 +191,7 @@ def test_a_changed_text_emits_new_versions_of_that_entry_only(names):
     v = {c["cell"]["fn"].rsplit("/", 1)[1]: c["value"] for c in cells}
     assert v["licence_hash"] == {"type": "string", "value": "ab" * 32}
     assert v["retrieved"] == {"type": "instant", "value": "2026-12-01T05:00:00.000000Z"}
-    assert True
+    assert all(c["value"] for c in cells)
     # and then it is stable again
     assert reg.emit(changed, json.loads(json.dumps(state2)), names)[0] == []
 
