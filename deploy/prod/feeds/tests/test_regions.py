@@ -29,8 +29,8 @@ BOXES = {
     "au_western_australia": (112.0, 129.5, -35.5, -13.5),
     "ca_saskatchewan": (-110.2, -101.2, 48.9, 60.1),
     "ca_alberta": (-120.2, -109.8, 48.9, 60.1),
-    "kz_kostanay": (59.0, 72.0, 48.5, 55.5),
-    "kz_north_kazakhstan": (66.0, 75.0, 52.5, 56.0),
+    "kz_kostanay": (59.0, 72.0, 48.0, 55.5),
+    "kz_north_kazakhstan": (66.0, 75.0, 52.0, 56.0),
 }
 DISSOLVED = {"fr_centre_val_de_loire": 6, "fr_grand_est": 10}
 

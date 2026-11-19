@@ -5,6 +5,7 @@ region's outer ring and outside its holes; its weight is cos(latitude of its cen
 Stored cells: the mean per region and month, with no `source` member (D17); the raster's URL and SHA-256, the method
 and the Natural Earth region are in the summary and the function description. The raster is decoded with tifffile and numpy, imported only when a raster is decoded (D15)."""
 import datetime as dt
+from bisect import bisect_right
 import io
 import math
 import re
@@ -62,6 +63,55 @@ def _inside(x, y, rings) -> bool:
     return _in_ring(x, y, rings[0]) and not any(_in_ring(x, y, h) for h in rings[1:])
 
 
+def _crossings(ring, y) -> list:
+    """The sorted x of every edge of the ring that the horizontal line at y crosses (the test of _in_ring)."""
+    xs = []
+    for i in range(len(ring) - 1):
+        (x1, y1), (x2, y2) = ring[i], ring[i + 1]
+        if (y1 > y) != (y2 > y):
+            xs.append((x2 - x1) * (y - y1) / (y2 - y1) + x1)
+    xs.sort()
+    return xs
+
+
+def _inside_at(x, cross) -> bool:
+    """_inside(x, y, rings) for one row: `cross` holds the row's crossings of each ring, the outer ring first. A point
+    is inside a ring when an odd number of crossings lie beyond it (x < crossing), as in _in_ring."""
+    return (len(cross[0]) - bisect_right(cross[0], x)) % 2 == 1 and not any(
+        (len(h) - bisect_right(h, x)) % 2 == 1 for h in cross[1:])
+
+
+def parse_wkt_multi(text: str) -> list:
+    """POLYGON or MULTIPOLYGON -> [polygon, ...], a polygon a list of rings as parse_wkt gives (outer first)."""
+    s = text.strip()
+    if s.startswith("POLYGON"):
+        return [parse_wkt(s)]
+    shape(s.startswith("MULTIPOLYGON") and s.endswith(")") and "(" in s, "WKT: not a POLYGON or MULTIPOLYGON")
+    inner = s[s.index("(") + 1:-1].strip()
+    shape(inner.startswith("(") and inner.endswith(")"), "WKT: MULTIPOLYGON has no polygons")
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(inner):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            shape(depth >= 0, "WKT: unbalanced parentheses")
+            if depth == 0:
+                parts.append(inner[start:i + 1])
+                start = i + 1
+        elif depth == 0:
+            shape(ch in ", ", "WKT: text between polygons")
+            if ch == ",":
+                start = i + 1
+    shape(depth == 0 and parts, "WKT: unbalanced parentheses")
+    return [parse_wkt("POLYGON" + p.strip()) for p in parts]
+
+
+def _polygons(shape_):
+    """A region as a list of polygons: rings given directly (a polygon) are wrapped."""
+    return [shape_] if isinstance(shape_[0][0], tuple) else shape_
+
+
 # ---- the grid and the mean -------------------------------------------------------------------------------
 
 def _shape_of(values):
@@ -72,12 +122,14 @@ def _shape_of(values):
 
 
 def region_mean(grid: dict, rings) -> float:
-    """Area-weighted mean (weight cos latitude) of the pixels whose centres are in the region, nodata skipped."""
+    """Area-weighted mean (weight cos latitude) of the pixels whose centres are in the region (a polygon as rings, or a
+    list of polygons: a pixel in any counts once), nodata skipped."""
     west, north, cs = grid["west"], grid["north"], grid["cell_size"]
     nodata, values = grid.get("nodata"), grid["values"]
     nrows, ncols = _shape_of(values)
-    xs = [p[0] for p in rings[0]]
-    ys = [p[1] for p in rings[0]]
+    polys = _polygons(rings)
+    xs = [p[0] for poly in polys for p in poly[0]]
+    ys = [p[1] for poly in polys for p in poly[0]]
     c0 = max(0, math.floor((min(xs) - west) / cs) - 1)
     c1 = min(ncols - 1, math.floor((max(xs) - west) / cs) + 1)
     r0 = max(0, math.floor((north - max(ys)) / cs) - 1)
@@ -86,9 +138,13 @@ def region_mean(grid: dict, rings) -> float:
     for r in range(r0, r1 + 1):
         lat = north - (r + 0.5) * cs
         w = math.cos(math.radians(lat))
+        # the row's crossings once per ring, so a pixel costs a bisect, not a pass over the polygon's edges
+        rows = [[_crossings(ring, lat) for ring in poly] for poly in polys]
+        if not any(rows_[0] for rows_ in rows):
+            continue
         for c in range(c0, c1 + 1):
             lon = west + (c + 0.5) * cs
-            if not _inside(lon, lat, rings):
+            if not any(_inside_at(lon, cross) for cross in rows):
                 continue
             v = float(values[r][c])
             if math.isnan(v) or (nodata is not None and v == nodata):
@@ -140,6 +196,11 @@ def _label(sec, region):
     return sec["regions"][region]["label"]
 
 
+def _note(sec, region):
+    note = sec["regions"][region].get("note")
+    return f" ({note})" if note else ""
+
+
 def _mean_summary(sec, r, value, source):
     """The lineage is here and in the function description, not in a `source` member (D17): the raster's URL and
     SHA-256, the method, the Natural Earth region id and file."""
@@ -147,8 +208,8 @@ def _mean_summary(sec, r, value, source):
     return (f"{_label(sec, region)} ({region}), {r['month'][:7]}: {value} mm, the area-weighted mean (weight cos "
             f"latitude) of the CHIRPS v3 pixels whose centres fall inside the region; {COMPUTED}. "
             f"Raster {source['url']} sha256 {source['sha256']}. "
-            f"Region: {sec['region_source']}, id {sec['regions'][region]['ne_id']}, "
-            f"file sha256 {sec['region_source_sha256']}.")
+            f"Region: {sec['region_source']}, id {sec['regions'][region]['ne_id']}"
+            f"{_note(sec, region)}, file sha256 {sec['region_source_sha256']}.")
 
 
 def _catalogue(sec, fq, rows):
@@ -160,7 +221,7 @@ def _catalogue(sec, fq, rows):
     description = (f"Mean monthly rainfall in mm over a region, {COMPUTED}. Method: the area-weighted mean "
                    f"(weight cos latitude) of the pixels whose centres lie inside the region in the CHIRPS v3 monthly "
                    f"raster, nodata skipped, rounded to two places. Region: the polygon from {sec['region_source']}, "
-                   f"by its region id. Each cell's summary gives its raster URL and SHA-256 and the region's Natural "
+                   f"by its region id; a region of several features is dissolved from them and its summary says so. Each cell's summary gives its raster URL and SHA-256 and the region's Natural "
                    f"Earth id and file hash. Rasters: {sec['raster_url']}.")
     return {"catalog": fq, "kind": "function", "label": "Monthly rainfall by region (computed)",
             "description": description,
@@ -243,7 +304,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
     decode = decode or read_geotiff
     regions = {}
     for region, spec in sec["regions"].items():
-        regions[region] = parse_wkt((common.FEEDS / spec["file"]).read_text(encoding="utf-8"))
+        regions[region] = parse_wkt_multi((common.FEEDS / spec["file"]).read_text(encoding="utf-8"))
     lines = []
     for month in months:
         url = sec["raster_url"].format(year=month[:4], month=month[5:7])

@@ -91,14 +91,146 @@ register_code = "chirps"
 licence = "https://www.chc.ucsb.edu/data/chirps3"
 # {year} and {month} are 4 and 2 digits
 raster_url = "https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/tifs/chirps-v3.0.{year}.{month}.tif"
-region_source = "Natural Earth 50m admin-1 states and provinces (natural-earth-vector, ne_50m_admin_1_states_provinces.geojson)"
-region_source_url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson"
-region_source_sha256 = "69a0e06e640b2d505858ae1cb63034e4677f3000b35a98e16312932b98c426b9"
-# a region: its dictionary label, its Natural Earth adm1_code, and its polygon as WKT (path from feeds/)
+region_source = "Natural Earth 10m admin-1 states and provinces, v5.1.2 (natural-earth-vector, ne_10m_admin_1_states_provinces.geojson)"
+region_source_url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+region_source_sha256 = "22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5"
+# a region: its dictionary label, its Natural Earth adm1_code (ne_id) and the vertex count of its feature, and its
+# polygon as WKT, exactly as in Natural Earth (path from feeds/). A region of several features (the French regions: the
+# 10m file has departments) has `members` (their adm1_codes, ne_id joined by +) and a `note`, and its polygon is their
+# union, not simplified. fixtures/regions/extract_regions.py makes the files.
 [chirps.regions.us_kansas]
 label = "Kansas, United States"
 ne_id = "USA-3530"
-file = "fixtures/ne_admin1_kansas.wkt"
+ne_vertices = 209
+file = "fixtures/regions/us_kansas.wkt"
+
+[chirps.regions.ua_kharkiv]
+label = "Kharkiv Oblast, Ukraine"
+ne_id = "UKR-328"
+ne_vertices = 811
+file = "fixtures/regions/ua_kharkiv.wkt"
+
+[chirps.regions.ua_poltava]
+label = "Poltava Oblast, Ukraine"
+ne_id = "UKR-330"
+ne_vertices = 782
+file = "fixtures/regions/ua_poltava.wkt"
+
+[chirps.regions.ua_dnipropetrovsk]
+label = "Dnipropetrovsk Oblast, Ukraine"
+ne_id = "UKR-326"
+ne_vertices = 1167
+file = "fixtures/regions/ua_dnipropetrovsk.wkt"
+
+[chirps.regions.ru_krasnodar]
+label = "Krasnodar Krai, Russia"
+ne_id = "RUS-2371"
+ne_vertices = 1675
+file = "fixtures/regions/ru_krasnodar.wkt"
+
+[chirps.regions.ru_rostov]
+label = "Rostov Oblast, Russia"
+ne_id = "RUS-2367"
+ne_vertices = 1093
+file = "fixtures/regions/ru_rostov.wkt"
+
+[chirps.regions.ru_stavropol]
+label = "Stavropol Krai, Russia"
+ne_id = "RUS-2306"
+ne_vertices = 697
+file = "fixtures/regions/ru_stavropol.wkt"
+
+[chirps.regions.in_punjab]
+label = "Punjab, India"
+ne_id = "IND-3249"
+ne_vertices = 749
+file = "fixtures/regions/in_punjab.wkt"
+
+[chirps.regions.in_uttar_pradesh]
+label = "Uttar Pradesh, India"
+ne_id = "IND-3253"
+ne_vertices = 2100
+file = "fixtures/regions/in_uttar_pradesh.wkt"
+
+[chirps.regions.in_madhya_pradesh]
+label = "Madhya Pradesh, India"
+ne_id = "IND-3261"
+ne_vertices = 2522
+file = "fixtures/regions/in_madhya_pradesh.wkt"
+
+[chirps.regions.cn_henan]
+label = "Henan, China"
+ne_id = "CHN-1812"
+ne_vertices = 1509
+file = "fixtures/regions/cn_henan.wkt"
+
+[chirps.regions.cn_shandong]
+label = "Shandong, China"
+ne_id = "CHN-1814"
+ne_vertices = 1501
+file = "fixtures/regions/cn_shandong.wkt"
+
+[chirps.regions.cn_hebei]
+label = "Hebei, China"
+ne_id = "CHN-1811"
+ne_vertices = 2119
+file = "fixtures/regions/cn_hebei.wkt"
+
+[chirps.regions.fr_centre_val_de_loire]
+label = "Centre-Val de Loire, France"
+ne_id = "FRA-5279+FRA-5291+FRA-5309+FRA-5310+FRA-5314+FRA-5317"
+members = ["FRA-5279", "FRA-5291", "FRA-5309", "FRA-5310", "FRA-5314", "FRA-5317"]
+note = "dissolved by the operator from the 6 Natural Earth 10m admin-1 departments named in its id, united without simplification (the 10m file has departments, not the current regions)"
+file = "fixtures/regions/fr_centre_val_de_loire.wkt"
+
+[chirps.regions.fr_grand_est]
+label = "Grand Est, France"
+ne_id = "FRA-5268+FRA-5270+FRA-5273+FRA-5296+FRA-5300+FRA-5323+FRA-5325+FRA-5326+FRA-5328+FRA-5355"
+members = ["FRA-5268", "FRA-5270", "FRA-5273", "FRA-5296", "FRA-5300", "FRA-5323", "FRA-5325", "FRA-5326", "FRA-5328", "FRA-5355"]
+note = "dissolved by the operator from the 10 Natural Earth 10m admin-1 departments named in its id, united without simplification (the 10m file has departments, not the current regions)"
+file = "fixtures/regions/fr_grand_est.wkt"
+
+[chirps.regions.ar_buenos_aires]
+label = "Buenos Aires Province, Argentina"
+ne_id = "ARG-1295"
+ne_vertices = 629
+file = "fixtures/regions/ar_buenos_aires.wkt"
+
+[chirps.regions.au_new_south_wales]
+label = "New South Wales, Australia"
+ne_id = "AUS-2654"
+ne_vertices = 1555
+file = "fixtures/regions/au_new_south_wales.wkt"
+
+[chirps.regions.au_western_australia]
+label = "Western Australia, Australia"
+ne_id = "AUS-2651"
+ne_vertices = 3774
+file = "fixtures/regions/au_western_australia.wkt"
+
+[chirps.regions.ca_saskatchewan]
+label = "Saskatchewan, Canada"
+ne_id = "CAN-631"
+ne_vertices = 137
+file = "fixtures/regions/ca_saskatchewan.wkt"
+
+[chirps.regions.ca_alberta]
+label = "Alberta, Canada"
+ne_id = "CAN-632"
+ne_vertices = 837
+file = "fixtures/regions/ca_alberta.wkt"
+
+[chirps.regions.kz_kostanay]
+label = "Kostanay Region, Kazakhstan"
+ne_id = "KAZ-3196"
+ne_vertices = 576
+file = "fixtures/regions/kz_kostanay.wkt"
+
+[chirps.regions.kz_north_kazakhstan]
+label = "North Kazakhstan Region, Kazakhstan"
+ne_id = "KAZ-3204"
+ne_vertices = 570
+file = "fixtures/regions/kz_north_kazakhstan.wkt"
 
 # The licence register (answer 3): the class register/dataset(source, code) with six stored methods.
 [register]
