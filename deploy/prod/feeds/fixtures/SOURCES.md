@@ -1,0 +1,30 @@
+# Fixture sources
+
+Fetched with `curl -A "datumesh-feeds/0.1"` (no email), 2026-11-19, throttled (at least 1 s between requests; 3 s for CHIRPS). Times are UTC, taken at the start of each fetch. The tests read these files; CI never fetches. "Trimmed" means rows removed, no byte of a kept row changed (the ECB hist slice keeps the header and the exact row text).
+
+| File | Source URL | Fetched | Bytes | SHA-256 | Notes |
+|---|---|---|---|---|---|
+| ecb_daily.xml | https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml | 2026-11-19T12:01:17Z | 1547 | 44c3e8a03fd098aef76d14fe28f9ef39f4c7a354c0c188a16be2b3c7ea99dfb6 | untrimmed; one date, 2026-11-18, 29 currencies; rates keep trailing zeros as published (0.83290) |
+| ecb_hist_slice.csv | https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip | 2026-11-19T12:01:18Z | 2808 | 49f26d50cf33fbe0fb08a985b02adf586d4e8506c7d38e1528c0b2176a29438c | slice of eurofxref-hist.csv inside the zip (zip: 643434 bytes, sha256 563a3f766b7384949785ea13211850fef90981885bdf103c291757f5dfff3e91): header, 2026-11-10..2026-11-18 (7 rows) and 1999-01-04..06 (3 rows); N/A cells and a trailing comma as published |
+| ecb_sdmx_20261118.csv | https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&startPeriod=2026-11-18&endPeriod=2026-11-18 | 2026-11-19T12:01:59Z | 6807 | e252255e01f4c61639ad9f69518b671d4b01fd9c369b580d50f1a8e8865cbe7f | second independent copy for ECB conformance (SDMX); values without trailing zeros (0.8329) |
+| estr.csv | https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?format=csvdata&lastNObservations=8 | 2026-11-19T12:01:20Z | 2809 | 3fd42c672e2e6d7e1e918b98642a49626ea537a34602691dab44ecf622dbe3b7 | EST dataflow, 8 observations 2026-11-09..2026-11-18 |
+| policy_MRR_FR.csv | https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.MRR_FR.LEV?format=csvdata&lastNObservations=6 | 2026-11-19T12:01:26Z | 2677 | ad044440d13a48f91c99314c8d9092721dc378870e24a44dc12a27830b059520 | series key exists; date-of-change series (rows only on decision dates) |
+| policy_DFR.csv | https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.DFR.LEV?format=csvdata&lastNObservations=6 | 2026-11-19T12:01:31Z | 2231 | f0a09f82f67f65e4ea1acf183a63e843c24d11ac1c1031924ee6f8a3a794dd5d | series key exists; same dates |
+| policy_MLFR.csv | https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.MLFR.LEV?format=csvdata&lastNObservations=6 | 2026-11-19T12:01:35Z | 2353 | 409e0c995e611b82c0d89c1d05e7b774f8c9bf2ed325d2d48a50ca9b9e42366c | series key exists; same dates |
+| treasury_202611.xml | https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value_month=202611 | 2026-11-19T12:02:01Z | 19213 | 3f98ada22c20d13a589cdc2b69fb4a32310a2e887affab9c0de68d8244bbf0d0 | untrimmed; November 2026, 12 dates x 14 tenors (BC_1MONTH .. BC_30YEAR; BC_30YEARDISPLAY is a duplicate and is ignored) |
+| treasury_202611.csv | https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve&field_tdr_date_value=2026&page&_format=csv | 2026-11-19T12:02:08Z | 1083 | 607b17c022768ebd52b62052be76971b89c9f177a6444c119b6b6a342c00152b | second independent copy for Treasury conformance; the 2026 file trimmed to the header and the 12 November rows (full file 18011 bytes). The month-filtered CSV URL returned 0 bytes, so the year URL is the one to use |
+| boe_iudbedr.csv | https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom=02/Nov/2026&Dateto=10/Nov/2026&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N | 2026-11-19T12:02:28Z | 128 | 98decb9ca8f22ee85f9205d20ffe56bbfaf4cea0f88c63539936169cfe7160c6 | untrimmed; CRLF line ends; Bank Rate changed on 05 Nov 2026 (3.75 to 4); values as published (4, not 4.00) |
+| ne_admin1_kansas.wkt | https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson | 2026-11-19T12:03:13Z | 2506 | b063d4d0aa3ef3270dafb6cd79eaf0af534151766af562f17bf9f885c3a972ad | Kansas (adm1_code USA-3530, iso_3166_2 US-KS) from the 50m admin-1 file (2325694 bytes, sha256 69a0e06e640b2d505858ae1cb63034e4677f3000b35a98e16312932b98c426b9), converted to WKT POLYGON by a script; Natural Earth is public domain |
+| register.json | (local) /root/datumesh-libs/build2-licences/register.json | 2026-11-19 | 6096 | c6d4f36af33208c3af6c6f8c03370c166b197de8ab0ec9de3c31b5042ba12fd4 | copy of the licence register of the licence check (see build2-licences/LICENCES.md); its instants are the licence pages' fetch times |
+
+## Not fetched, noted only
+
+- `chirps_v3_2024-06.head.txt`: the response headers of a HEAD request, 2026-11-19T12:03:05Z, for https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/tifs/chirps-v3.0.2024.06.tif: 200, content-type image/tiff, content-length 22843890, last-modified Thu, 05 Dec 2024 22:32:36 GMT. The raster itself is **not** downloaded (the host returns 429 on quick repeats: one file a minute at most). Directory listings seen: .../monthly/global/{bils,cogs,netcdf,tifs}/, files named chirps-v3.0.YYYY.MM.tif from 1981.01.
+- `synthetic_raster.json`: SYNTHETIC, written by hand, not CHIRPS: a 6 x 6 grid, 1 degree cells, north-west corner (0 E, 62 N), pixel (r, c) = 10*r + c, pixel (2, 2) = nodata -9999. It stands in for a decoded GeoTIFF in the regional-mean tests.
+
+## Findings that differ from LICENCES.md
+
+- ECB policy rates: the three FM series keys exist exactly as in LICENCES.md (MRR_FR, DFR, MLFR, `B.U2.EUR.4F.KR.<key>.LEV`). They are *date-of-change* series: one observation per Governing Council decision, not daily. So the cells exist on decision dates only.
+- Treasury: the XML and CSV carry 14 tenors, not 13: 1.5 Month and 4 Mo exist from 2022. The CSV month-filtered URL gives an empty file; use the year URL.
+- ECB hist: `eurofxref-hist.zip` is a zip holding `eurofxref-hist.csv` (not plain CSV).
+- BoE: the data URL works as in LICENCES.md; the date format in the file is `DD Mon YYYY`.

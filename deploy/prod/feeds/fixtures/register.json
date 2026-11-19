@@ -1,0 +1,120 @@
+[
+  {
+    "source_domain": "ecb.europa.eu/fx",
+    "licence_url": "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html",
+    "retrieved": "2026-11-19T05:33:50.000000Z",
+    "sha256": "5c467e3b05d8e84acda31b952c7db2ced96c18bad746119039cb03da96fbf6db",
+    "verdict": "RELAY",
+    "spdx_or_url": "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html",
+    "attribution": "Source: European Central Bank",
+    "conditions": [
+      "Cite ECB as the source",
+      "Reproduce accurately",
+      "State explicitly any modification (e.g. derived rates)",
+      "If included in sold documents, tell buyers the information is free from the ECB website",
+      "Carry ECB disclaimer (information purposes only, no liability)"
+    ]
+  },
+  {
+    "source_domain": "ecb.europa.eu/estr",
+    "licence_url": "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html",
+    "retrieved": "2026-11-19T05:33:51.000000Z",
+    "sha256": "70005d3f5f48c7f41d1f7e8b8029efc0bc284cbf855cccfe2a09334fb12ae551",
+    "verdict": "RELAY",
+    "spdx_or_url": "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html",
+    "attribution": "Source: European Central Bank",
+    "conditions": [
+      "ECB does not charge for the EUR STR or license its use",
+      "Cite ECB as the source (general ECB copyright terms; page ECB copyright sha256 5c467e3b05d8e84acda31b952c7db2ced96c18bad746119039cb03da96fbf6db)",
+      "Carry EUR STR disclaimer (public information purposes only, no liability)",
+      "State any modification"
+    ]
+  },
+  {
+    "source_domain": "ecb.europa.eu/policy-rates",
+    "licence_url": "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html",
+    "retrieved": "2026-11-19T05:33:50.000000Z",
+    "sha256": "5c467e3b05d8e84acda31b952c7db2ced96c18bad746119039cb03da96fbf6db",
+    "verdict": "RELAY",
+    "spdx_or_url": "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html",
+    "attribution": "Source: European Central Bank",
+    "conditions": [
+      "Cite ECB as the source",
+      "Reproduce accurately",
+      "State explicitly any modification (e.g. derived rates)",
+      "If included in sold documents, tell buyers the information is free from the ECB website"
+    ]
+  },
+  {
+    "source_domain": "worldbank.org/pink-sheet",
+    "licence_url": "https://datacatalog.worldbank.org/public-licenses",
+    "retrieved": "2026-11-19T05:34:17.000000Z",
+    "sha256": "f7106582fe705d8ea31c2bd7ef726636942b870104a88d882563b16bcece3910",
+    "verdict": "SKIP",
+    "spdx_or_url": "https://datacatalog.worldbank.org/public-licenses",
+    "attribution": null,
+    "conditions": [
+      "Pink Sheet page states no licence; dataset terms page unreachable (resolves to generic non-commercial site terms)",
+      "Default CC-BY-4.0 applies only to WB-produced datasets labelled as such; confirm with World Bank",
+      "Possible third-party price series"
+    ]
+  },
+  {
+    "source_domain": "fao.org/giews/asis",
+    "licence_url": "https://www.fao.org/contact-us/terms/en/",
+    "retrieved": "2026-11-19T05:33:52.000000Z",
+    "sha256": "724a8b680d45f6c43298bac2d2d89b5adb6bae508350062cfe0405fcee55ff08",
+    "verdict": "SKIP",
+    "spdx_or_url": "https://www.fao.org/contact-us/terms/en/",
+    "attribution": null,
+    "conditions": [
+      "ASIS page has no licence statement and is not listed in FAO statistical database Annex 1",
+      "Default FAO web terms: non-commercial only; commercial use needs a licence request",
+      "Statistical database terms bar use in conjunction with promotion of a commercial enterprise"
+    ]
+  },
+  {
+    "source_domain": "chc.ucsb.edu/chirps",
+    "licence_url": "https://www.chc.ucsb.edu/data/chirps3",
+    "retrieved": "2026-11-19T05:36:28.000000Z",
+    "sha256": "ffb74626a0047bb5e05e2a44534cb318fe8011eadf88379568d9e7ef2ee97cef",
+    "verdict": "RELAY",
+    "spdx_or_url": "https://www.chc.ucsb.edu/data/chirps3",
+    "attribution": "CHIRPS: Climate Hazards Center, UC Santa Barbara (Funk et al. 2015, doi:10.1038/sdata.2015.66)",
+    "conditions": [
+      "Page states both public-domain waiver and CC BY 4.0: give attribution to satisfy either",
+      "State any modification (subsetting/aggregation)",
+      "Throttle requests to data.chc.ucsb.edu (429 seen)",
+      "v2 page https://www.chc.ucsb.edu/data/chirps (sha256 a4311d63a3ad74640571b3b5a24e6492e422251fbf687a5e17b1153e3f375a31) states public-domain waiver"
+    ]
+  },
+  {
+    "source_domain": "home.treasury.gov",
+    "licence_url": "https://www.law.cornell.edu/uscode/text/17/105",
+    "retrieved": "2026-11-19T05:36:14.000000Z",
+    "sha256": "e0f425493dd80314c4777e99d29a229f1e72ffedd433891c958dec0500fed6d5",
+    "verdict": "RELAY",
+    "spdx_or_url": "https://www.law.cornell.edu/uscode/text/17/105",
+    "attribution": null,
+    "conditions": [
+      "Basis is 17 USC 105 (no copyright in US Government works); Treasury pages state no licence and no reuse restriction",
+      "Do not imply Treasury endorsement",
+      "Treasury disclaims all warranties (https://home.treasury.gov/subfooter/privacy-policy, sha256 32c8c8db1b23fa8689a0c13f32f6fed688ec4e28c629873361cbba797db1e4ee)"
+    ]
+  },
+  {
+    "source_domain": "bankofengland.co.uk",
+    "licence_url": "https://www.bankofengland.co.uk/legal",
+    "retrieved": "2026-11-19T05:33:55.000000Z",
+    "sha256": "b7b9b9c13e01980e91a77c632820a47305ecaec8b11f3551eeb4913299545bfd",
+    "verdict": "RELAY",
+    "spdx_or_url": "OGL-UK-3.0",
+    "attribution": "Contains public sector information licensed under the Open Government Licence v3.0.",
+    "conditions": [
+      "Database re-use under UK Open Government Licence (version not named on BoE page; v3.0 assumed)",
+      "Link to licence where possible (https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/)",
+      "Selected third-party exchange-rate series excluded; Bank Rate (IUDBEDR) is not one",
+      "BoE gives no assurance of continued publication"
+    ]
+  }
+]

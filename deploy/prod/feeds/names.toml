@@ -1,0 +1,91 @@
+# Every name the feed jobs publish, in one table (Build 2 Part 5, F-section "names wait for the user").
+# REHEARSAL: option B spelling on mesh-test only (QUESTION-build2-relay-names.md is unanswered).
+# Production loads nothing under a relay name until the answer; then only this file changes.
+
+[meta]
+status = "rehearsal"
+host = "mesh-test.datumesh.com"
+takeover_base = "https://mesh-test.datumesh.com/takeover"
+
+[ecb_fx]
+namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+function = "fx_reference"
+unit = "1"
+source_name = "ecb.europa.eu"
+register = "ecb.europa.eu/fx"
+licence = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
+takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+history_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
+second_url = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=1"
+
+[estr]
+namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+function = "estr"
+unit = "percent"
+source_name = "ecb.europa.eu"
+register = "ecb.europa.eu/estr"
+licence = "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html"
+takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+url = "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?format=csvdata"
+
+[policy_rates]
+namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+function = "policy_rate"
+unit = "percent"
+source_name = "ecb.europa.eu"
+register = "ecb.europa.eu/policy-rates"
+licence = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
+takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+# the value of the `rate` argument -> the FM dataflow series key and its file
+[policy_rates.series]
+mro = "MRR_FR"
+dfr = "DFR"
+mlfr = "MLFR"
+[policy_rates.urls]
+mro = "https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.MRR_FR.LEV?format=csvdata"
+dfr = "https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.DFR.LEV?format=csvdata"
+mlfr = "https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.MLFR.LEV?format=csvdata"
+
+[treasury]
+namespace = "mesh-test.datumesh.com/relay/home_treasury_gov"
+function = "par_yield"
+unit = "percent"
+source_name = "home.treasury.gov"
+register = "home.treasury.gov"
+licence = "https://www.law.cornell.edu/uscode/text/17/105"
+takeover = "https://mesh-test.datumesh.com/takeover/home.treasury.gov"
+# {month} is YYYYMM for the XML; {year} for the CSV
+url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value_month={month}"
+second_url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
+
+[boe]
+namespace = "mesh-test.datumesh.com/relay/bankofengland_co_uk"
+function = "bank_rate"
+unit = "percent"
+source_name = "bankofengland.co.uk"
+register = "bankofengland.co.uk"
+licence = "OGL-UK-3.0"
+takeover = "https://mesh-test.datumesh.com/takeover/bankofengland.co.uk"
+# {from} and {to} are DD/Mon/YYYY (Mon in English, e.g. 02/Nov/2026) or the word now
+url = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom={from}&Dateto={to}&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
+
+# Computed by datumesh.com, never under a relay name (F3).
+[chirps]
+namespace = "mesh-test.datumesh.com/chirps"
+function = "chirps_region_rain"
+unit = "mm"
+source_name = "chc.ucsb.edu"
+register = "chc.ucsb.edu/chirps"
+licence = "https://www.chc.ucsb.edu/data/chirps3"
+# {year} and {month} are 4 and 2 digits
+raster_url = "https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/tifs/chirps-v3.0.{year}.{month}.tif"
+[chirps.regions]
+"US-KS" = "Kansas, United States"
+
+# The licence register (F4), a stored function under datumesh.com.
+[register]
+namespace = "mesh-test.datumesh.com/register"
+text_function = "licence_text_sha256"
+page_function = "licence_page"
+licence = "CC0-1.0"
