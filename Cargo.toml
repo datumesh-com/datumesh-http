@@ -52,6 +52,9 @@ serde_json = "1.0.145"
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+# datumesh-core 0.3.9 (spec-0.6.0: scenario envelopes, `check_answer` with overrides), unpublished: the
+# whatif tests validate answers with it, under a name of its own beside the 0.3.8 the library uses.
+core039 = { package = "datumesh-core", path = "../datumesh-core/crates/datumesh-core", features = ["sign"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
 jsonschema = { version = "0.33.0", default-features = false }
 # SQLite stores for the 0.3.0 tests (CONTRACT-1.8b H1, H2); the library itself is PostgreSQL only.
