@@ -36,7 +36,7 @@ def expected(inside):
 
 
 def test_parse_wkt_kansas():
-    rings = chirps.parse_wkt(fixture("ne_admin1_kansas.wkt").decode())
+    rings = chirps.parse_wkt(fixture("regions/us_kansas.wkt").decode())
     assert len(rings) == 1
     r = rings[0]
     assert r[0] == r[-1] and len(r) > 50
