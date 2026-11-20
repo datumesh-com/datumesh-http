@@ -1543,7 +1543,7 @@ async fn the_block_for_agents_gives_the_interval_call() {
     let base = format!("/x/interval/{FXR}?currency=USD&from=2026-03-01&to=2026-03-31");
     assert!(pre.contains(&base), "the JSON interval call of the page: {pre}");
     assert!(pre.contains(&format!("{base}&format=csv")) && pre.contains(&format!("{base}&format=arrow")), "{pre}");
-    assert!(pre.contains("any interval"), "{pre}");
+    assert!(pre.contains("Anyinterval"), "says it takes any interval (whitespace is squashed): {pre}");
     // the old lines stay
     assert!(pre.contains(&format!("/slice/{FXR}")) && pre.contains("format=csv") && pre.contains("{\"request\":\""));
     let pre = pre_of(&html(&m, &page(BANK, "2026-03")).await);

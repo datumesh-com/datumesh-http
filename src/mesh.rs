@@ -1220,6 +1220,7 @@ impl Mesh {
             ("cells", format!("{o}/cells")),
             ("x_bundles", format!("{o}/bundles")),
             ("x_calc", format!("{o}/x/calc")),
+            ("x_interval", format!("{o}/x/interval/{{function}}")),
             ("describe", format!("{o}/describe/{{id}}")),
             ("descriptor", format!("{o}/descriptor/{{hash}}")),
             ("explain", format!("{o}/explain/{{cell}}")),

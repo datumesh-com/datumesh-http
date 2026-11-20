@@ -26,7 +26,8 @@ const ESTR: &str = "mesh-test.datumesh.com/relay/ecb.europa.eu/estr";
 const BOUND_CLOCK: &str = "2026-01-01T00:00:00.000000Z";
 
 fn sig() -> String {
-    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
+    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#
+        .to_string()
 }
 
 fn cell(f: &str, domain: &str, date: &str, value: &str) -> String {
@@ -143,5 +144,8 @@ async fn the_series_index_and_pages_list_only_their_own_cells() {
         assert!(sm.contains(&format!("/series/{BANK}/{p}")), "{sm}");
         assert!(!sm.contains(&format!("/series/{ESTR}/{p}")), "{sm}");
     }
-    assert!(sm.contains(&format!("/series/{ESTR}/2026-07")) && !sm.contains(&format!("/series/{BANK}/2026-07")), "{sm}");
+    assert!(
+        sm.contains(&format!("/series/{ESTR}/2026-07")) && !sm.contains(&format!("/series/{BANK}/2026-07")),
+        "{sm}"
+    );
 }

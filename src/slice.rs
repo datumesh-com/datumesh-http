@@ -319,7 +319,7 @@ impl Inner {
     }
 }
 
-fn arrow_stream(
+pub(crate) fn arrow_stream(
     members: &[SliceValue],
     open: &[String],
     slice: &Slice,

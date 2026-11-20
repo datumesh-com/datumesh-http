@@ -187,12 +187,10 @@ fn cache_for(current: bool) -> String {
 }
 
 /// The slice address of a series call for the page's interval (the redirect of `/slice`, G1): `None` when
-/// the request is not a browser's, or the function is not listed, or the date is not a date.
-pub(crate) fn slice_redirect(
-    config: &crate::config::Config,
-    rest: &str,
-    headers: &axum::http::HeaderMap,
-) -> Option<String> {
+/// the request is not a browser's, or the function is not listed, or the date is not a date. The query form
+/// (`?date=...`) and the call form (`<fn>(date: ...)`, percent-encoded or not; D32) are both read.
+pub(crate) fn slice_redirect(inner: &Inner, rest: &str, headers: &axum::http::HeaderMap) -> Option<String> {
+    let config = &inner.config;
     if config.series.is_empty() || !led_by_html(headers) {
         return None;
     }
@@ -200,26 +198,43 @@ pub(crate) fn slice_redirect(
     if query.split('&').any(|p| p.starts_with("format=")) {
         return None;
     }
-    let page = config.series.iter().find(|p| p.function == path)?;
-    let key = format!("{}=", page.date_arg);
-    let date = query.split('&').find_map(|p| p.strip_prefix(key.as_str()))?;
+    let (function, date) = if crate::call::is_call(rest) {
+        // The crate's call parser: it reads the call as the slice endpoint does (aliases, unquoted values).
+        let now = inner.now();
+        let target = crate::call::resolve(rest, &now, &config.aliases, inner, true)
+            .or_else(|_| crate::call::resolve(rest, &now, &config.aliases, inner, false))
+            .ok()?;
+        let function = target.fn_name();
+        let page = config.series.iter().find(|p| p.function == function)?;
+        let date = match target.cell.args.get(&page.date_arg)? {
+            datumesh_core::Arg::Slice => "*".to_string(),
+            a => a.scalar()?.lexical().to_string(),
+        };
+        (function, date)
+    } else {
+        let page = config.series.iter().find(|p| p.function == path)?;
+        let key = format!("{}=", page.date_arg);
+        let date = query.split('&').find_map(|p| p.strip_prefix(key.as_str()))?;
+        (path.to_string(), date.to_string())
+    };
+    let page = config.series.iter().find(|p| p.function == function)?;
     let origin = config.origin();
     if date == "*" {
-        return Some(format!("{origin}/series/{path}/"));
+        return Some(format!("{origin}/series/{function}/"));
     }
-    let (y, m, _) = parse_date(date)?;
+    let (y, m, _) = parse_date(&date)?;
     let period = match page.granularity {
         Granularity::Month => format!("{y:04}-{m:02}"),
         Granularity::Year => format!("{y:04}"),
     };
-    Some(format!("{origin}/series/{path}/{period}"))
+    Some(format!("{origin}/series/{function}/{period}"))
 }
 
 /// Whether a request is answered by a page or a format of its own, so that `Accept` does not refuse it: a
 /// browser on a listed function's slice, or a `format=` of the slice.
-pub(crate) fn negotiation_free(config: &crate::config::Config, rest: &str, headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn negotiation_free(inner: &Inner, rest: &str, headers: &axum::http::HeaderMap) -> bool {
     let has_format = rest.split_once('?').is_some_and(|(_, q)| q.split('&').any(|p| p.starts_with("format=")));
-    has_format || slice_redirect(config, rest, headers).is_some()
+    has_format || slice_redirect(inner, rest, headers).is_some()
 }
 
 /// Whether the first media type of `Accept` is `text/html`.
@@ -493,6 +508,8 @@ struct View {
     /// A call for the agents: the key of the first column and a date the series has.
     example_key: Option<String>,
     example_date: String,
+    /// The first and last day of the page's interval (a period, or the index's whole coverage).
+    interval: (String, String),
     arg_types: BTreeMap<String, String>,
     coverage: String,
 }
@@ -716,11 +733,18 @@ fn render(v: &View) -> String {
     };
     let fixed_part: String = v.fixed.iter().map(|(k, x)| format!("{k}={x}&")).collect();
     let base = format!("{}/slice/{}?{fixed_part}{key_part}{}", v.origin, v.name, v.date_arg);
+    // The interval call (D32): the page's interval, for any interval change `from` and `to`.
+    let (from, to) = v.interval.clone();
+    let ibase = format!("{}/x/interval/{}?{key_part}from={from}&to={to}", v.origin, v.name);
     let mut pre = String::new();
     pre.push_str(&format!("JSON   {base}=*           every date (one day: {}={date})\n", v.date_arg));
     pre.push_str(&format!("CSV    {base}=*&format=csv\n"));
     pre.push_str(&format!("Arrow  {base}=*&format=arrow\n"));
     pre.push_str(&format!("MCP    get {mcp}\n"));
+    pre.push_str("Any interval: /x/interval takes any from and to (a keyed series: key=* for every key).\n");
+    pre.push_str(&format!("JSON   {ibase}\n"));
+    pre.push_str(&format!("CSV    {ibase}&format=csv\n"));
+    pre.push_str(&format!("Arrow  {ibase}&format=arrow\n"));
     h.push_str(&format!(
         "<section id=\"agents\">\n<h2>For agents</h2>\n<pre>{}</pre>\n</section>\n",
         esc(pre.trim_end())
@@ -830,6 +854,7 @@ fn view_base(inner: &Inner, b: &Bound, page: &SeriesPage, label: String, descrip
         date_arg: page.date_arg.clone(),
         example_key: None,
         example_date: String::new(),
+        interval: (String::new(), String::new()),
         arg_types: types,
         coverage: String::new(),
     }
@@ -865,6 +890,7 @@ fn period_page(
     v.path = format!("/series/{}/{period}", b.name);
     v.period = Some(period.to_string());
     v.coverage = period.to_string();
+    v.interval = (days.0.to_string(), days.1.to_string());
 
     // the columns: the dictionary's (keyed) or one value column
     let seen: BTreeSet<String> =
@@ -971,6 +997,11 @@ fn index_page(inner: &Inner, page: &SeriesPage, b: &Bound, inm: Option<&str>) ->
     v.groups = groups;
     let first = ov.periods.keys().next().cloned().unwrap_or_default();
     let last = ov.periods.keys().next_back().cloned().unwrap_or_default();
+    if let (Some((_, lo, _)), Some((_, _, hi))) =
+        (parse_period(page.granularity, &first), parse_period(page.granularity, &last))
+    {
+        v.interval = (lo, hi);
+    }
     v.coverage = if first == last { first } else { format!("{first}/{last}") };
     let seen = ov.values.clone();
     v.columns = match page.column_arg.as_deref() {
@@ -1087,4 +1118,211 @@ pub(crate) fn respond(inner: &Inner, rest: &str, inm: Option<&str>) -> Out {
     };
     let Some((period, lo, hi)) = parse_period(page.granularity, stem) else { return not_found() };
     period_page(inner, page, &b, &period, (&lo, &hi), csv, inm)
+}
+
+// ---- the interval call (D32) ---------------------------------------------------------------------------
+
+/// The longest interval of a series with month pages, in years.
+const INTERVAL_YEARS: u32 = 10;
+const JSON_TYPE: &str = "application/json";
+const ARROW_TYPE: &str = crate::slice::ARROW;
+
+fn interval_error(status: u16, outcome: &str, code: Option<&str>, cache: &str) -> Out {
+    let mut m = vec![("outcome".to_string(), s(outcome))];
+    if let Some(c) = code {
+        m.push(("error".to_string(), s(c)));
+    }
+    Out { status, body: Value::Object(m).to_jcs(), content_type: JSON_TYPE, cache: cache.to_string(), etag: None }
+}
+
+fn interval_bad(code: &str) -> Out {
+    interval_error(400, "bad_request", Some(code), "no-store")
+}
+
+/// The most days a date may be after `from` for a series with month pages: `from` plus ten years.
+fn plus_years(date: &str, years: u32) -> String {
+    let y: u32 = date[0..4].parse().unwrap_or(0);
+    format!("{:04}{}", y + years, &date[4..])
+}
+
+/// `GET /x/interval/<function>?...`: the stored cells of a listed series with a date in `[from, to]`, keys bound
+/// (`key=value`) or open (`key=*`, or left out), each with its receipt; JSON, CSV or Arrow. Read from the store
+/// only, as the pages are.
+pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&str>) -> Out {
+    let missing = || interval_error(404, "not_covered", None, CACHE_NOW);
+    let Some(page) = inner.config.series.iter().find(|p| p.function == function) else { return missing() };
+    let now = inner.now();
+    let Some(b) = bound(inner, page, &now) else { return missing() };
+
+    let mut params: BTreeMap<String, String> = BTreeMap::new();
+    for part in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = part.split_once('=').unwrap_or((part, ""));
+        let (Some(k), Some(v)) = (crate::call::url_decode(k), crate::call::url_decode(v)) else {
+            return interval_bad("E_PARSE_URI");
+        };
+        if params.insert(k, v).is_some() {
+            return interval_bad("E_PARSE_URI");
+        }
+    }
+    let (Some(from), Some(to)) = (params.remove("from"), params.remove("to")) else {
+        return interval_bad("E_PARSE_URI");
+    };
+    if parse_date(&from).is_none() || parse_date(&to).is_none() || from > to {
+        return interval_bad("E_PARSE_URI");
+    }
+    if page.granularity == Granularity::Month && to > plus_years(&from, INTERVAL_YEARS) {
+        return interval_bad("E_RANGE_TOO_LARGE");
+    }
+    let form = match params.remove("format").as_deref() {
+        None | Some("json") => "json",
+        Some("csv") => "csv",
+        Some("arrow") => "arrow",
+        Some(_) => return interval_bad("E_PARSE_URI"),
+    };
+    // The keys: bound ones join the series' fixed arguments for this read; `*` leaves a key open.
+    let mut p2 = page.clone();
+    for (k, v) in &params {
+        if *k == page.date_arg || !b.types.contains_key(k) {
+            return interval_bad("E_PARSE_URI");
+        }
+        if let Some(fixed) = page.fixed.get(k) {
+            if v != fixed {
+                return interval_bad("E_PARSE_URI");
+            }
+        } else if v != "*" {
+            p2.fixed.insert(k.clone(), v.clone());
+        }
+    }
+    let Some(slice) = slice_of(&b, &p2, &Span::Days(&from, &to)) else { return interval_bad("E_PARSE_URI") };
+    let store: &dyn Store = &*inner.store;
+    let Ok(mut members) = store.slice_values(&slice, &now) else {
+        return interval_error(503, "error", Some("E_EVAL_UNAVAILABLE"), "no-store");
+    };
+    // The open arguments, the date first, in the order of the signature after it.
+    let open: Vec<String> = std::iter::once(page.date_arg.clone())
+        .chain(b.d.signature.args.keys().filter(|k| **k != page.date_arg && !p2.fixed.contains_key(*k)).cloned())
+        .collect();
+    let lex = |m: &SliceValue, k: &str| key_of(m, k).unwrap_or_default();
+    members.sort_by(|a, c| {
+        let ka: Vec<String> = open.iter().map(|k| lex(a, k)).collect();
+        let kc: Vec<String> = open.iter().map(|k| lex(c, k)).collect();
+        ka.cmp(&kc).then_with(|| a.version.tx.cmp(&c.version.tx))
+    });
+    let truncated = members.len() > inner.config.slice_max;
+    members.truncate(inner.config.slice_max);
+
+    let current = match (period_of(page.granularity, &to), period_of(page.granularity, &now)) {
+        (Some(t), Some(n)) => t >= n,
+        _ => true,
+    };
+    let cache = cache_for(current);
+    let mut parts: Vec<String> = vec![form.into(), function.into(), from.clone(), to.clone(), truncated.to_string()];
+    parts.extend(params.iter().map(|(k, v)| format!("{k}={v}")));
+    parts.extend(members.iter().map(|m| m.version.receipt_hash.clone()));
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let etag = etag_of(&refs);
+    let (content_type, ok): (&'static str, bool) = match form {
+        "csv" => (CSV, true),
+        "arrow" => (ARROW_TYPE, true),
+        _ => (JSON_TYPE, true),
+    };
+    debug_assert!(ok);
+    if not_modified(inm, &etag) {
+        return Out { status: 304, body: Vec::new(), content_type, cache, etag: Some(etag) };
+    }
+    let body = match form {
+        "arrow" => match crate::slice::arrow_stream(&members, &open, &slice, &now, function) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(target: "datumesh_http", error = %e, "arrow");
+                return interval_error(503, "error", Some("E_EVAL_UNAVAILABLE"), "no-store");
+            }
+        },
+        "csv" => interval_csv(inner, &b, page, &members).into_bytes(),
+        _ => interval_json(inner, function, (&from, &to), &now, &members, truncated),
+    };
+    Out { status: 200, body, content_type, cache, etag: Some(etag) }
+}
+
+fn interval_json(
+    inner: &Inner,
+    function: &str,
+    range: (&str, &str),
+    now: &str,
+    members: &[SliceValue],
+    truncated: bool,
+) -> Vec<u8> {
+    let hashes: Vec<&str> = members.iter().map(|m| m.version.receipt_hash.as_str()).collect();
+    let receipts = inner.store.receipts_many(&hashes).unwrap_or_default();
+    let mut out = Vec::with_capacity(members.len());
+    for (i, m) in members.iter().enumerate() {
+        let keys: Vec<(String, Value)> =
+            m.cell.args.iter().filter_map(|(k, a)| Some((k.clone(), s(a.scalar()?.lexical())))).collect();
+        let receipt =
+            receipts.get(i).and_then(|r| r.as_deref()).and_then(|b| json::parse(b).ok()).unwrap_or(Value::Null);
+        out.push(obj(vec![
+            ("asof", s(&m.version.asof)),
+            ("keys", Value::Object(keys)),
+            ("receipt", receipt),
+            ("receipt_hash", s(&m.version.receipt_hash)),
+            ("tx", s(&m.version.tx)),
+            ("type", s(m.value.ty().as_str())),
+            ("value", s(m.value.lexical())),
+        ]));
+    }
+    let count = json::parse(members.len().to_string().as_bytes()).unwrap_or(Value::Null);
+    let mut top = vec![
+        ("asof", s(now)),
+        ("count", count),
+        ("from", s(range.0)),
+        ("function", s(function)),
+        ("members", Value::Array(out)),
+        ("to", s(range.1)),
+    ];
+    if truncated {
+        top.push(("truncated", Value::Bool(true)));
+    }
+    obj(top).to_jcs()
+}
+
+/// The page's CSV over the interval (one row a date, the latest version of each column), and a last column
+/// `receipt`: the receipt hashes of the row's cells in column order, space-separated.
+fn interval_csv(inner: &Inner, b: &Bound, page: &SeriesPage, members: &[SliceValue]) -> String {
+    let seen: BTreeSet<String> =
+        page.column_arg.as_deref().map(|c| members.iter().filter_map(|m| key_of(m, c)).collect()).unwrap_or_default();
+    let columns: Vec<String> = match page.column_arg.as_deref() {
+        Some(c) => columns_of(inner, b, c, &seen),
+        None => vec!["value".to_string()],
+    };
+    let unit_of = |x: &str| if page.unit.is_empty() { x.to_string() } else { format!("{x} ({})", page.unit) };
+    let mut headers: Vec<String> =
+        std::iter::once("date".to_string()).chain(columns.iter().map(|c| unit_of(c))).collect();
+    headers.push("receipt".to_string());
+    type Cellv = Option<(String, String, String)>;
+    let index: HashMap<&str, usize> = columns.iter().enumerate().map(|(i, c)| (c.as_str(), i)).collect();
+    let mut rows: BTreeMap<String, Vec<Cellv>> = BTreeMap::new();
+    for m in members {
+        let Some(date) = key_of(m, &page.date_arg) else { continue };
+        let col = match page.column_arg.as_deref() {
+            Some(c) => match key_of(m, c).and_then(|k| index.get(k.as_str()).copied()) {
+                Some(i) => i,
+                None => continue,
+            },
+            None => 0,
+        };
+        let cells = rows.entry(date).or_insert_with(|| vec![None; columns.len()]);
+        if cells[col].as_ref().is_none_or(|(tx, _, _)| m.version.tx.as_str() > tx.as_str()) {
+            cells[col] = Some((m.version.tx.clone(), m.value.lexical().to_string(), m.version.receipt_hash.clone()));
+        }
+    }
+    let rows: Vec<(String, Vec<String>)> = rows
+        .into_iter()
+        .map(|(d, cells)| {
+            let receipts: Vec<String> = cells.iter().flatten().map(|(_, _, h)| h.clone()).collect();
+            let mut vals: Vec<String> = cells.into_iter().map(|c| c.map(|(_, x, _)| x).unwrap_or_default()).collect();
+            vals.push(receipts.join(" "));
+            (d, vals)
+        })
+        .collect();
+    csv_of(&headers, &rows)
 }
