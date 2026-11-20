@@ -158,7 +158,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
 
 def main(argv=None):
     a = common.base_parser(("daily", "history")).parse_args(argv)
-    return common.finish(run(common.names(), fetch=common.http_get, now=common.now_instant(),
+    return common.finish(run(common.names(a.host), fetch=common.http_get, now=common.now_instant(),
                              state_dir=a.state_dir, out_dir=a.out_dir, mode=a.mode))
 
 

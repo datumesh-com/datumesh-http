@@ -176,7 +176,13 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
     let body = if d.lang == "stored" { Value::Null } else { s(&d.body) };
 
     // The tests: counts, the derived cases, each test's call and expectation, the last run.
-    let (count, branches, covered, counterexamples) = testrun::counts(store, &fn_hash).unwrap_or((0, 0, 0, 0));
+    let (count, branches, covered, counterexamples) =
+        testrun::counts(store, &inner.config.host, &fn_hash, &now).unwrap_or((0, 0, 0, 0));
+    let open: Vec<Value> = testrun::counterexamples(store, &inner.config.host, &fn_hash, &now)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| obj(vec![("signer", s(&c.signer)), ("case", s(&c.case))]))
+        .collect();
     let held = testrun::held_tests(store, &fn_hash).unwrap_or_default();
     let overlay = Overlay::default();
     let ran: Vec<Ran> = held.iter().map(|(_, spec)| testrun::run_test(store, &overlay, &now, spec)).collect();
@@ -213,6 +219,7 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         ("branches", num(branches)),
         ("covered", num(covered)),
         ("counterexamples", num(counterexamples)),
+        ("open_counterexamples", Value::Array(open)),
         ("derived", Value::Array(derived)),
         ("cases", Value::Array(cases)),
         ("last_run", obj(vec![("result", s(&result)), ("at", s(&at))])),
@@ -438,6 +445,16 @@ pub(crate) fn render(d: &Value) -> String {
         for c in ds {
             let covered = if get(c, "covered").as_bool() == Some(true) { "covered" } else { "not covered" };
             h.push_str(&format!("<li>{}: {}</li>\n", prose(get(c, "case").as_str().unwrap_or("")), covered));
+        }
+    }
+    h.push_str("</ul>\n<h3>Counterexamples</h3>\n<ul>\n");
+    if let Value::Array(open) = get(t, "open_counterexamples") {
+        for c in open {
+            h.push_str(&format!(
+                "<li>open counterexample from {}: case <code>{}</code></li>\n",
+                esc(get(c, "signer").as_str().unwrap_or("")),
+                esc(get(c, "case").as_str().unwrap_or(""))
+            ));
         }
     }
     h.push_str("</ul>\n<h3>Each test</h3>\n<ul>\n");

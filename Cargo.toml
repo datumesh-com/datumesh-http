@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.4.1"
+version = "0.4.2"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -23,12 +23,12 @@ path = "src/bin/datumesh-mesh.rs"
 [dependencies]
 # Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
 # `sign` for the keys the binary generates.
-datumesh-core = { version = "0.3.9", features = ["sign"] }
+datumesh-core = { version = "0.3.10", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
 datumesh-store = { version = "0.5.1", default-features = false }
 datumesh-engine = "0.5.0"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
-datumesh-formula = "0.5.0"
+datumesh-formula = "0.5.1"
 # The manifest signature of bundle 1 (src/bundle.rs, CONTRACT-1.8b H2): Ed25519 signing by
 # ed25519-dalek, over the curve25519-dalek and sha2 versions core uses; verification is core's.
 ed25519-dalek = { version = "3.0.0", default-features = false }

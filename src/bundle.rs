@@ -122,6 +122,27 @@ fn unhex(text: &str) -> Vec<u8> {
     (0..text.len()).step_by(2).filter_map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
 }
 
+/// The bare-host namespace of the test cases (D20, spec-0.6.1 7.3): a bundle whose namespace is a
+/// host alone is accepted when it has at least one name and every name, and every catalogue entry,
+/// is `<host>/test_case`. Any other bundle of a bare host is a format error, as before.
+pub(crate) fn bare_host_test_cases(doc: &Value, namespace: &str) -> bool {
+    if namespace.is_empty() || namespace.contains('/') {
+        return false;
+    }
+    let want = format!("{namespace}/test_case");
+    let is_want = |v: &Value| v.get("name").and_then(Value::as_str) == Some(want.as_str());
+    let names_ok = match doc.get("names") {
+        Some(Value::Array(a)) => !a.is_empty() && a.iter().all(is_want),
+        _ => false,
+    };
+    let catalog_ok = match doc.get("catalog") {
+        None => true,
+        Some(Value::Array(a)) => a.iter().all(is_want),
+        Some(_) => false,
+    };
+    names_ok && catalog_ok
+}
+
 /// The host of a namespace: its first segment.
 fn host_of(namespace: &str) -> &str {
     namespace.split('/').next().unwrap_or("")
@@ -383,7 +404,7 @@ fn import_with<S: Store + ?Sized>(
         return Err(BundleError::Format("bundle is not 1".into()));
     }
     let namespace = text(&doc, "namespace")?.to_string();
-    if namespace.split('/').count() < 2 {
+    if namespace.split('/').count() < 2 && !bare_host_test_cases(&doc, &namespace) {
         return Err(BundleError::Format("namespace has no host and name".into()));
     }
     let manifest = doc.get("manifest").ok_or_else(|| BundleError::Format("no manifest".into()))?;

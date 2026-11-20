@@ -309,8 +309,14 @@ pub fn resolve_uri(rest: &str, now: &str, bindings: &dyn Bindings, slice: bool) 
             }
         }
         let signature = Value::Object(vec![("args".into(), Value::Object(sig))]);
+        // A function name core refuses (2.2, 2.3: a segment or the whole name over its limit, a name
+        // that is not canonical) is answered with core's canonical code (spec-0.6.1, 5.4).
+        let name_error = if path.contains('#') { None } else { lexical::check_function_name(path, "$").err() };
         return match parse_reference(&uri, &signature) {
             Err(e) if structural(e.code()) => Err(Rejection::BadRequest(e.code())),
+            _ if name_error.is_some() => {
+                Err(Rejection::BadRequest(name_error.map_or(ErrorCode::CanonName, |e| e.code())))
+            }
             _ if pin.is_some() || !name_ok => Err(Rejection::NotCovered),
             _ => Err(Rejection::Error(ErrorCode::NameUnbound)),
         };

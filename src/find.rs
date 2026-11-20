@@ -768,13 +768,39 @@ fn class_coverage(ctx: &Ctx, lk: &mut Lookup, qn: &str, toks: &[String], limit: 
     let _ = limit;
 }
 
+/// Each result names its `publisher`, the host of its namespace, and, for a relayed function, its
+/// `source`, the domain the values come from, as a separate member (spec-0.6.1, 9.6, 16.8). The
+/// relay is the one `describe` names (the function page's), so the two agree.
+fn annotate(inner: &Inner, results: &mut [Value]) {
+    let now = inner.now();
+    for r in results.iter_mut() {
+        let Value::Object(members) = r else { continue };
+        let text = |k: &str| members.iter().find(|(m, _)| m == k).and_then(|(_, v)| v.as_str()).map(str::to_string);
+        let Some(name) = text("name") else { continue };
+        let (kind, fn_hash) = (text("kind"), text("fn_hash"));
+        let publisher = crate::describe::publisher_of(&name).to_string();
+        members.push(("publisher".into(), Value::String(publisher)));
+        if kind.as_deref() != Some("function") {
+            continue;
+        }
+        let Some(fn_hash) = fn_hash else { continue };
+        let Some(d) = inner.store.descriptor(&fn_hash).and_then(|b| FunctionDescriptor::from_json(&b[..]).ok()) else {
+            continue;
+        };
+        if let Some(relay) = crate::fnpage::relay_of(inner, &name, &fn_hash, &d, &now) {
+            members.push(("source".into(), Value::String(relay.name)));
+        }
+    }
+}
+
 /// `GET /find?q=` (R3): the hybrid answer of `query`, at most `limit` results.
 pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     let ctx = ctx_of(inner);
     let mut lk = Lookup::default();
     let qn = nfc(query.trim());
     if qn.is_empty() {
-        let results = listing(&ctx, &mut lk, limit);
+        let mut results = listing(&ctx, &mut lk, limit);
+        annotate(inner, &mut results);
         return Value::Object(vec![
             ("query".into(), Value::String(query.into())),
             ("vector".into(), Value::Bool(false)),
@@ -881,7 +907,8 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
             .then(a.name.cmp(&b.name))
     });
     all.truncate(limit);
-    let results: Vec<Value> = all.into_iter().map(|s| s.value).collect();
+    let mut results: Vec<Value> = all.into_iter().map(|s| s.value).collect();
+    annotate(inner, &mut results);
 
     // 7. The demand record: no result and no resolution.
     if results.is_empty() && resolved.member.is_none() {

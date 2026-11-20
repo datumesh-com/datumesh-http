@@ -1,42 +1,47 @@
-# Every name the feed jobs publish, in one table (Build 2 Part 5, F-section "names wait for the user").
-# REHEARSAL: option B spelling on mesh-test only (QUESTION-build2-relay-names.md is unanswered).
-# Production loads nothing under a relay name until the answer; then only this file changes.
+# Every name the feed jobs publish, in one table (Build 2, spec-0.6.1 S4 and S6).
+# Every name is spelled with {host}. The host is a parameter with no default: common.names(host) accepts only the
+# hosts of [hosts] below, spelled exactly, and nothing else in this file names a host. So production names cannot
+# be produced unless the host is explicitly datumesh.com. Rehearse on mesh-test.datumesh.com first.
 
-[meta]
+[hosts."mesh-test.datumesh.com"]
 status = "rehearsal"
-host = "mesh-test.datumesh.com"
-takeover_base = "https://mesh-test.datumesh.com/takeover"
+
+[hosts."datumesh.com"]
+status = "production"
 
 [ecb_fx]
-namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+namespace = "{host}/relay/ecb.europa.eu"
 function = "fx_reference"
 unit = "1"
 source_name = "ecb.europa.eu"
-register = "ecb.europa.eu/fx"
+register_source = "ecb.europa.eu"
+register_code = "reference_rates"
 licence = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
-takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+takeover = "https://{host}/takeover/ecb.europa.eu"
 url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 history_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
 second_url = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=1"
 
 [estr]
-namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+namespace = "{host}/relay/ecb.europa.eu"
 function = "estr"
 unit = "percent"
 source_name = "ecb.europa.eu"
-register = "ecb.europa.eu/estr"
+register_source = "ecb.europa.eu"
+register_code = "estr"
 licence = "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html"
-takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+takeover = "https://{host}/takeover/ecb.europa.eu"
 url = "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?format=csvdata"
 
 [policy_rates]
-namespace = "mesh-test.datumesh.com/relay/ecb_europa_eu"
+namespace = "{host}/relay/ecb.europa.eu"
 function = "policy_rate"
 unit = "percent"
 source_name = "ecb.europa.eu"
-register = "ecb.europa.eu/policy-rates"
+register_source = "ecb.europa.eu"
+register_code = "policy_rates"
 licence = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
-takeover = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu"
+takeover = "https://{host}/takeover/ecb.europa.eu"
 # the value of the `rate` argument -> the FM dataflow series key and its file
 [policy_rates.series]
 mro = "MRR_FR"
@@ -48,54 +53,300 @@ dfr = "https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.DFR.LEV?for
 mlfr = "https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.MLFR.LEV?format=csvdata"
 
 [treasury]
-namespace = "mesh-test.datumesh.com/relay/home_treasury_gov"
+namespace = "{host}/relay/treasury.gov"
 function = "par_yield"
 unit = "percent"
-source_name = "home.treasury.gov"
-register = "home.treasury.gov"
+source_name = "treasury.gov"
+register_source = "treasury.gov"
+register_code = "par_yield_curve"
 licence = "https://www.law.cornell.edu/uscode/text/17/105"
-takeover = "https://mesh-test.datumesh.com/takeover/home.treasury.gov"
+takeover = "https://{host}/takeover/treasury.gov"
 # {month} is YYYYMM for the XML; {year} for the CSV
 url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&field_tdr_date_value_month={month}"
 second_url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
 
 [boe]
-namespace = "mesh-test.datumesh.com/relay/bankofengland_co_uk"
+namespace = "{host}/relay/bankofengland.co.uk"
 function = "bank_rate"
 unit = "percent"
 source_name = "bankofengland.co.uk"
-register = "bankofengland.co.uk"
+register_source = "bankofengland.co.uk"
+register_code = "bank_rate"
 licence = "OGL-UK-3.0"
-takeover = "https://mesh-test.datumesh.com/takeover/bankofengland.co.uk"
+takeover = "https://{host}/takeover/bankofengland.co.uk"
 # {from} and {to} are DD/Mon/YYYY (Mon in English, e.g. 02/Nov/2026) or the word now
 url = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom={from}&Dateto={to}&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
 
-# Computed by datumesh.com, never under a relay name (F3).
+# Computed by datumesh.com from CHIRPS v3, under earth/ (no source name in the function name). The cells carry no
+# `source` member (D17): a stored cell with `source` would be relayed. Lineage is in the summary and the description.
 [chirps]
-namespace = "mesh-test.datumesh.com/chirps"
-function = "chirps_region_rain"
+namespace = "{host}/earth"
+function = "monthly_rainfall"
+dataset = "chirps"
+dataset_label = "CHIRPS v3, Climate Hazards Center, UC Santa Barbara"
 unit = "mm"
 source_name = "chc.ucsb.edu"
-register = "chc.ucsb.edu/chirps"
+register_source = "chc.ucsb.edu"
+register_code = "chirps"
 licence = "https://www.chc.ucsb.edu/data/chirps3"
 # {year} and {month} are 4 and 2 digits
 raster_url = "https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/tifs/chirps-v3.0.{year}.{month}.tif"
-# stored cells beside the means (F3, D15): the raster file's SHA-256 and size per month, the region's WKT once
-raster_sha_function = "chirps_raster_sha256"
-raster_bytes_function = "chirps_raster_bytes"
-region_wkt_function = "chirps_region_wkt"
-region_source_url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson"
-region_source_sha256 = "69a0e06e640b2d505858ae1cb63034e4677f3000b35a98e16312932b98c426b9"
-region_licence = "CC0-1.0"
-[chirps.regions]
-"US-KS" = "Kansas, United States"
-# the polygon of each region, WKT, as converted from the Natural Earth file above (path from feeds/)
-[chirps.region_files]
-"US-KS" = "fixtures/ne_admin1_kansas.wkt"
+region_source = "Natural Earth 10m admin-1 states and provinces, v5.1.2 (natural-earth-vector, ne_10m_admin_1_states_provinces.geojson)"
+region_source_url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+region_source_sha256 = "22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5"
+# a region: its dictionary label, its Natural Earth adm1_code (ne_id) and the vertex count of its feature, and its
+# polygon as WKT, exactly as in Natural Earth (path from feeds/). A region of several features (the French regions: the
+# 10m file has departments) has `members` (their adm1_codes, ne_id joined by +) and a `note`, and its polygon is their
+# union, not simplified. fixtures/regions/extract_regions.py makes the files.
+[chirps.regions.us_kansas]
+label = "Kansas, United States"
+ne_id = "USA-3530"
+ne_vertices = 209
+file = "fixtures/regions/us_kansas.wkt"
 
-# The licence register (F4), a stored function under datumesh.com.
+[chirps.regions.ua_kharkiv]
+label = "Kharkiv Oblast, Ukraine"
+ne_id = "UKR-328"
+ne_vertices = 811
+file = "fixtures/regions/ua_kharkiv.wkt"
+
+[chirps.regions.ua_poltava]
+label = "Poltava Oblast, Ukraine"
+ne_id = "UKR-330"
+ne_vertices = 782
+file = "fixtures/regions/ua_poltava.wkt"
+
+[chirps.regions.ua_dnipropetrovsk]
+label = "Dnipropetrovsk Oblast, Ukraine"
+ne_id = "UKR-326"
+ne_vertices = 1167
+file = "fixtures/regions/ua_dnipropetrovsk.wkt"
+
+[chirps.regions.ru_krasnodar]
+label = "Krasnodar Krai, Russia"
+ne_id = "RUS-2371"
+ne_vertices = 1675
+file = "fixtures/regions/ru_krasnodar.wkt"
+
+[chirps.regions.ru_rostov]
+label = "Rostov Oblast, Russia"
+ne_id = "RUS-2367"
+ne_vertices = 1093
+file = "fixtures/regions/ru_rostov.wkt"
+
+[chirps.regions.ru_stavropol]
+label = "Stavropol Krai, Russia"
+ne_id = "RUS-2306"
+ne_vertices = 697
+file = "fixtures/regions/ru_stavropol.wkt"
+
+[chirps.regions.in_punjab]
+label = "Punjab, India"
+ne_id = "IND-3249"
+ne_vertices = 749
+file = "fixtures/regions/in_punjab.wkt"
+
+[chirps.regions.in_uttar_pradesh]
+label = "Uttar Pradesh, India"
+ne_id = "IND-3253"
+ne_vertices = 2100
+file = "fixtures/regions/in_uttar_pradesh.wkt"
+
+[chirps.regions.in_madhya_pradesh]
+label = "Madhya Pradesh, India"
+ne_id = "IND-3261"
+ne_vertices = 2522
+file = "fixtures/regions/in_madhya_pradesh.wkt"
+
+[chirps.regions.cn_henan]
+label = "Henan, China"
+ne_id = "CHN-1812"
+ne_vertices = 1509
+file = "fixtures/regions/cn_henan.wkt"
+
+[chirps.regions.cn_shandong]
+label = "Shandong, China"
+ne_id = "CHN-1814"
+ne_vertices = 1501
+file = "fixtures/regions/cn_shandong.wkt"
+
+[chirps.regions.cn_hebei]
+label = "Hebei, China"
+ne_id = "CHN-1811"
+ne_vertices = 2119
+file = "fixtures/regions/cn_hebei.wkt"
+
+[chirps.regions.fr_centre_val_de_loire]
+label = "Centre-Val de Loire, France"
+ne_id = "FRA-5279+FRA-5291+FRA-5309+FRA-5310+FRA-5314+FRA-5317"
+members = ["FRA-5279", "FRA-5291", "FRA-5309", "FRA-5310", "FRA-5314", "FRA-5317"]
+note = "dissolved by the operator from the 6 Natural Earth 10m admin-1 departments named in its id, united without simplification (the 10m file has departments, not the current regions)"
+file = "fixtures/regions/fr_centre_val_de_loire.wkt"
+
+[chirps.regions.fr_grand_est]
+label = "Grand Est, France"
+ne_id = "FRA-5268+FRA-5270+FRA-5273+FRA-5296+FRA-5300+FRA-5323+FRA-5325+FRA-5326+FRA-5328+FRA-5355"
+members = ["FRA-5268", "FRA-5270", "FRA-5273", "FRA-5296", "FRA-5300", "FRA-5323", "FRA-5325", "FRA-5326", "FRA-5328", "FRA-5355"]
+note = "dissolved by the operator from the 10 Natural Earth 10m admin-1 departments named in its id, united without simplification (the 10m file has departments, not the current regions)"
+file = "fixtures/regions/fr_grand_est.wkt"
+
+[chirps.regions.ar_buenos_aires]
+label = "Buenos Aires Province, Argentina"
+ne_id = "ARG-1295"
+ne_vertices = 629
+file = "fixtures/regions/ar_buenos_aires.wkt"
+
+[chirps.regions.au_new_south_wales]
+label = "New South Wales, Australia"
+ne_id = "AUS-2654"
+ne_vertices = 1555
+file = "fixtures/regions/au_new_south_wales.wkt"
+
+[chirps.regions.au_western_australia]
+label = "Western Australia, Australia"
+ne_id = "AUS-2651"
+ne_vertices = 3774
+file = "fixtures/regions/au_western_australia.wkt"
+
+[chirps.regions.ca_saskatchewan]
+label = "Saskatchewan, Canada"
+ne_id = "CAN-631"
+ne_vertices = 137
+file = "fixtures/regions/ca_saskatchewan.wkt"
+
+[chirps.regions.ca_alberta]
+label = "Alberta, Canada"
+ne_id = "CAN-632"
+ne_vertices = 837
+file = "fixtures/regions/ca_alberta.wkt"
+
+[chirps.regions.kz_kostanay]
+label = "Kostanay Region, Kazakhstan"
+ne_id = "KAZ-3196"
+ne_vertices = 576
+file = "fixtures/regions/kz_kostanay.wkt"
+
+[chirps.regions.kz_north_kazakhstan]
+label = "North Kazakhstan Region, Kazakhstan"
+ne_id = "KAZ-3204"
+ne_vertices = 570
+file = "fixtures/regions/kz_north_kazakhstan.wkt"
+
+# The licence register (answer 3): the class register/dataset(source, code) with six stored methods.
 [register]
-namespace = "mesh-test.datumesh.com/register"
-text_function = "licence_text_sha256"
-page_function = "licence_page"
+namespace = "{host}/register"
+class = "dataset"
+keys = ["source", "code"]
+methods = ["name", "status", "licence_page", "licence_hash", "licence_clauses", "retrieved"]
+steward_process = "https://{host}/classes/change"
 licence = "CC0-1.0"
+
+class_label = "Licence register: datasets examined for relay"
+class_description = "One entry per dataset the operator examined for relaying or computes from: dataset(source, code), where source is the organisation's own domain and code a short name for the dataset. Methods: name, status (relayed, computed_from or not_relayed), licence_page, licence_hash (SHA-256 of the licence page text as fetched), licence_clauses (the reuse, modification and commercial-use clauses, and for not_relayed the reason) and retrieved (when the page was fetched). A new check is a new version of the same cells; use asof for the history."
+key_text = { source = "the organisation's own domain, for example ecb.europa.eu", code = "a short name for the dataset, for example reference_rates" }
+
+# where each method's value comes from: dataset.* is the entry below, entry.* the licence check's register.json
+# entry, clauses the quoted clauses (plus the reason for not_relayed). Methods not listed here return a string.
+[register.value]
+name = "dataset.name"
+status = "dataset.status"
+licence_page = "entry.licence_url"
+licence_hash = "entry.sha256"
+licence_clauses = "clauses"
+retrieved = "entry.retrieved"
+[register.returns]
+retrieved = "instant"
+
+# each method: its catalogue label and description, and the summary of its cells ({source} {code} {name} {status}
+# {retrieved} {licence_page} are filled from the entry)
+[register.method_text.name]
+label = "Dataset name (register)"
+description = "The title of the dataset, as its publisher names it."
+summary = "Title of the dataset {code} from {source}: {name}."
+[register.method_text.status]
+label = "Relay status (register)"
+description = "relayed (the operator relays the values unchanged), computed_from (the operator computes its own values from the dataset) or not_relayed (examined and not relayed; the reason is in licence_clauses)."
+summary = "Status of the dataset {code} from {source} ({name}): {status}."
+[register.method_text.licence_page]
+label = "Licence page URL (register)"
+description = "The URL of the page that states the dataset's licence or terms of use."
+summary = "Licence page of the dataset {code} from {source} ({name}): {licence_page}."
+[register.method_text.licence_hash]
+label = "Licence page SHA-256 (register)"
+description = "The SHA-256, in hex, of the licence page text as the operator fetched it. A new hash is a new version of the same cell and means the page changed."
+summary = "SHA-256 of the licence page text of the dataset {code} from {source} ({name}), as fetched on {retrieved}."
+[register.method_text.licence_clauses]
+label = "Licence clauses (register)"
+description = "The reuse, modification and commercial-use clauses of the dataset's licence, and the attribution it asks for. For not_relayed datasets it starts with the reason the dataset is not relayed."
+summary = "Licence clauses of the dataset {code} from {source} ({name}), as read on {retrieved}; status {status}."
+[register.method_text.retrieved]
+label = "Licence page fetched (register)"
+description = "The instant the operator fetched the licence page whose hash is licence_hash. As of an earlier time it answers with the earlier check."
+summary = "When the licence page of the dataset {code} from {source} ({name}) was fetched: {retrieved}."
+
+# the label of each source domain, for the class's dictionary
+[register.source_labels]
+"ecb.europa.eu" = "European Central Bank"
+"treasury.gov" = "US Department of the Treasury"
+"bankofengland.co.uk" = "Bank of England"
+"chc.ucsb.edu" = "Climate Hazards Center, UC Santa Barbara"
+"worldbank.org" = "World Bank"
+"fao.org" = "Food and Agriculture Organization of the United Nations"
+
+# The entries: `input` is the key (source_domain) of the entry in the licence check's register.json.
+# `reason` is why a source was examined and not relayed (LICENCES.md).
+[[register.datasets]]
+source = "ecb.europa.eu"
+code = "reference_rates"
+name = "ECB euro foreign exchange reference rates"
+status = "relayed"
+input = "ecb.europa.eu/fx"
+
+[[register.datasets]]
+source = "ecb.europa.eu"
+code = "estr"
+name = "ECB euro short-term rate (EUR STR)"
+status = "relayed"
+input = "ecb.europa.eu/estr"
+
+[[register.datasets]]
+source = "ecb.europa.eu"
+code = "policy_rates"
+name = "ECB key policy rates"
+status = "relayed"
+input = "ecb.europa.eu/policy-rates"
+
+[[register.datasets]]
+source = "treasury.gov"
+code = "par_yield_curve"
+name = "US Treasury daily par yield curve rates"
+status = "relayed"
+input = "home.treasury.gov"
+
+[[register.datasets]]
+source = "bankofengland.co.uk"
+code = "bank_rate"
+name = "Bank of England Bank Rate"
+status = "relayed"
+input = "bankofengland.co.uk"
+
+[[register.datasets]]
+source = "chc.ucsb.edu"
+code = "chirps"
+name = "CHIRPS v3, Climate Hazards Center, UC Santa Barbara"
+status = "computed_from"
+input = "chc.ucsb.edu/chirps"
+
+[[register.datasets]]
+source = "worldbank.org"
+code = "commodity_prices"
+name = "World Bank Commodity Price Data (Pink Sheet)"
+status = "not_relayed"
+input = "worldbank.org/pink-sheet"
+
+[[register.datasets]]
+source = "fao.org"
+code = "asis"
+name = "FAO Agricultural Stress Index System (ASIS)"
+status = "not_relayed"
+input = "fao.org/giews/asis"

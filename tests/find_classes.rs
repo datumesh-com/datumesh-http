@@ -171,6 +171,7 @@ async fn a_word_of_a_methods_description_finds_the_class() {
             "match",
             "methods",
             "name",
+            "publisher",
             "score",
             "since"
         ]
@@ -231,8 +232,21 @@ async fn a_method_entry_has_its_class_and_function() {
     assert!(matches!(r.get("descriptor"), Some(Value::Object(_))));
     assert_eq!(
         keys_of(r),
-        ["call", "class", "description", "descriptor", "fn_hash", "kind", "label", "match", "name", "score", "since"]
-            .map(String::from)
+        [
+            "call",
+            "class",
+            "description",
+            "descriptor",
+            "fn_hash",
+            "kind",
+            "label",
+            "match",
+            "name",
+            "publisher",
+            "score",
+            "since"
+        ]
+        .map(String::from)
     );
 }
 
@@ -252,8 +266,20 @@ async fn a_function_result_is_unchanged_apart_from_kind() {
     assert!(matches!(r.get("descriptor"), Some(Value::Object(_))));
     assert_eq!(
         keys_of(r),
-        ["call", "description", "descriptor", "fn_hash", "kind", "label", "match", "name", "score", "since"]
-            .map(String::from)
+        [
+            "call",
+            "description",
+            "descriptor",
+            "fn_hash",
+            "kind",
+            "label",
+            "match",
+            "name",
+            "publisher",
+            "score",
+            "since"
+        ]
+        .map(String::from)
     );
 }
 

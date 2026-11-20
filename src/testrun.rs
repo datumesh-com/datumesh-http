@@ -824,14 +824,72 @@ pub fn rerun_readers<S: Store + ?Sized>(store: &S, names: &[String], run_at: &st
 }
 
 /// The counts of a function's held tests, for `describe`: `(count, branches, covered,
-/// counterexamples)`, where a counterexample is a failing (or erroring) test.
-pub fn counts<S: Store + ?Sized>(store: &S, hash: &str) -> Result<(u64, u64, u64, u64), String> {
+/// counterexamples)`. A counterexample is an open one ([`counterexamples`]): a failing or erroring
+/// test of this mesh, or a `false` test cell of any host for the function's hash (spec 7.3, 16.8).
+pub fn counts<S: Store + ?Sized>(store: &S, host: &str, hash: &str, now: &str) -> Result<(u64, u64, u64, u64), String> {
     let rows = store.function_tests(hash).map_err(|e| e.to_string())?;
     let count = rows.len() as u64;
     let (branches, covered) = rows.first().map_or((0, 0), |r| (r.branches_total as u64, r.branches_covered as u64));
-    let counterexamples =
-        rows.iter().filter(|r| matches!(r.last_result.as_deref(), Some("fail") | Some("error"))).count() as u64;
+    let counterexamples = counterexamples(store, host, hash, now)?.len() as u64;
     Ok((count, branches, covered, counterexamples))
+}
+
+/// An open counterexample of a function (spec 7.3): who says the function gives a wrong result,
+/// and the 16-hex case id of the test that says so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Counterexample {
+    /// The host that states it: this mesh for its own failing tests, the cell's host otherwise.
+    pub signer: String,
+    /// The case id (16 lowercase hex digits).
+    pub case: String,
+}
+
+/// The open counterexamples of the function `hash` as of `now`: this mesh's own failing or
+/// erroring held tests (signed by `host`), and the `false` `<host>/test_case` cells of every host
+/// this mesh holds for `hash`, the latest version of each cell (`asof` `now`), each cell once.
+///
+/// The cells are read as the store reads a slice (5.6): for each held namespace `N`, the binding of
+/// `N/test_case` now, and the slice of its cells whose `function_hash` argument is `hash` and whose
+/// `case` is open. The store's typed-argument index (`cell_args`, on fn_hash, name, type, value)
+/// serves the `function_hash` argument, so no cell of another function is read. Computed test cells
+/// are not counted: a test cell this mesh computes is a test of its own, already counted as one.
+pub fn counterexamples<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    hash: &str,
+    now: &str,
+) -> Result<Vec<Counterexample>, String> {
+    let mut out: Vec<Counterexample> = store
+        .function_tests(hash)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|r| matches!(r.last_result.as_deref(), Some("fail") | Some("error")))
+        .map(|r| Counterexample { signer: host.to_string(), case: r.case })
+        .collect();
+    let subject = Scalar::from_lexical(Type::String, hash).map_err(|e| e.to_string())?;
+    for ns in store.namespaces().map_err(|e| e.to_string())? {
+        let name = format!("{}/{TEST_CASE_NAME}", ns.host);
+        let Some(binding) = store.resolve_binding(&name, now).map_err(|e| e.to_string())? else { continue };
+        let cell = Cell {
+            ns: ns.host.clone(),
+            fn_name: TEST_CASE_NAME.into(),
+            fn_hash: binding.fn_hash.clone(),
+            args: CoreArgs::from([
+                (TEST_CASE_HASH_ARG.to_string(), Arg::Value(subject.clone())),
+                ("case".to_string(), Arg::Slice),
+            ]),
+        };
+        // A binding of another shape (not `function_hash` and `case`) holds no test cell of ours.
+        let Ok(slice) = Slice::from_value(&cell.to_value()) else { continue };
+        for v in store.slice_values(&slice, now).map_err(|e| e.to_string())? {
+            if v.value.lexical() != "false" {
+                continue;
+            }
+            let Some(Arg::Value(case)) = v.cell.args.get("case") else { continue };
+            out.push(Counterexample { signer: ns.host.clone(), case: case.lexical().to_string() });
+        }
+    }
+    Ok(out)
 }
 
 /// Puts the test-case function `<host>/test_case(function_hash, case) -> boolean` (E5, mesh-test) in

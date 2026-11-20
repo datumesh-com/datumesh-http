@@ -1,0 +1,174 @@
+{
+ "us_kansas": {
+  "ne_id": "USA-3530",
+  "name": "Kansas",
+  "type": "Polygon",
+  "ne_vertices": 209
+ },
+ "ua_kharkiv": {
+  "ne_id": "UKR-328",
+  "name": "Kharkiv",
+  "type": "Polygon",
+  "ne_vertices": 811
+ },
+ "ua_poltava": {
+  "ne_id": "UKR-330",
+  "name": "Poltava",
+  "type": "Polygon",
+  "ne_vertices": 782
+ },
+ "ua_dnipropetrovsk": {
+  "ne_id": "UKR-326",
+  "name": "Dnipropetrovs'k",
+  "type": "Polygon",
+  "ne_vertices": 1167
+ },
+ "ru_krasnodar": {
+  "ne_id": "RUS-2371",
+  "name": "Krasnodar",
+  "type": "Polygon",
+  "ne_vertices": 1675
+ },
+ "ru_rostov": {
+  "ne_id": "RUS-2367",
+  "name": "Rostov",
+  "type": "Polygon",
+  "ne_vertices": 1093
+ },
+ "ru_stavropol": {
+  "ne_id": "RUS-2306",
+  "name": "Stavropol'",
+  "type": "Polygon",
+  "ne_vertices": 697
+ },
+ "in_punjab": {
+  "ne_id": "IND-3249",
+  "name": "Punjab",
+  "type": "Polygon",
+  "ne_vertices": 749
+ },
+ "in_uttar_pradesh": {
+  "ne_id": "IND-3253",
+  "name": "Uttar Pradesh",
+  "type": "Polygon",
+  "ne_vertices": 2100
+ },
+ "in_madhya_pradesh": {
+  "ne_id": "IND-3261",
+  "name": "Madhya Pradesh",
+  "type": "Polygon",
+  "ne_vertices": 2522
+ },
+ "cn_henan": {
+  "ne_id": "CHN-1812",
+  "name": "Henan",
+  "type": "Polygon",
+  "ne_vertices": 1509
+ },
+ "cn_shandong": {
+  "ne_id": "CHN-1814",
+  "name": "Shandong",
+  "type": "MultiPolygon",
+  "ne_vertices": 1501
+ },
+ "cn_hebei": {
+  "ne_id": "CHN-1811",
+  "name": "Hebei",
+  "type": "MultiPolygon",
+  "ne_vertices": 2119
+ },
+ "ar_buenos_aires": {
+  "ne_id": "ARG-1295",
+  "name": "Buenos Aires",
+  "type": "MultiPolygon",
+  "ne_vertices": 629
+ },
+ "au_new_south_wales": {
+  "ne_id": "AUS-2654",
+  "name": "New South Wales",
+  "type": "Polygon",
+  "ne_vertices": 1555
+ },
+ "au_western_australia": {
+  "ne_id": "AUS-2651",
+  "name": "Western Australia",
+  "type": "MultiPolygon",
+  "ne_vertices": 3774
+ },
+ "ca_saskatchewan": {
+  "ne_id": "CAN-631",
+  "name": "Saskatchewan",
+  "type": "Polygon",
+  "ne_vertices": 137
+ },
+ "ca_alberta": {
+  "ne_id": "CAN-632",
+  "name": "Alberta",
+  "type": "Polygon",
+  "ne_vertices": 837
+ },
+ "kz_kostanay": {
+  "ne_id": "KAZ-3196",
+  "name": "Qostanay",
+  "type": "Polygon",
+  "ne_vertices": 576
+ },
+ "kz_north_kazakhstan": {
+  "ne_id": "KAZ-3204",
+  "name": "North Kazakhstan",
+  "type": "Polygon",
+  "ne_vertices": 570
+ },
+ "fr_centre_val_de_loire": {
+  "members": [
+   "FRA-5279",
+   "FRA-5291",
+   "FRA-5309",
+   "FRA-5310",
+   "FRA-5314",
+   "FRA-5317"
+  ],
+  "names": [
+   "Cher",
+   "Eure-et-Loir",
+   "Indre",
+   "Indre-et-Loire",
+   "Loir-et-Cher",
+   "Loiret"
+  ],
+  "type": "Polygon",
+  "member_vertices": 1386,
+  "parts": 1,
+  "holes": 0
+ },
+ "fr_grand_est": {
+  "members": [
+   "FRA-5268",
+   "FRA-5270",
+   "FRA-5273",
+   "FRA-5296",
+   "FRA-5300",
+   "FRA-5323",
+   "FRA-5325",
+   "FRA-5326",
+   "FRA-5328",
+   "FRA-5355"
+  ],
+  "names": [
+   "Ardennes",
+   "Aube",
+   "Bas-Rhin",
+   "Haute-Rhin",
+   "Haute-Marne",
+   "Marne",
+   "Meurthe-et-Moselle",
+   "Meuse",
+   "Moselle",
+   "Vosges"
+  ],
+  "type": "Polygon",
+  "member_vertices": 2390,
+  "parts": 1,
+  "holes": 0
+ }
+}

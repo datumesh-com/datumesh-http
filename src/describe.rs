@@ -280,12 +280,16 @@ impl Inner {
         let Ok(answer) = FunctionAnswer::new(name, d) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
-        let counts = crate::testrun::counts(&*self.store, fn_hash);
+        let counts = crate::testrun::counts(&*self.store, &self.config.host, fn_hash, &self.now());
         let Ok((count, branches, covered, counterexamples)) = counts else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
         let tests = DescribeTests { count, branches, covered, counterexamples };
-        let Ok(mut answer) = answer.with_tests(tests) else {
+        let Ok(answer) = answer.with_tests(tests) else {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        };
+        // The publisher is the host of the namespace (spec-0.6.1, 16.8), never a domain in the name.
+        let Ok(mut answer) = answer.with_publisher(publisher_of(name)) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
         // A relayed function names its source and the takeover page (spec-0.6.0, 16.8; core's
@@ -339,6 +343,7 @@ impl Inner {
             ("descriptor".into(), descriptor),
             ("kind".into(), Value::String("class".into())),
             ("methods".into(), Value::Object(methods)),
+            ("publisher".into(), Value::String(publisher_of(name).into())),
         ]);
         Reply::json(200, doc.to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
     }
@@ -391,6 +396,11 @@ impl Inner {
         ]);
         Reply::json(200, doc.to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
     }
+}
+
+/// The publisher of a name: the host of its namespace, its first segment (spec-0.6.1, 2.3, 16.8).
+pub(crate) fn publisher_of(name: &str) -> &str {
+    name.split('/').next().unwrap_or(name)
 }
 
 fn bad_key() -> Reply {

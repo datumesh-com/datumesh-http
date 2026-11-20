@@ -1,8 +1,14 @@
-"""The licence register (F4): for each relayed source, the SHA-256 of its licence text and its licence page URL,
-as stored cells under datumesh.com. Input: the register.json of the licence check (verdict RELAY entries only)."""
+"""The licence register (answer 3): the class `<host>/register/dataset(source, code)`, a stored method per fact,
+and one entry per dataset examined: the sources relayed, the one computed from, and those not relayed.
+
+Input: the register.json of the licence check (every verdict: RELAY and SKIP: the page, hash and date), and
+licences.toml (the verbatim clauses of LICENCES.md and the reasons). Every name, the entries, the methods' texts and
+where each value comes from are in names.toml. There is no `retrieved` key: `retrieved` is a
+method. A new check that finds the same licence text emits nothing; a changed text emits new versions of that
+entry's cells (the same cells, a later version), and `asof` gives the history."""
+import hashlib
 import json
 from pathlib import Path
-from urllib.parse import urlparse
 
 import common
 from common import INSTANT, SHA256, ShapeError, shape, write_jsonl
@@ -10,82 +16,125 @@ from common import INSTANT, SHA256, ShapeError, shape, write_jsonl
 KEY = "register"
 REQUIRED = {"source_domain", "licence_url", "retrieved", "sha256", "verdict", "spdx_or_url", "attribution",
             "conditions"}
+VERDICTS = {"RELAY", "SKIP"}
 
 
 def parse(data: bytes) -> list:
+    """Every entry of register.json, checked: the shape, the hash, the instant, the verdict."""
     try:
         entries = json.loads(common.decode(data))
     except json.JSONDecodeError as e:
         raise ShapeError(f"register does not parse: {e}") from e
-    shape(isinstance(entries, list), "register: not a list")
-    out = []
+    shape(isinstance(entries, list) and entries, "register: not a list of entries")
     for e in entries:
         shape(isinstance(e, dict), "register: an entry is not an object")
         missing = REQUIRED - set(e)
         shape(not missing, f"register: entry lacks {sorted(missing)}")
-        shape(isinstance(e["sha256"], str) and SHA256.match(e["sha256"]), f"register: bad sha256 for {e['source_domain']}")
+        who = e["source_domain"]
+        shape(isinstance(e["sha256"], str) and SHA256.match(e["sha256"]), f"register: bad sha256 for {who}")
         shape(isinstance(e["retrieved"], str) and INSTANT.match(e["retrieved"]), "register: bad retrieved instant")
-        shape(isinstance(e["verdict"], str), "register: verdict is not text")
-        if e["verdict"] == "RELAY":
-            out.append(e)
-    shape(out, "register: no RELAY entries")
-    return out
+        shape(e["verdict"] in VERDICTS, f"register: verdict of {who} is not one of {sorted(VERDICTS)}")
+        shape(isinstance(e["licence_url"], str) and e["licence_url"].startswith("https://"), f"register: bad URL for {who}")
+        shape(isinstance(e["conditions"], list) and all(isinstance(c, str) for c in e["conditions"]),
+              f"register: conditions of {who} are not a list of text")
+        shape(e["attribution"] is None or isinstance(e["attribution"], str), f"register: bad attribution for {who}")
+    return entries
 
 
-def _catalog(sec, fq, label, description, entries, returns_example):
-    dictionary = {"source": [{"value": e["source_domain"], "label": e["attribution"] or e["source_domain"]}
-                             for e in entries]}
-    first = entries[0]
-    return {"catalog": fq, "kind": "function", "label": label,
-            "description": f"{description} Source: the register of datumesh.com, RELAY verdicts.",
-            "args": {"source": "the source's domain, for example ecb.europa.eu/fx",
-                     "retrieved": "the day the licence page was fetched"},
-            "examples": [{"call": f'{fq}(source: "{first["source_domain"]}", retrieved: {first["retrieved"][:10]})',
-                          "expected": {"type": "string", "value": returns_example(first)}}],
-            "dictionary": dictionary}
+def jcs(obj) -> bytes:
+    """Canonical JSON for text and integers (what a descriptor holds): sorted keys, no spaces, UTF-8."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def emit(entries, state, names):
-    """-> (lines, state). The functions and catalogue come once (state key `done` absent); then two cells per
-    entry not yet done: the licence text's SHA-256 and the licence page URL."""
+def _clauses(lic) -> str:
+    """The verbatim quotes of licences.toml, joined by " | "; a source not relayed starts with its reason."""
+    text = " | ".join(lic["quotes"])
+    if "reason" in lic:
+        text = f"Not relayed. Reason: {lic['reason']} Clauses: {text}"
+    return text
+
+
+def _value(sec, method, d, e, lic):
+    where = sec["value"][method]
+    if where == "clauses":
+        text = _clauses(lic)
+    else:
+        scope, field = where.split(".")
+        text = {"dataset": d, "entry": e}[scope][field]
+    return {"type": sec.get("returns", {}).get(method, "string"), "value": text}
+
+
+def _method_descriptor(sec, method) -> dict:
+    args = {k: {"type": "string", "valid": False} for k in sec["keys"]}
+    return {"code": {"body": "", "lang": "stored"}, "inputs": [],
+            "signature": {"args": args, "order": list(sec["keys"]), "returns": sec.get("returns", {}).get(method, "string")}}
+
+
+def _class_lines(sec, cls):
+    """Descriptor lines for the methods, the class line (its keys, steward and methods by hash), the catalogue."""
+    lines, hashes = [], {}
+    for m in sec["methods"]:
+        d = _method_descriptor(sec, m)
+        lines.append({"descriptor": d})
+        hashes[m] = hashlib.sha256(jcs(d)).hexdigest()
+    none = {"type": "string", "key_normalisation": "none"}
+    lines.append({"class": cls, "descriptor": {
+        "keys": {k: dict(none) for k in sec["keys"]}, "order": list(sec["keys"]), "methods": hashes,
+        "steward": {"namespace": sec["namespace"], "process": sec["steward_process"]}}})
+    sources = list(dict.fromkeys(d["source"] for d in sec["datasets"]))
+    lines.append({"catalog": cls, "kind": "class", "label": sec["class_label"], "description": sec["class_description"],
+                  "args": dict(sec["key_text"]), "examples": [],
+                  "dictionary": {"source": [{"value": s, "label": sec["source_labels"][s]} for s in sources],
+                                 "code": [{"value": d["code"], "label": d["name"]} for d in sec["datasets"]]}})
+    for m in sec["methods"]:
+        t = sec["method_text"][m]
+        lines.append({"catalog": f"{cls}/{m}", "kind": "function", "label": t["label"], "description": t["description"],
+                      "args": dict(sec["key_text"]), "examples": [], "dictionary": {}})
+    return lines
+
+
+def _cell_lines(sec, cls, d, e, lic):
+    args = {"source": {"type": "string", "value": d["source"]}, "code": {"type": "string", "value": d["code"]}}
+    fields = {"source": d["source"], "code": d["code"], "name": d["name"], "status": d["status"],
+              "retrieved": e["retrieved"], "licence_page": e["licence_url"]}
+    lines = []
+    for m in sec["methods"]:
+        summary = common.nfc(sec["method_text"][m]["summary"].format(**fields))
+        lines.append({"cell": {"fn": f"{cls}/{m}", "args": dict(args)}, "value": _value(sec, m, d, e, lic),
+                      "licence": sec["licence"], "summary": summary})
+    return lines
+
+
+def emit(entries, state, names, licences=None):
+    """-> (lines, state). The first call writes the method descriptors, the class and the catalogue; every call
+    writes the six cells of each dataset whose licence text (its SHA-256) is not the one in the state."""
     sec = names[KEY]
-    ft = f"{sec['namespace']}/{sec['text_function']}"
-    fp = f"{sec['namespace']}/{sec['page_function']}"
-    done = set(state.get("done", []))
-    todo = [e for e in entries if f"{e['source_domain']}|{e['retrieved']}" not in done]
+    cls = f"{sec['namespace']}/{sec['class']}"
+    lics = {(x["source"], x["code"]): x for x in (common.licences() if licences is None else licences)}
+    by_input = {e["source_domain"]: e for e in entries}
+    done = dict(state.get("done", {}))
+    todo = []
+    for d in sec["datasets"]:
+        e = by_input.get(d["input"])
+        shape(e is not None, f"register: no entry {d['input']!r} for {d['source']} {d['code']}")
+        lic = lics.get((d["source"], d["code"]))
+        shape(lic is not None and lic["quotes"], f"register: no licence quotes for {d['source']} {d['code']}")
+        shape((e["verdict"] == "SKIP") == ("reason" in lic) and lic["page"] == e["licence_url"],
+              f"register: licences.toml does not fit register.json for {d['code']}")
+        shape((e["verdict"] == "SKIP") == (d["status"] == "not_relayed"),
+              f"register: verdict {e['verdict']} does not fit status {d['status']} for {d['code']}")
+        if done.get(f"{d['source']}|{d['code']}") != e["sha256"]:
+            todo.append((d, e, lic))
     if not todo:
         return [], state
-    lines = []
-    first = "done" not in state
-    args = {"source": {"type": "string", "valid": False}, "retrieved": {"type": "date", "valid": True}}
-    if first:
-        for fq in (ft, fp):
-            lines.append({"function": fq, "signature": {"args": args, "order": ["source", "retrieved"],
-                                                        "returns": "string"}})
-        lines.append(_catalog(sec, ft, "Licence text SHA-256 (register)",
-                              "SHA-256 of the licence text of a relayed source, as fetched on the day given.",
-                              entries, lambda e: e["sha256"]))
-        lines.append(_catalog(sec, fp, "Licence page (register)",
-                              "The URL of the licence page of a relayed source, as fetched on the day given.",
-                              entries, lambda e: e["licence_url"]))
-    for e in todo:
-        day = e["retrieved"][:10]
-        cargs = {"source": {"type": "string", "value": e["source_domain"]}, "retrieved": {"type": "date", "value": day}}
-        extra = f" Attribution: {e['attribution']}." if e["attribution"] else ""
-        head = f"licence of {e['source_domain']} as fetched on {day} (verdict {e['verdict']}).{extra}"
-        lines.append({"cell": {"fn": ft, "args": cargs}, "value": {"type": "string", "value": e["sha256"]},
-                      "licence": sec["licence"], "summary": f"SHA-256 of the {head}",
-                      "source": _source(e, e["licence_url"], e["sha256"])})
-        lines.append({"cell": {"fn": fp, "args": cargs}, "value": {"type": "string", "value": e["licence_url"]},
-                      "licence": sec["licence"], "summary": f"Licence page URL of the {head}",
-                      "source": _source(e, e["licence_url"], e["sha256"])})
+    lines = [] if state.get("class") else _class_lines(sec, cls)
+    for d, e, lic in todo:
+        lines += _cell_lines(sec, cls, d, e, lic)
+        done[f"{d['source']}|{d['code']}"] = e["sha256"]
     new_state = dict(state)
-    new_state["done"] = sorted(done | {f"{e['source_domain']}|{e['retrieved']}" for e in todo})
+    new_state["class"] = True
+    new_state["done"] = dict(sorted(done.items()))
     return lines, new_state
-
-
-def _source(e, url, sha):
-    return {"name": urlparse(url).hostname, "url": url, "retrieved": e["retrieved"], "sha256": sha}
 
 
 def run(names, *, path, now, state_dir, out_dir, publish=None):
@@ -110,7 +159,7 @@ def main(argv=None):
     p = common.base_parser()
     p.add_argument("--register", required=True, help="the register.json of the licence check")
     a = p.parse_args(argv)
-    return common.finish(run(common.names(), path=a.register, now=common.now_instant(),
+    return common.finish(run(common.names(a.host), path=a.register, now=common.now_instant(),
                              state_dir=a.state_dir, out_dir=a.out_dir))
 
 
