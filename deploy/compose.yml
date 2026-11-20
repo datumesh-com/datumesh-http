@@ -51,7 +51,7 @@ services:
         limits: {cpus: "1", memory: 1g}
 
   mesh:
-    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:329a7aae4a48b86647f8ebfaf10d0ccb94649ebb0b275820bd802449091a928e}  # datumesh-http 0.4.4, published
+    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:b6a0491e42a7e9cb0d719597458937e6248156359aff26ba42d285fdd5838826}  # datumesh-http 0.4.7, published
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,10 +80,13 @@ services:
       DATUMESH_EMBED_URL: http://embed:8080
       DATUMESH_TEST_CELLS: "1"
       DATUMESH_PUBLISH_DOMAINS: "*"
+      # Part 6: month and year pages of the series the feeds list (series.py).
+      DATUMESH_SERIES_FILE: /etc/datumesh/series.json
       RUST_LOG: info
     volumes:
       - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets:/run/secrets:ro
       - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/catalog.json:/etc/datumesh/catalog.json:ro
+      - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/feeds/series.mesh-test.datumesh.com.json:/etc/datumesh/series.json:ro
     networks: [backend]
     restart: unless-stopped
     deploy:

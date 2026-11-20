@@ -7,6 +7,7 @@ and everything else stays on the site's Worker; and the apex A record.
     python3 -I cloudflare.py routes            add the no-script routes
     python3 -I cloudflare.py dns <ipv4>        point the proxied apex A record at <ipv4>
     python3 -I cloudflare.py undo-routes       remove exactly the routes this script adds
+    python3 -I cloudflare.py cache-series      add the page rule that caches /series/* at the edge
 
 The token is read from CF_API_TOKEN or /root/cf-key and never printed. Every route whose path can
 carry a query string has a trailing `*` (the user's rule, /cells included). /health and /metrics
@@ -26,7 +27,14 @@ PATHS = [
     "/.well-known/datumesh.json*", "/.well-known/datumesh-mesh.json*", "/.well-known/acme-challenge/*",
     # Build 2 (http 0.4.x): function pages, takeover pages, scoped evaluation, signed bundles.
     "/fn/*", "/takeover/*", "/whatif*", "/bundles*",
+    # Build 2 Part 6 and calc (http 0.4.5+): series pages, their sitemap, x_calc and x_interval.
+    "/series/*", "/x/*",
 ]
+# Build 2 Part 6 (G5): the series pages are cached at the edge as their Cache-Control says
+# (Cloudflare does not cache HTML unless told to). One page rule, "cache everything" on /series/*;
+# no edge TTL is set, so the origin's s-maxage (a day for a past period, 10 minutes for the
+# current one) decides.
+SERIES_CACHE = ZONE + "/series/*"
 ROUTES = [ZONE + p for p in PATHS]
 
 
@@ -73,6 +81,17 @@ def main():
             if p in routes and not routes[p].get("script"):
                 call("DELETE", f"/zones/{zid}/workers/routes/{routes[p]['id']}")
                 print(f"removed {p}")
+    elif cmd == "cache-series":
+        rules = call("GET", f"/zones/{zid}/pagerules")
+        if any(t["constraint"]["value"] == SERIES_CACHE for r in rules for t in r["targets"]):
+            print(f"page rule {SERIES_CACHE}: exists")
+        else:
+            call("POST", f"/zones/{zid}/pagerules", {
+                "targets": [{"target": "url", "constraint": {"operator": "matches", "value": SERIES_CACHE}}],
+                "actions": [{"id": "cache_level", "value": "cache_everything"}],
+                "status": "active",
+            })
+            print(f"page rule {SERIES_CACHE}: cache everything (the origin's Cache-Control decides the TTL)")
     elif cmd == "dns":
         ip = sys.argv[2]
         if len(apex) != 1:
