@@ -329,8 +329,12 @@ async fn page_of(m: &Served, name: &str) -> Value {
 }
 
 fn calls_of(page: &Value) -> Vec<String> {
-    let mut v: Vec<String> =
-        page["tests"]["cases"].as_array().expect("cases").iter().map(|c| c["call"].as_str().unwrap().to_string()).collect();
+    let mut v: Vec<String> = page["tests"]["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .map(|c| c["call"].as_str().unwrap().to_string())
+        .collect();
     v.sort();
     v
 }
@@ -369,20 +373,12 @@ async fn two_stored_functions_with_one_descriptor_keep_their_own_tests() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_version_reruns_only_the_tests_naming_that_function() {
     // FY's failing cell is corrected: FY passes, FX is as it was.
-    let m = serve_runs(
-        "sc-twins-rerun-y",
-        &[(NOW, twins()), (T1, vec![y_cell("GBP", "2024-03-15", "3.5")])],
-        None,
-    )
-    .await;
+    let m =
+        serve_runs("sc-twins-rerun-y", &[(NOW, twins()), (T1, vec![y_cell("GBP", "2024-03-15", "3.5")])], None).await;
     check_twins(&m, (2, 0, "pass"), (2, 0, "pass")).await;
     // FX's cell changes: FX fails, FY keeps its own result.
-    let m = serve_runs(
-        "sc-twins-rerun-x",
-        &[(NOW, twins()), (T1, vec![fx_cell("USD", "2024-03-15", "1.5")])],
-        None,
-    )
-    .await;
+    let m =
+        serve_runs("sc-twins-rerun-x", &[(NOW, twins()), (T1, vec![fx_cell("USD", "2024-03-15", "1.5")])], None).await;
     check_twins(&m, (2, 1, "fail"), (2, 1, "fail")).await;
     // both change in one run, in opposite directions
     let m = serve_runs(

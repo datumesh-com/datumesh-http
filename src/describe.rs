@@ -280,7 +280,7 @@ impl Inner {
         let Ok(answer) = FunctionAnswer::new(name, d) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
-        let counts = crate::testrun::counts(&*self.store, &self.config.host, fn_hash, &self.now());
+        let counts = crate::testrun::counts(&*self.store, &self.config.host, name, fn_hash, &self.now());
         let Ok((count, branches, covered, counterexamples)) = counts else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };

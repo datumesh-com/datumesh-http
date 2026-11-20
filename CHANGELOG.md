@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 (unreleased)
+
+Fixes the tests of stored functions that share a signature (QUESTIONS-build2 D23). No API change: `testrun` is private, and no public item changes. Requires the same crates as 0.4.3.
+
+- **The bug (found on mesh-test with 0.4.3).** A stored function's descriptor is only its signature, so `relay/ecb.europa.eu/estr(date)` and `relay/bankofengland.co.uk/bank_rate(date)` have one `fn_hash`, and `function_tests`, keyed by hash, merged their tests: `describe` of `estr` counted the tests of `bank_rate` (21 instead of 1) and its function page listed their calls, results and counterexamples. Computed functions with identical bodies under two names shared a hash in the same way.
+- **The fix (D23).** A function's own tests are the held tests whose `call` names that function. `describe` (`tests.count`, `branches`, `covered`, `counterexamples`) and the function page (`tests.count`, `cases`, `last_run`, `open_counterexamples`) read only those; a rerun on a new version of a cell or a rebind runs only the tests naming the function whose name changed, and two functions with one hash are both rerun.
+- **Unchanged.** Foreign `<host>/test_case(function_hash, case)` cells stay per hash (spec 7.3 gives them no function name), so for stored functions of one signature a foreign counterexample applies to each; this is for a later spec round (D23). Test cells (`DATUMESH_TEST_CELLS=1`) are unaffected: the case id covers the call, so it differs per function.
+
 ## 0.4.3 (unreleased)
 
 For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions; QUESTIONS-build2 D16, D20, D21). Additive: no signature of the public API changes. Requires datumesh-core 0.3.10, datumesh-formula 0.5.1 and datumesh-store 0.5.1, as 0.4.2 does.
