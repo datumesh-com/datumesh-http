@@ -166,6 +166,7 @@ impl MeshBuilder {
             reindex: Mutex::new(()),
             publish_limits: Mutex::new(crate::bundles::Limits::default()),
             relays: Mutex::new(HashMap::new()),
+            name_cells: Mutex::new(HashMap::new()),
             series: Mutex::new(crate::series::Memo::default()),
             pool: Arc::new(Pool::new(config.pool_size)),
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
@@ -259,6 +260,8 @@ pub(crate) struct Inner {
     pub(crate) publish_limits: Mutex<crate::bundles::Limits>,
     /// Where a relayed function's source was read, by function name and hash (Build 2 Part 5, F5).
     pub(crate) relays: Mutex<HashMap<String, (Instant, Option<crate::fnpage::Relay>)>>,
+    /// The cells of a function by name, where its hash is shared (http 0.4.6, D23): name and hash to (when, count).
+    pub(crate) name_cells: Mutex<HashMap<String, (Instant, u64)>>,
     /// The overviews and dictionary orders of the series pages (Build 2 Part 6, G5).
     pub(crate) series: Mutex<crate::series::Memo>,
 }

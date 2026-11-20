@@ -16,9 +16,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{ClassDescriptor, FunctionDescriptor};
+use datumesh_core::{Arg, Cell, ClassDescriptor, FunctionDescriptor, Slice};
 use datumesh_store::{CatalogEntry, CatalogKind, Hit, Store};
 use unicode_normalization::UnicodeNormalization;
 
@@ -958,9 +959,19 @@ pub(crate) fn summary(inner: &Inner) -> Value {
     let mut entries = s.entries.clone();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let (mut classes, mut functions) = (Vec::new(), Vec::new());
+    // The store counts a function's cells by its hash; functions of one descriptor (stored functions of
+    // one signature) share it, so a hash bound to several listed names is counted again by name.
+    let mut hash_of: BTreeMap<String, String> = BTreeMap::new();
+    let mut named: BTreeMap<String, usize> = BTreeMap::new();
+    for e in entries.iter().filter(|e| e.kind == CatalogKind::Function) {
+        if let Some(b) = ctx.store.resolve_binding(&e.name, &ctx.now).ok().flatten() {
+            *named.entry(b.fn_hash.clone()).or_default() += 1;
+            hash_of.insert(e.name.clone(), b.fn_hash);
+        }
+    }
     for e in &entries {
         let bound = match e.kind {
-            CatalogKind::Function => ctx.store.resolve_binding(&e.name, &ctx.now).ok().flatten().is_some(),
+            CatalogKind::Function => hash_of.contains_key(&e.name),
             CatalogKind::Class => ctx.store.resolve_class_binding(&e.name, &ctx.now).ok().flatten().is_some(),
             CatalogKind::Method => false,
         };
@@ -969,11 +980,17 @@ pub(crate) fn summary(inner: &Inner) -> Value {
         }
         let description = lk.entry(ctx.store, &e.name).map(|x| x.description).unwrap_or_default();
         let keys = dicts.get(&e.name).cloned().unwrap_or_default();
+        let cells = match hash_of.get(&e.name) {
+            Some(h) if named.get(h).is_some_and(|n| *n > 1) => {
+                cells_of_name(inner, &e.name, h, &ctx.now).unwrap_or(e.n_cells.max(0) as u64)
+            }
+            _ => e.n_cells.max(0) as u64,
+        };
         let item = Value::Object(vec![
             ("name".into(), Value::String(e.name.clone())),
             ("label".into(), Value::String(e.label.clone())),
             ("description".into(), Value::String(description)),
-            ("cells".into(), json_number(e.n_cells as f64)),
+            ("cells".into(), json_number(cells as f64)),
             ("keys".into(), Value::Object(keys)),
         ]);
         match e.kind {
@@ -987,6 +1004,32 @@ pub(crate) fn summary(inner: &Inner) -> Value {
         ("classes".into(), Value::Array(classes)),
         ("functions".into(), Value::Array(functions)),
     ])
+}
+
+/// How long the count of a function's cells by name is kept.
+const NAME_CELLS_TTL: Duration = Duration::from_secs(300);
+
+/// The stored cells of the function `name` (hash `hash`) as of `now`, counted by name: the slice of
+/// every cell of `ns/fn` (the store's own count is by hash, which two names may share). Cached.
+fn cells_of_name(inner: &Inner, name: &str, hash: &str, now: &str) -> Option<u64> {
+    let key = format!("{name}\n{hash}");
+    if let Some((at, n)) = inner.name_cells.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        if at.elapsed() < NAME_CELLS_TTL {
+            return Some(*n);
+        }
+    }
+    let d = inner.descriptor(hash).ok()?;
+    let (ns, f) = name.rsplit_once('/')?;
+    let args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
+    let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: hash.into(), args };
+    let slice = Slice::from_value(&cell.to_value()).ok()?;
+    let n = inner.store.slice_values(&slice, now).ok()?.len() as u64;
+    let mut cache = inner.name_cells.lock().unwrap_or_else(|p| p.into_inner());
+    if cache.len() >= 10_000 {
+        cache.clear();
+    }
+    cache.insert(key, (Instant::now(), n));
+    Some(n)
 }
 
 /// Index maintenance (R3): the generic words, the value counts, and the embeddings of the entries

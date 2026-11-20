@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6 (unreleased)
+
+Fixes from mesh-test and datumesh.com, and the interval call for agents (QUESTIONS-build2 D23, D32). Requires the same crates as 0.4.4 (datumesh-store 0.5.1 is unchanged).
+
+- **Summary counts by name (D23).** `GET /find?summary=1` took each function's `cells` from the store's catalogue summary, which counts by function hash; stored functions of one signature share a hash, so `bank_rate` (13,116 cells) and `estr` (1,829) both showed 14,945. Where a hash is bound to more than one listed function the count is now made by name (the stored cells of `ns/fn`, cached five minutes); a function with its own hash keeps the store's count. The series pages, the index, the function page and `describe` were checked: they already read by name (a slice names `ns` and `fn`) and are covered by tests with two functions of one descriptor.
+
 ## 0.4.5 (unreleased)
 
 For CONTRACT-build2-part6-pages (G1 to G6; QUESTIONS-build2 D25, D26, D31): month pages for relayed series, the year pages of monthly ones, their index and sitemap. Additive: `RateLimits` gains `series_per_ip` (a public field), and the public API otherwise does not change. Requires the same crates as 0.4.4.
