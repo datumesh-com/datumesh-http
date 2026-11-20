@@ -683,6 +683,10 @@ fn import_with<S: Store + ?Sized>(
     crate::testrun::apply_rows(store, &test_rows, &now).map_err(BundleError::Store)?;
     let rebound: Vec<String> = binds.iter().map(|(n, _)| (*n).clone()).collect();
     crate::testrun::rerun_readers(store, &rebound, &now).map_err(BundleError::Store)?;
+    // The stored functions' tests read the cells this bundle writes, and the names it rebinds (F2).
+    let touched: BTreeSet<String> =
+        rebound.into_iter().chain(receipts.iter().map(|(_, r)| r.cell().function_name())).collect();
+    crate::testrun::rerun_stored_tests(store, &touched, &now).map_err(BundleError::Store)?;
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));

@@ -32,8 +32,8 @@ use common::lite::*;
 use common::pub031::{function_line, T1, T2};
 use common::readpath::*;
 use common::world::call_path;
-use publish4::*;
 use datumesh_store::Store;
+use publish4::*;
 use serde_json::{json, Value};
 
 const FX: &str = "mesh-test.datumesh.com/scratch_b5/relay/fx";
@@ -116,7 +116,8 @@ async fn the_tests_of_a_stored_function_are_stored_counted_and_listed() {
     assert!(rows.iter().all(|r| r.last_result.as_deref() == Some("pass")), "{rows:?}");
     // core accepts the describe answer
     let r = m.get_any(&describe_path(FX)).await;
-    let held = datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{hash}")).await.body).unwrap();
+    let held =
+        datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{hash}")).await.body).unwrap();
     let got = datumesh_core::check_describe_with(&r.body, &std::collections::BTreeMap::new(), &[held])
         .unwrap_or_else(|e| panic!("{e}"));
     let x = got.tests.expect("tests");
@@ -146,7 +147,8 @@ fn published_checked(label: &str, lines: &[String]) -> Lite {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_test_that_differs_from_the_stored_value_fails_and_is_a_counterexample() {
-    let lite = published_checked("sc-fail", &with(data(), vec![t("USD", "2024-03-15", "1.0893"), good_tests()[1].clone()]));
+    let lite =
+        published_checked("sc-fail", &with(data(), vec![t("USD", "2024-03-15", "1.0893"), good_tests()[1].clone()]));
     let m = build_served(lite, None, |_| {}).await;
     assert_eq!(tests_of(&m).await, counts(2, 1));
     let hash = fn_hash(&m, FX);
@@ -222,8 +224,13 @@ async fn a_new_version_of_a_tested_cell_reruns_the_test() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn on_mesh_test_each_stored_function_test_is_a_cell() {
     let wrong = t("USD", "2024-03-15", "1.0893");
-    let m = serve_lite("sc-cells", &with(data(), with(good_tests(), vec![wrong.clone()])), Some(test_cells_config()), |_| {})
-        .await;
+    let m = serve_lite(
+        "sc-cells",
+        &with(data(), with(good_tests(), vec![wrong.clone()])),
+        Some(test_cells_config()),
+        |_| {},
+    )
+    .await;
     let hash = fn_hash(&m, FX);
     for (line, want) in [(&good_tests()[0], true), (&good_tests()[1], true), (&wrong, false)] {
         let v = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(line))))).await;

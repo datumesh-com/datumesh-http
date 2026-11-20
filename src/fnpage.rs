@@ -200,9 +200,13 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
             Err(_) => Vec::new(),
         }
     };
+    // Each case with its last result (`pass`, `fail`, `error`; null before its first run).
     let cases: Vec<Value> = held
         .iter()
-        .map(|(_, spec): &(_, TestSpec)| obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect)))]))
+        .map(|(row, spec): &(_, TestSpec)| {
+            let result = row.last_result.as_deref().map_or(Value::Null, s);
+            obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)])
+        })
         .collect();
     let rows = store.function_tests(&fn_hash).unwrap_or_default();
     let results: Vec<Option<&str>> = rows.iter().map(|r| r.last_result.as_deref()).collect();
@@ -461,9 +465,10 @@ pub(crate) fn render(d: &Value) -> String {
     if let Value::Array(cs) = get(t, "cases") {
         for c in cs {
             h.push_str(&format!(
-                "<li><code>{}</code> expects {}</li>\n",
+                "<li><code>{}</code> expects {}: {}</li>\n",
                 prose(get(c, "call").as_str().unwrap_or("")),
-                prose(get(c, "expect").as_str().unwrap_or(""))
+                prose(get(c, "expect").as_str().unwrap_or("")),
+                esc(get(c, "result").as_str().unwrap_or("not run"))
             ));
         }
     }

@@ -556,7 +556,16 @@ pub fn run_test<S: Store + ?Sized>(store: &S, overlay: &Overlay, now: &str, spec
         Err(RunError(e)) => return fail(e),
     };
     if b.compiled.is_none() {
-        return fail(format!("{name} is stored: its tests are not run"));
+        // A stored function (CONTRACT-build2-part5 F2, spec 7.3): the test reads the stored cell its
+        // call names, at the test's asof, and compares that value with `expect`. A cell that is not
+        // stored, or cannot be read, is an error: a test that cannot be checked is not a pass.
+        let id = cell_id(&name, &hash, &args);
+        let (got, error) = match run.stored_value(&id, &asof) {
+            Ok(Some(v)) => (Ok(v), None),
+            Ok(None) => (Err(String::new()), Some(format!("{} is not stored at {asof}", spec.call))),
+            Err(RunError(e)) => (Err(String::new()), Some(e)),
+        };
+        return Ran { args, got, error, coverage: Coverage::new(), events: run.events };
     }
     let mut coverage = Coverage::new();
     let r = run.evaluate(&b, &args, &asof, &mut coverage);
@@ -821,6 +830,53 @@ pub fn rerun_readers<S: Store + ?Sized>(store: &S, names: &[String], run_at: &st
         }
     }
     Ok(reached)
+}
+
+/// Reruns the tests of each stored function bound to one of `names` as of `run_at` (CONTRACT-build2-part5
+/// F2): a stored function's test reads the cell its call names, so a new version of such a cell, or a
+/// rebind of its name, changes the result. The results are recorded and nothing is refused. A
+/// computed function is not rerun here (its tests are unchanged). Returns the rows changed.
+pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
+    store: &S,
+    names: &BTreeSet<String>,
+    run_at: &str,
+) -> Result<usize, String> {
+    let overlay = Overlay::default();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut changed = 0;
+    for name in names {
+        let Some(hash) = store.resolve_name(name, run_at).map_err(|e| e.to_string())? else { continue };
+        if !seen.insert(hash.clone()) {
+            continue;
+        }
+        let held = held_tests(store, &hash)?;
+        if held.is_empty() {
+            continue;
+        }
+        let mut run = Run::new(store, &overlay, run_at);
+        let Ok(b) = run.built(name, &hash) else { continue };
+        if b.compiled.is_some() {
+            continue;
+        }
+        let rows: Vec<RowWrite> = held
+            .iter()
+            .map(|(_, s)| {
+                let (result, detail) = result_of(s, &run_test(store, &overlay, run_at, s));
+                RowWrite {
+                    fn_hash: hash.clone(),
+                    case: s.case.clone(),
+                    jcs: s.jcs.clone(),
+                    signed_by: String::new(),
+                    result,
+                    detail,
+                    branches_total: 0,
+                    branches_covered: 0,
+                }
+            })
+            .collect();
+        changed += apply_rows(store, &rows, run_at)?;
+    }
+    Ok(changed)
 }
 
 /// The counts of a function's held tests, for `describe`: `(count, branches, covered,
