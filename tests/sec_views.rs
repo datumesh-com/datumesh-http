@@ -26,6 +26,8 @@ use datumesh_http::publish::{publish_stored_checked, PublishErrorKind};
 use datumesh_store::Store;
 use serde_json::Value;
 
+const SEC_LICENCE: &str = "https://www.sec.gov/about/privacy-information";
+
 fn feeds() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/prod/feeds")
 }
@@ -147,6 +149,15 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
 
     // the live mesh
     let node = Node::start_with(Setup { db: Some(db.clone()), ..Setup::new(HOST) }, |_| {}, |b| b).await;
+    // The relay cells carry the SEC's licence, an https URL, which licence inheritance (SPEC 8.5) ranks as restricted: a
+    // view over them is `unlicensed` unless the steward declares it for that licence (9.2). The stub used to say
+    // CC0-1.0, which hid this; the real relay does not, so every view that reads a cell is declared here, as
+    // mesh-test's key document must declare them (reported in D38's follow-up).
+    for f in &formula_names {
+        if f.starts_with(&format!("{HOST}/sec/")) {
+            node.declare(f, SEC_LICENCE, "2026-01-01T00:00:00.000000Z");
+        }
+    }
     // the examples of the catalogue lines
     let mut examples = 0;
     for l in views() {

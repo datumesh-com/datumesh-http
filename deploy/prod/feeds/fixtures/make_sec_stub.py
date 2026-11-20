@@ -23,7 +23,8 @@ import sec  # noqa: E402
 import sec_helpers  # noqa: E402
 
 HOST = "mesh-test.datumesh.com"
-NOW = sec_helpers.NOW
+# retrieved before the http tests' fixed clock (2026-11-15), as the store requires retrieved <= issued
+NOW = "2026-11-10T12:00:00.000000Z"
 FIXTURES = Path(__file__).resolve().parent
 
 

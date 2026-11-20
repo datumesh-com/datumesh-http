@@ -90,8 +90,7 @@ def test_run_writes_one_file_named_by_the_stamp(first):
 
 
 def test_scope_chooses_n_125_and_the_cells_are_those_of_the_top_125(names, first):
-    fq = f"{names['sec']['namespace']}/{names['sec']['function']}"
-    cells = [l for l in first["lines"] if "cell" in l and l["cell"]["fn"] == fq]
+    cells = [l for l in first["lines"] if "cell" in l and l["cell"]["fn"] in sec.fact_functions(names["sec"]).values()]
     assert len(cells) == 2220 == sum(IN_SCOPE.values()) + 122 * SYNTH_CELLS
     by_cik = {}
     for c in cells:
@@ -187,8 +186,7 @@ def test_a_new_report_in_a_later_run_emits_only_its_cells(names, first, tmp_path
 def test_a_company_without_companyfacts_is_left_out_and_reported(names, tmp_path):
     wells = "0000072971"
     path, f, s, o = go(names, tmp_path, fetcher=SecFetcher(names, None, missing=[wells]))
-    fq = f"{names['sec']['namespace']}/{names['sec']['function']}"
-    cells = [l for l in read_lines(path) if "cell" in l and l["cell"]["fn"] == fq]
+    cells = [l for l in read_lines(path) if "cell" in l and l["cell"]["fn"] in sec.fact_functions(names["sec"]).values()]
     assert len(cells) == 2220 - SYNTH_CELLS
     rep = json.loads((o / f"sec-scope-{STAMP}.json").read_text(encoding="utf-8"))
     assert rep["left_out"]["no_companyfacts"] == [wells] and rep["n"] == 125 and rep["estimated_cells"] == 2214

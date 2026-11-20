@@ -22,6 +22,7 @@ use common::lite::{Lite, HOST, NOW};
 use common::pub031::{opts, write};
 use common::{key_doc, key_for, Node, Setup, TestDb, BIND_TX};
 use datumesh_http::publish::publish_stored_checked;
+use datumesh_store::Store;
 use serde_json::{json, Value};
 
 fn feeds() -> PathBuf {
@@ -164,7 +165,7 @@ fn path_of(call: &str) -> String {
         .split(", ")
         .map(|a| {
             let (k, v) = a.split_once(": ").unwrap();
-            format!("{k}={}", v.trim_matches('"'))
+            format!("{k}={}", v.trim_matches('"').replace('/', "%2F"))
         })
         .collect();
     q.sort();

@@ -438,4 +438,4 @@ def test_the_scope_report_lists_the_units_left_out(names):
                "listed_without_assets": 0, "frame_not_listed": 0, "frame_entities": 1}
     rep = sec.scope_report(ranking, {"n": 1, "estimated": 7}, unsupported_units=p["left_out_units"])
     assert rep["left_out"]["units_not_in_units_md"]["cells"] == {"CAD/EUR": 1, "acre": 1, "USD-per-gal": 1}
-    assert "units" in rep["left_out"]["units_not_in_units_md"]["rule"]
+    assert "any other unit is left out" in rep["left_out"]["units_not_in_units_md"]["rule"]
