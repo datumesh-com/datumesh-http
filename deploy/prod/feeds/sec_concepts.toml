@@ -1,0 +1,232 @@
+# The concepts Part 7 relays (K3, D35): about 45 us-gaap concepts the normalised views and ratios need, plus the cover-page
+# share count. Names are the XBRL element names exactly as filed. Every entry has a reason; sec.py refuses an entry without one.
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "Revenues"
+reason = "revenue common name, tag 1 (companies that report total revenues)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "RevenueFromContractWithCustomerExcludingAssessedTax"
+reason = "revenue common name, tag 2 (most industrials since ASC 606, 2018)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "RevenueFromContractWithCustomerIncludingAssessedTax"
+reason = "revenue common name, tag 3 (revenue including sales tax)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "SalesRevenueNet"
+reason = "revenue common name, tag 4 (pre-ASC 606 tag, still used in 2019 comparatives)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "SalesRevenueGoodsNet"
+reason = "revenue common name, tag 5 (goods only)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "SalesRevenueServicesNet"
+reason = "revenue common name, tag 6 (services only)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "RevenuesNetOfInterestExpense"
+reason = "revenue common name, tag 7 (banks: net revenue)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "CostOfRevenue"
+reason = "cost_of_revenue common name, tag 1; denominator of gross margin, inventory turnover, DPO"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "CostOfGoodsAndServicesSold"
+reason = "cost_of_revenue common name, tag 2"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "GrossProfit"
+reason = "gross_margin check against revenue less cost of revenue"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "OperatingIncomeLoss"
+reason = "operating_income common name"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "NetIncomeLoss"
+reason = "net_income common name; numerator of return on assets"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "ProfitLoss"
+reason = "net_income fallback (includes noncontrolling interests)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
+reason = "pre-tax income, for margin and tax-rate views"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "IncomeTaxExpenseBenefit"
+reason = "income tax expense, for effective tax rate"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "InterestExpense"
+reason = "interest expense, for coverage ratios"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "DepreciationDepletionAndAmortization"
+reason = "depreciation and amortisation, for EBITDA-style views"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "EarningsPerShareBasic"
+reason = "basic earnings per share (unit USD/shares)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "EarningsPerShareDiluted"
+reason = "diluted earnings per share (unit USD/shares)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "WeightedAverageNumberOfDilutedSharesOutstanding"
+reason = "diluted share count (unit shares), links EPS to net income"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "NetCashProvidedByUsedInOperatingActivities"
+reason = "operating cash flow"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "PaymentsToAcquirePropertyPlantAndEquipment"
+reason = "capital expenditure"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "Assets"
+reason = "total_assets common name; the ranking concept of the scope rule; denominator of return on assets"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "AssetsCurrent"
+reason = "current_assets common name; numerator of the current ratio"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "Liabilities"
+reason = "total liabilities, for leverage ratios"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "LiabilitiesCurrent"
+reason = "current_liabilities common name; denominator of the current ratio"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "LiabilitiesAndStockholdersEquity"
+reason = "balance sheet total; check against Assets"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "StockholdersEquity"
+reason = "equity attributable to the parent, for return on equity"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+reason = "total equity including noncontrolling interests"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "CashAndCashEquivalentsAtCarryingValue"
+reason = "cash, for liquidity ratios"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "AccountsReceivableNetCurrent"
+reason = "accounts_receivable common name; days sales outstanding in the cash conversion cycle"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "InventoryNet"
+reason = "inventory common name; inventory turnover and days inventory"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "PropertyPlantAndEquipmentNet"
+reason = "ppe_net common name; fixed asset turnover"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "AccountsPayableCurrent"
+reason = "accounts_payable common name; days payable outstanding"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "LongTermDebt"
+reason = "long-term debt including current portion, for leverage ratios"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "LongTermDebtNoncurrent"
+reason = "long-term debt excluding current portion"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "Goodwill"
+reason = "goodwill, for tangible-asset views"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "Deposits"
+reason = "bank deposits (banks have no inventory or current assets)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "NoninterestIncome"
+reason = "bank non-interest income"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "NoninterestExpense"
+reason = "bank non-interest expense"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "InterestIncomeExpenseNet"
+reason = "bank net interest income"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "ProvisionForLoanLeaseAndOtherLosses"
+reason = "bank provision for credit losses"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "CommonStockSharesOutstanding"
+reason = "shares outstanding on the balance sheet date (unit shares)"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "PaymentsOfDividends"
+reason = "dividends paid, for payout views"
+
+[[concept]]
+taxonomy = "us-gaap"
+name = "ResearchAndDevelopmentExpense"
+reason = "research and development expense, for R&D intensity"
+
+[[concept]]
+taxonomy = "dei"
+name = "EntityCommonStockSharesOutstanding"
+reason = "shares outstanding on the cover page date (unit shares); the only dei concept, for per-share and market-value views"
