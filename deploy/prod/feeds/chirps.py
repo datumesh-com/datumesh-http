@@ -164,25 +164,32 @@ def region_row(region: str, month: str, grid: dict, rings) -> dict:
 
 
 def read_geotiff(data: bytes) -> dict:
-    """Decode a CHIRPS GeoTIFF (tifffile, numpy: imported here only). Returns a grid like synthetic_raster.json,
+    """Decode a CHIRPS GeoTIFF (tifffile, numpy, and imagecodecs for LZW: imported here only). Returns a grid like synthetic_raster.json,
     its values a numpy array."""
     try:
         import tifffile
     except ImportError as e:
         raise RuntimeError("decoding a CHIRPS raster needs tifffile and numpy (see run_feed.sh)") from e
-    with tifffile.TiffFile(io.BytesIO(data)) as tf:
-        page = tf.pages[0]
-        scale = page.tags.get(33550)
-        tie = page.tags.get(33922)
-        nodata_tag = page.tags.get(42113)
-        shape(scale is not None and tie is not None, "GeoTIFF: no pixel scale or tiepoint")
-        sx, sy = scale.value[0], scale.value[1]
-        shape(abs(sx - sy) < 1e-12, "GeoTIFF: pixels are not square")
-        i, j, _, x, y, _ = tie.value
-        west = x - i * sx
-        north = y + j * sy
-        nodata = float(str(nodata_tag.value).strip()) if nodata_tag is not None else None
-        values = page.asarray()
+    try:
+        with tifffile.TiffFile(io.BytesIO(data)) as tf:
+            page = tf.pages[0]
+            scale = page.tags.get(33550)
+            tie = page.tags.get(33922)
+            nodata_tag = page.tags.get(42113)
+            shape(scale is not None and tie is not None, "GeoTIFF: no pixel scale or tiepoint")
+            sx, sy = scale.value[0], scale.value[1]
+            shape(abs(sx - sy) < 1e-12, "GeoTIFF: pixels are not square")
+            i, j, _, x, y, _ = tie.value
+            west = x - i * sx
+            north = y + j * sy
+            # the real CHIRPS raster has no nodata tag and -9999 where it has no data
+            nodata = float(str(nodata_tag.value).strip()) if nodata_tag is not None else -9999.0
+            values = page.asarray()
+    except ValueError as e:
+        if "imagecodecs" in str(e):  # the real CHIRPS v3 GeoTIFF is LZW compressed
+            raise RuntimeError("decoding the CHIRPS raster (LZW) needs the imagecodecs package, pinned in run_feed.sh "
+                               f"with numpy and tifffile: {e}") from e
+        raise
     shape(values.ndim == 2, "GeoTIFF: not a single band")
     return {"west": west, "north": north, "cell_size": sx, "nodata": nodata, "values": values}
 

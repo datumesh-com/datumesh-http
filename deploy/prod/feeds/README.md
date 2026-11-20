@@ -10,10 +10,10 @@ Status: all scripts are written and the tests pass. Nothing has been fetched fro
 
 ```
 docker run --rm -v "$PWD/deploy/prod/feeds:/feeds" -w /feeds python:3.13-slim \
-  sh -c "pip install -q pytest && python -B -m pytest -q -p no:cacheprovider tests"
+  sh -c "pip install -q pytest numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && python -B -m pytest -q -p no:cacheprovider tests"
 ```
 
-Python 3.13, standard library only in the scripts (`tomllib`, `xml.etree`, `csv`, `zipfile`, `decimal`, `urllib`, `hashlib`). The one exception is the CHIRPS raster decode, which imports `tifffile` and `numpy` only when a raster is read; `test_chirps_store.py` skips its decode test where they are missing. To run that test too: add `numpy==2.1.3 tifffile==2024.8.30` to the `pip install`.
+Python 3.13, standard library only in the scripts (`tomllib`, `xml.etree`, `csv`, `zipfile`, `decimal`, `urllib`, `hashlib`). The one exception is the CHIRPS raster decode, which imports `tifffile` and `numpy` only when a raster is read, and needs `imagecodecs` because the real CHIRPS v3 GeoTIFF is LZW compressed (all three pinned: `numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30`; imagecodecs has cp313 manylinux wheels, nothing is built from source). The decode tests skip where numpy or tifffile are missing, and fail without imagecodecs, as the job would; the command above installs all three. The real raster has no nodata tag and uses -9999, which `read_geotiff` takes as nodata when the tag is absent. `fixtures/chirps_v3_2024-06_kansas_lzw.tif` is a crop of a real raster (see `fixtures/SOURCES.md`).
 
 ## Layout
 

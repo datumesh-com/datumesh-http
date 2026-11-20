@@ -62,7 +62,7 @@ image="python:3.13-slim@sha256:$PYTHON_DIGEST"
   modeargs=""
   if [ "$module" = ecb_fx ] || [ "$module" = treasury ]; then modeargs="--mode $mode"; fi
   deps=""
-  if [ "$module" = chirps ]; then deps="pip install -q --no-cache-dir numpy==2.1.3 tifffile==2024.8.30 && "; fi
+  if [ "$module" = chirps ]; then deps="pip install -q --no-cache-dir numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && "; fi
 
   while :; do
     # fetch and check: prints the one file it wrote (nothing when there is nothing new)
