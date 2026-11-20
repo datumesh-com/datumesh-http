@@ -1598,7 +1598,7 @@ async fn series_sitemap(State(mesh): State<Mesh>, headers: HeaderMap, req: Reque
         ("format" = Option<String>, Query, description = "`csv` or `arrow`; JSON without it. Each is an address of its own"),
     ),
     responses(
-        (status = 200, description = "JSON `{function, from, to, asof, count, members: [{keys, value, type, tx, asof, receipt_hash, receipt}]}`; CSV (the page's columns and a final `receipt` column of the row's receipt hashes, space-separated); or an Arrow IPC stream", content_type = "application/json"),
+        (status = 200, description = "JSON `{function, from, to, asof, count, members: [{keys, value, type, tx, asof, receipt_hash, receipt}]}`; CSV (long form: the open keys, `date`, `value`, `receipt`); or an Arrow IPC stream", content_type = "application/json"),
         (status = 304, description = "`ETag` unchanged"),
         (status = 400, description = "`bad_request`: a missing or malformed `from` or `to`, `from` after `to`, an argument the function lacks, or `E_RANGE_TOO_LARGE`", content_type = "application/json"),
         (status = 404, description = "The function is not in the series file", content_type = "application/json"),

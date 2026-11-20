@@ -1238,7 +1238,7 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
                 return interval_error(503, "error", Some("E_EVAL_UNAVAILABLE"), "no-store");
             }
         },
-        "csv" => interval_csv(inner, &b, page, &members).into_bytes(),
+        "csv" => interval_csv(inner, &b, page, &open, &members).into_bytes(),
         _ => interval_json(inner, function, (&from, &to), &now, &members, truncated),
     };
     Out { status: 200, body, content_type, cache, etag: Some(etag) }
@@ -1285,44 +1285,52 @@ fn interval_json(
     obj(top).to_jcs()
 }
 
-/// The page's CSV over the interval (one row a date, the latest version of each column), and a last column
-/// `receipt`: the receipt hashes of the row's cells in column order, space-separated.
-fn interval_csv(inner: &Inner, b: &Bound, page: &SeriesPage, members: &[SliceValue]) -> String {
-    let seen: BTreeSet<String> =
-        page.column_arg.as_deref().map(|c| members.iter().filter_map(|m| key_of(m, c)).collect()).unwrap_or_default();
-    let columns: Vec<String> = match page.column_arg.as_deref() {
-        Some(c) => columns_of(inner, b, c, &seen),
-        None => vec!["value".to_string()],
-    };
-    let unit_of = |x: &str| if page.unit.is_empty() { x.to_string() } else { format!("{x} ({})", page.unit) };
-    let mut headers: Vec<String> =
-        std::iter::once("date".to_string()).chain(columns.iter().map(|c| unit_of(c))).collect();
-    headers.push("receipt".to_string());
-    type Cellv = Option<(String, String, String)>;
-    let index: HashMap<&str, usize> = columns.iter().enumerate().map(|(i, c)| (c.as_str(), i)).collect();
-    let mut rows: BTreeMap<String, Vec<Cellv>> = BTreeMap::new();
-    for m in members {
-        let Some(date) = key_of(m, &page.date_arg) else { continue };
-        let col = match page.column_arg.as_deref() {
-            Some(c) => match key_of(m, c).and_then(|k| index.get(k.as_str()).copied()) {
-                Some(i) => i,
-                None => continue,
-            },
-            None => 0,
-        };
-        let cells = rows.entry(date).or_insert_with(|| vec![None; columns.len()]);
-        if cells[col].as_ref().is_none_or(|(tx, _, _)| m.version.tx.as_str() > tx.as_str()) {
-            cells[col] = Some((m.version.tx.clone(), m.value.lexical().to_string(), m.version.receipt_hash.clone()));
+/// The CSV of an interval, long form (D33): one row a cell, the open key columns (`open` without the date; the
+/// series file's fixed arguments are omitted), then `date`, `value` and `receipt` (the receipt hash). Rows are
+/// by date, then by key, the column argument in dictionary order.
+fn interval_csv(inner: &Inner, b: &Bound, page: &SeriesPage, open: &[String], members: &[SliceValue]) -> String {
+    let keys: Vec<&String> = open.iter().filter(|k| **k != page.date_arg).collect();
+    let rank: HashMap<String, usize> = match page.column_arg.as_deref() {
+        Some(c) => {
+            let seen: BTreeSet<String> = members.iter().filter_map(|m| key_of(m, c)).collect();
+            columns_of(inner, b, c, &seen).into_iter().enumerate().map(|(i, v)| (v, i)).collect()
         }
-    }
-    let rows: Vec<(String, Vec<String>)> = rows
-        .into_iter()
-        .map(|(d, cells)| {
-            let receipts: Vec<String> = cells.iter().flatten().map(|(_, _, h)| h.clone()).collect();
-            let mut vals: Vec<String> = cells.into_iter().map(|c| c.map(|(_, x, _)| x).unwrap_or_default()).collect();
-            vals.push(receipts.join(" "));
-            (d, vals)
+        None => HashMap::new(),
+    };
+    let order = |m: &SliceValue| -> (String, Vec<(usize, String)>) {
+        let ks = keys
+            .iter()
+            .map(|k| {
+                let v = key_of(m, k).unwrap_or_default();
+                let r = if page.column_arg.as_deref() == Some(k.as_str()) {
+                    rank.get(&v).copied().unwrap_or(usize::MAX)
+                } else {
+                    0
+                };
+                (r, v)
+            })
+            .collect();
+        (key_of(m, &page.date_arg).unwrap_or_default(), ks)
+    };
+    let mut sorted: Vec<&SliceValue> = members.iter().collect();
+    sorted.sort_by(|a, c| order(a).cmp(&order(c)).then_with(|| a.version.tx.cmp(&c.version.tx)));
+    let mut headers: Vec<String> = keys.iter().map(|k| (*k).clone()).collect();
+    headers.extend(["date", "value", "receipt"].map(String::from));
+    let rows: Vec<Vec<String>> = sorted
+        .iter()
+        .map(|m| {
+            let mut r: Vec<String> = keys.iter().map(|k| key_of(m, k).unwrap_or_default()).collect();
+            r.push(key_of(m, &page.date_arg).unwrap_or_default());
+            r.push(m.value.lexical().to_string());
+            r.push(m.version.receipt_hash.clone());
+            r
         })
         .collect();
-    csv_of(&headers, &rows)
+    use crate::slice::csv_field;
+    let line = |cells: &[String]| cells.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(",") + "\r\n";
+    let mut out = line(&headers);
+    for r in &rows {
+        out.push_str(&line(r));
+    }
+    out
 }
