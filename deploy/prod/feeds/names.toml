@@ -115,6 +115,26 @@ second_url = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
 # {from} and {to} are DD/Mon/YYYY (Mon in English, e.g. 02/Nov/2026) or the word now
 url = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom={from}&Dateto={to}&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
 
+# SEC company facts (Build 2 Part 7, K2 and K7): relayed as filed, one cell per reported figure per filing. Rehearsal
+# only; the names are permanent once published, so they are reviewed before any production table has them.
+# The register entry (sec.gov / company_facts) is not in [register.datasets] yet (see README).
+[sec]
+namespace = "{host}/relay/sec.gov"
+function = "company_fact"
+filing_function = "filing"
+filing_for_function = "filing_for"
+source_name = "sec.gov"
+register_source = "sec.gov"
+register_code = "company_facts"
+licence = "https://www.sec.gov/about/privacy-information"
+takeover = "https://{host}/takeover/sec.gov"
+# one company's companyfacts file (10 digits with leading zeros)
+companyfacts_url = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+# the NYSE and Nasdaq tickers (the scope rule's company list, K3)
+tickers_url = "https://www.sec.gov/files/company_tickers_exchange.json"
+# one frame: the latest value of a concept per company for a calendar period (CY2023Q4I is an instant, CY2023 a year)
+frames_url = "https://data.sec.gov/api/xbrl/frames/{taxonomy}/{concept}/{unit}/{ccp}.json"
+
 # Computed by datumesh.com from CHIRPS v3, under earth/ (no source name in the function name). The cells carry no
 # `source` member (D17): a stored cell with `source` would be relayed. Lineage is in the summary and the description.
 [chirps]
