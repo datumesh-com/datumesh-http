@@ -46,10 +46,10 @@ def year_csv(y, lie=None):
 class World:
     """A fake Treasury: month XML and year CSV by URL; a fake clock the job sleeps on."""
 
-    def __init__(self, names, fail=None, lie=None, csv_down=()):
+    def __init__(self, names, fail=None, lie=None, csv_down=(), years=range(1989, 1995)):
         sec = names["treasury"]
-        self.xml = {sec["url"].format(month=f"{y}{m:02d}"): (y, m) for y in range(1989, 1995) for m in range(1, 13)}
-        self.csv = {sec["second_url"].format(year=y): y for y in range(1989, 1995)}
+        self.xml = {sec["url"].format(month=f"{y}{m:02d}"): (y, m) for y in years for m in range(1, 13)}
+        self.csv = {sec["second_url"].format(year=y): y for y in years}
         self.t, self.sleeps, self.log, self.fail, self.lie, self.csv_down = 1000.0, [], [], fail, lie, set(csv_down)
 
     def clock(self):
