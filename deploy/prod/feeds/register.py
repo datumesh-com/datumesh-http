@@ -54,14 +54,23 @@ def _clauses(lic) -> str:
     return text
 
 
-def _value(sec, method, d, e, lic):
+def _value(sec, method, d, e, lic, blobs):
+    """A string, an instant, or a text blob: {"blob": "blobs/<sha256>", "media_type"} with the bytes put in `blobs`
+    (the file goes next to the lines file, named by its hash, as the scripture loader does)."""
     where = sec["value"][method]
     if where == "clauses":
         text = _clauses(lic)
     else:
         scope, field = where.split(".")
         text = {"dataset": d, "entry": e}[scope][field]
-    return {"type": sec.get("returns", {}).get(method, "string"), "value": text}
+    kind = sec.get("returns", {}).get(method, "string")
+    if kind == "blob":
+        data = text.encode("utf-8")
+        path = "blobs/" + hashlib.sha256(data).hexdigest()
+        blobs[path] = data
+        return {"blob": path, "media_type": sec["blob_media_type"]}
+    shape(len(text.encode("utf-8")) <= 1024, f"register: the {method} value is over the 1024-byte string limit")
+    return {"type": kind, "value": text}
 
 
 def _method_descriptor(sec, method) -> dict:
@@ -93,21 +102,22 @@ def _class_lines(sec, cls):
     return lines
 
 
-def _cell_lines(sec, cls, d, e, lic):
+def _cell_lines(sec, cls, d, e, lic, blobs):
     args = {"source": {"type": "string", "value": d["source"]}, "code": {"type": "string", "value": d["code"]}}
     fields = {"source": d["source"], "code": d["code"], "name": d["name"], "status": d["status"],
               "retrieved": e["retrieved"], "licence_page": e["licence_url"]}
     lines = []
     for m in sec["methods"]:
         summary = common.nfc(sec["method_text"][m]["summary"].format(**fields))
-        lines.append({"cell": {"fn": f"{cls}/{m}", "args": dict(args)}, "value": _value(sec, m, d, e, lic),
+        lines.append({"cell": {"fn": f"{cls}/{m}", "args": dict(args)}, "value": _value(sec, m, d, e, lic, blobs),
                       "licence": sec["licence"], "summary": summary})
     return lines
 
 
-def emit(entries, state, names, licences=None):
+def emit(entries, state, names, licences=None, blobs=None):
     """-> (lines, state). The first call writes the method descriptors, the class and the catalogue; every call
     writes the six cells of each dataset whose licence text (its SHA-256) is not the one in the state."""
+    blobs = {} if blobs is None else blobs
     sec = names[KEY]
     cls = f"{sec['namespace']}/{sec['class']}"
     lics = {(x["source"], x["code"]): x for x in (common.licences() if licences is None else licences)}
@@ -129,7 +139,7 @@ def emit(entries, state, names, licences=None):
         return [], state
     lines = [] if state.get("class") else _class_lines(sec, cls)
     for d, e, lic in todo:
-        lines += _cell_lines(sec, cls, d, e, lic)
+        lines += _cell_lines(sec, cls, d, e, lic, blobs)
         done[f"{d['source']}|{d['code']}"] = e["sha256"]
     new_state = dict(state)
     new_state["class"] = True
@@ -140,9 +150,15 @@ def emit(entries, state, names, licences=None):
 def run(names, *, path, now, state_dir, out_dir, publish=None):
     state_path = Path(state_dir) / f"{KEY}.json"
     state = common.load_state(state_path)
-    lines, state = emit(parse(Path(path).read_bytes()), state, names)
+    blobs = {}
+    lines, state = emit(parse(Path(path).read_bytes()), state, names, blobs=blobs)
     if not lines:
         return None
+    (Path(out_dir) / "blobs").mkdir(exist_ok=True)
+    for rel, data in blobs.items():  # content-addressed: the same bytes under the same name, written once
+        target = Path(out_dir) / rel
+        if not target.exists():
+            target.write_bytes(data)
     out = Path(out_dir) / f"{KEY}-{now.replace(':', '').replace('-', '')}.jsonl"
     write_jsonl(out, lines)
     if publish is not None:

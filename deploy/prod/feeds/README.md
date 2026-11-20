@@ -10,10 +10,10 @@ Status: all scripts are written and the tests pass. Nothing has been fetched fro
 
 ```
 docker run --rm -v "$PWD/deploy/prod/feeds:/feeds" -w /feeds python:3.13-slim \
-  sh -c "pip install -q pytest && python -B -m pytest -q -p no:cacheprovider tests"
+  sh -c "pip install -q pytest numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && python -B -m pytest -q -p no:cacheprovider tests"
 ```
 
-Python 3.13, standard library only in the scripts (`tomllib`, `xml.etree`, `csv`, `zipfile`, `decimal`, `urllib`, `hashlib`). The one exception is the CHIRPS raster decode, which imports `tifffile` and `numpy` only when a raster is read; `test_chirps_store.py` skips its decode test where they are missing. To run that test too: add `numpy==2.1.3 tifffile==2024.8.30` to the `pip install`.
+Python 3.13, standard library only in the scripts (`tomllib`, `xml.etree`, `csv`, `zipfile`, `decimal`, `urllib`, `hashlib`). The one exception is the CHIRPS raster decode, which imports `tifffile` and `numpy` only when a raster is read, and needs `imagecodecs` because the real CHIRPS v3 GeoTIFF is LZW compressed (all three pinned: `numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30`; imagecodecs has cp313 manylinux wheels, nothing is built from source). The decode tests skip where numpy or tifffile are missing, and fail without imagecodecs, as the job would; the command above installs all three. The real raster has no nodata tag and uses -9999, which `read_geotiff` takes as nodata when the tag is absent. `fixtures/chirps_v3_2024-06_kansas_lzw.tif` is a crop of a real raster (see `fixtures/SOURCES.md`).
 
 ## Layout
 
@@ -70,10 +70,36 @@ A module's name is its section in `names.toml`.
 ## `register.py` (names answer 3)
 
 - `parse(data: bytes) -> list[dict]` reads `register.json` (every entry, RELAY and SKIP), raises `ShapeError` on a missing key, a bad sha256, instant or URL, or a verdict that is neither.
-- `emit(entries, state, names) -> (lines, new_state)`: first run, six `descriptor` lines (the stored methods `name`, `status`, `licence_page`, `licence_hash`, `licence_clauses`, `retrieved`; the last returns an instant), one `class` line (`<host>/register/dataset`, keys `source` then `code`, steward `{namespace: <host>/register, process}`, methods by hash), the catalogue (the class with dictionaries, and each method), then six cells for each of the eight entries in `[[register.datasets]]` (status `relayed`, `computed_from` or `not_relayed`; a `not_relayed` entry's `licence_clauses` starts with its reason). Cells carry no `source` member and there is no `retrieved` key: `retrieved` is a method. A rerun whose licence text (its SHA-256) is unchanged emits nothing, even with a later `retrieved`; a changed text emits the six cells of that entry only, new versions of the same cells (`asof` gives the history). State: `class` and `done` (`source|code` to the hash last emitted).
-- `licence_clauses` is the verbatim quotes of `licences.toml` joined by ` | ` (a `not_relayed` entry starts with `Not relayed. Reason: ... Clauses: `). `licences.toml` holds, per (source, code), the licence page, the quotes exactly as in LICENCES.md (copied to `fixtures/LICENCES.md`; `tests/test_licences.py` checks each quote byte for byte) and the reason. `register.json` still supplies the page URL, hash and date.
+- `emit(entries, state, names) -> (lines, new_state)`: first run, six `descriptor` lines (the stored methods `name`, `status`, `licence_page`, `licence_hash`, `licence_clauses`, `retrieved`; `retrieved` returns an instant and `licence_clauses` a blob, the rest strings), one `class` line (`<host>/register/dataset`, keys `source` then `code`, steward `{namespace: <host>/register, process}`, methods by hash), the catalogue (the class with dictionaries, and each method), then six cells for each of the eight entries in `[[register.datasets]]` (status `relayed`, `computed_from` or `not_relayed`; a `not_relayed` entry's `licence_clauses` starts with its reason). Cells carry no `source` member and there is no `retrieved` key: `retrieved` is a method. A rerun whose licence text (its SHA-256) is unchanged emits nothing, even with a later `retrieved`; a changed text emits the six cells of that entry only, new versions of the same cells (`asof` gives the history). State: `class` and `done` (`source|code` to the hash last emitted).
+- `licence_clauses` is a text blob (the texts exceed the 1024-byte string limit; like `scripture/edition`'s `notice`): the cell value is `{"blob": "blobs/<sha256>", "media_type": "text/plain"}` and `run` writes `blobs/<sha256>` next to the lines file; `emit(..., blobs=dict)` fills the dict with the bytes. The text is the verbatim quotes of `licences.toml` joined by ` | ` (a `not_relayed` entry starts with `Not relayed. Reason: ... Clauses: `). `licences.toml` holds, per (source, code), the licence page, the quotes exactly as in LICENCES.md (copied to `fixtures/LICENCES.md`; `tests/test_licences.py` checks each quote byte for byte) and the reason. `register.json` still supplies the page URL, hash and date.
 - `run(names, path=..., now=..., state_dir=..., out_dir=...)` and the CLI `python -B register.py --host H --register FILE --state-dir D --out-dir D`, run by hand (not on cron).
 
 ## The 22 CHIRPS regions
 
 `[chirps.regions.*]` in `names.toml` lists them; polygons are in `fixtures/regions/<id>.wkt`, exactly as in Natural Earth 10m admin-1 v5.1.2 (`region_source_url`, sha256 pinned; nothing simplified). `fixtures/regions/extract_regions.py` makes the files and `regions.json` from the downloaded GeoJSON (untrusted data: it only parses it; run with `python -I`). The two French regions are not single features in the 10m file (it has departments), so they are the union of their departments (`members`, `note`); every other region is one feature (`ne_vertices` is its vertex count, and a test checks the file has exactly that many).
+
+## Source-conformance tests (every run with a second copy)
+
+Every relay function carries `test` lines from a second copy of the same organisation's data by another channel, on **every run** that can fetch one (not only the first):
+- ecb_fx: the ECB SDMX API (`second_url`, the latest day; `second_url_history`, the last 20 observations of each currency, for a history run) against the daily XML or `eurofxref-hist.zip`.
+- estr: the ECB's €STR web page (the latest rate and its reference date) against the SDMX series. One test a day.
+- policy_rates: the ECB's key interest rates web page (every change since 1999, `parse_page`) against the three SDMX series.
+- boe: the Bank's Bank Rate web page (`Bank-Rate.asp`, the dates the rate changed) against the IADB series IUDBEDR. This page is not a URL listed in LICENCES.md; it sits under the Bank's legal page (OGL for the Database).
+- treasury: the year CSV against the month XML.
+
+A test is a (key, date) pair both copies have, not tested before: dates after each key's high-water mark in `state["tested"]`, the latest 20 dates a key (`relay.TEST_DATES`). A disagreement among them refuses the run (nothing written). A run with new tests and no new cells still writes a file (tests only). A second copy that is down or has changed its shape does not stop the relay: a warning on stderr and no new tests that run.
+
+## Treasury history from 1990
+
+`python -B treasury.py --host H --mode history --state-dir D --out-dir D` does **one year** per call (the year after `history_year` in the state): its month XMLs one at a time, at least 2 s apart (`THROTTLE_SECONDS`), the year's CSV for the tests of its latest dates, one `treasury-<stamp>-<year>.jsonl`. It has its own cursor (`history_last`), so a mesh that already has daily cells still gets the earlier years; `last_date` moves to the latest date there is. `FEEDS_HOST=H run_feed.sh treasury history` publishes year by year until nothing is new; a failure loses at most the year it was in, and the state of the years done is kept. The parsers accept the tenors a year had (9 in 1990).
+
+## The test window and the run line
+
+A daily fetch may not reach the dates of the second copy (Bank Rate's page lists change dates only; a rerun asks IUDBEDR only from `last_date`). When the second copy's latest 20 untested dates of a key include dates the first copy's rows lack, the run reads a **test window** from the first copy (`relay.missing_dates`, `relay.with_window`): boe asks IUDBEDR over the span of those dates, ecb_fx reads `window_url` (the 90-day file), treasury reads the month XMLs of those dates it has not fetched. Those rows are used only for tests, never as cells. estr and policy_rates fetch their whole series every run and need no window. A date the second copy has and the first does not (the second is ahead) stays untested, and the window is read again next run.
+
+Every run prints one line on stderr (the job's log): `<module>: N cells, M tests written; second copy: K pairs compared` (or `unavailable`, `none`), so a run that wrote nothing is visible.
+
+## Quirks of the real sources
+
+- Treasury: an entry in a month XML with no tenor at all (2010-10-11, Columbus Day) is a day without data and gives no rows; unknown elements, non-numeric values and a missing date are still refused (`fixtures/treasury_201010_columbus_day.xml`).
+- CHIRPS: the server answers 429 to a raster a minute. `http_get` turns 429 and 503 into `common.RateLimited` (with the `Retry-After` seconds or date). The job spaces rasters 120 s apart (`THROTTLE_SECONDS`), and on `RateLimited` waits the `Retry-After` (at most an hour) or backs off 2, 4, 8, 16, 30, 30 minutes (`backoff_seconds`), retrying the same month up to `RETRIES` (5) times. Then it stops like an unpublished month: it writes the months already read and advances the state to the last of them (no file and no state change when not even the first month came). Use `--max-months 12` for a chunk that publishes every year.

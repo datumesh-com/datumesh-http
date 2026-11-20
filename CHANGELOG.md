@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 (unreleased)
+
+For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions; QUESTIONS-build2 D16, D20, D21). Additive: no signature of the public API changes. Requires datumesh-core 0.3.10, datumesh-formula 0.5.1 and datumesh-store 0.5.1, as 0.4.2 does.
+
+- **Tests of a stored function (spec 7.2, 7.3).** A `test` line of a publish-stored file (with the cells, in a tests-only file, or after them), and a bundle's signed `tests` member, for a stored function are stored in `function_tests` like a computed function's tests: the case is the first 16 hex digits of the SHA-256 of the test's JCS, and the same test is held once.
+- **Running them.** A stored function's test reads the stored cell its call names, at the test's asof or else now, and compares its value with `expect` as typed values (numbers as numbers): equal is `pass`, different is `fail`, and a cell that is not stored, or cannot be read, is `error`. The result is recorded as before.
+- **Never a refusal.** A failing or erroring test of a stored function never refuses a file or a bundle (stored functions stay exempt from the public rule); computed functions are unchanged.
+- **Reruns.** A new version of a stored cell reruns the tests of its function, as does a rebind of its name, so the result follows the latest value.
+- **describe.** A stored function's `tests` counts its stored tests, with `branches` and `covered` 0; its `counterexamples` counts its failing and erroring tests and the `false` `<host>/test_case` cells, as before.
+- **Function page.** Each case of `tests.cases` gains `result` (`pass`, `fail` or `error`; null before its first run), additively; the HTML shows it beside each case. `tests.last_run.result` is the worst stored result (as before).
+- **Test cells (`DATUMESH_TEST_CELLS=1`).** Each stored-function test is also the boolean cell `<host>/test_case(function_hash, case)`, trust `primary`, with `true` for a pass and `false` for a fail or error.
+- **Feed jobs (deploy only, not in the crate), from the mesh-test rehearsal:** source-conformance tests on every run from an independent second copy, with a test window read from the first copy when needed (QUESTIONS-build2 D21); Treasury history from 1990, one year per call, 2 s between requests; a Treasury day without tenor values is a day without data; CHIRPS reads the LZW GeoTIFF (`imagecodecs` pinned), takes -9999 as nodata when the file has no tag, spaces rasters 120 s apart and backs off on 429 and 503; one stderr line per run with the cells and tests written.
+
 ## 0.4.2 (unreleased)
 
 For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datumesh-core 0.3.10 (`FunctionAnswer::with_publisher`, `Described::publisher`) and datumesh-formula 0.5.1. Additive: no signature of the public API changes.

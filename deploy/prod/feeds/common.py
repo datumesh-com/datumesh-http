@@ -2,11 +2,14 @@
 import argparse
 import csv
 import datetime as dt
+import email.utils
 import hashlib
 import io
 import json
 import os
 import re
+import sys
+import time
 import tomllib
 import unicodedata
 import urllib.error
@@ -32,6 +35,15 @@ class ConformanceError(ValueError):
 
 class EmptyRegion(ValueError):
     """A region has no pixel centre inside it with data."""
+
+
+class RateLimited(Exception):
+    """The source answered 429 or 503: too many requests, try later. `retry_after` is the seconds its Retry-After
+    header gave, or None."""
+
+    def __init__(self, url, retry_after=None, code=429):
+        super().__init__(f"HTTP {code} from {url}" + (f", retry after {retry_after:g} s" if retry_after is not None else ""))
+        self.url, self.retry_after, self.code = url, retry_after, code
 
 
 class NotPublished(Exception):
@@ -184,6 +196,26 @@ def save_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def warn(message: str) -> None:
+    """A line on stderr (the job's log), never on stdout (which carries the path of the file)."""
+    print(message, file=sys.stderr)
+
+
+def _retry_after(headers):
+    """Seconds from a Retry-After header (a number, or an HTTP date), or None."""
+    value = headers.get("Retry-After") if headers is not None else None
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, when.timestamp() - time.time())
+
+
 def http_get(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
@@ -192,6 +224,8 @@ def http_get(url: str) -> bytes:
     except urllib.error.HTTPError as e:
         if e.code == 404:
             raise NotPublished(url) from e
+        if e.code in (429, 503):
+            raise RateLimited(url, _retry_after(e.headers), e.code) from e
         raise
 
 

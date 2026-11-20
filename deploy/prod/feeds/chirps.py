@@ -19,7 +19,11 @@ from common import EmptyRegion, NotPublished, ShapeError, decimal_text, shape
 
 KEY = "chirps"
 FIRST_MONTH = "1981-01-01"
-THROTTLE_SECONDS = 60.0  # CHC answers 429 to quick repeats: at most one raster file a minute
+THROTTLE_SECONDS = 120.0  # CHC answers 429 to quick repeats: at most one raster file every two minutes
+RETRIES = 5  # of a rate-limited request, then the run stops with the months it has
+BACKOFF_BASE = 120.0
+BACKOFF_CAP = 1800.0  # thirty minutes
+RETRY_AFTER_CAP = 3600.0
 RING_RE = re.compile(r"\(([^()]*)\)")
 
 
@@ -164,25 +168,32 @@ def region_row(region: str, month: str, grid: dict, rings) -> dict:
 
 
 def read_geotiff(data: bytes) -> dict:
-    """Decode a CHIRPS GeoTIFF (tifffile, numpy: imported here only). Returns a grid like synthetic_raster.json,
+    """Decode a CHIRPS GeoTIFF (tifffile, numpy, and imagecodecs for LZW: imported here only). Returns a grid like synthetic_raster.json,
     its values a numpy array."""
     try:
         import tifffile
     except ImportError as e:
         raise RuntimeError("decoding a CHIRPS raster needs tifffile and numpy (see run_feed.sh)") from e
-    with tifffile.TiffFile(io.BytesIO(data)) as tf:
-        page = tf.pages[0]
-        scale = page.tags.get(33550)
-        tie = page.tags.get(33922)
-        nodata_tag = page.tags.get(42113)
-        shape(scale is not None and tie is not None, "GeoTIFF: no pixel scale or tiepoint")
-        sx, sy = scale.value[0], scale.value[1]
-        shape(abs(sx - sy) < 1e-12, "GeoTIFF: pixels are not square")
-        i, j, _, x, y, _ = tie.value
-        west = x - i * sx
-        north = y + j * sy
-        nodata = float(str(nodata_tag.value).strip()) if nodata_tag is not None else None
-        values = page.asarray()
+    try:
+        with tifffile.TiffFile(io.BytesIO(data)) as tf:
+            page = tf.pages[0]
+            scale = page.tags.get(33550)
+            tie = page.tags.get(33922)
+            nodata_tag = page.tags.get(42113)
+            shape(scale is not None and tie is not None, "GeoTIFF: no pixel scale or tiepoint")
+            sx, sy = scale.value[0], scale.value[1]
+            shape(abs(sx - sy) < 1e-12, "GeoTIFF: pixels are not square")
+            i, j, _, x, y, _ = tie.value
+            west = x - i * sx
+            north = y + j * sy
+            # the real CHIRPS raster has no nodata tag and -9999 where it has no data
+            nodata = float(str(nodata_tag.value).strip()) if nodata_tag is not None else -9999.0
+            values = page.asarray()
+    except ValueError as e:
+        if "imagecodecs" in str(e):  # the real CHIRPS v3 GeoTIFF is LZW compressed
+            raise RuntimeError("decoding the CHIRPS raster (LZW) needs the imagecodecs package, pinned in run_feed.sh "
+                               f"with numpy and tifffile: {e}") from e
+        raise
     shape(values.ndim == 2, "GeoTIFF: not a single band")
     return {"west": west, "north": north, "cell_size": sx, "nodata": nodata, "values": values}
 
@@ -285,6 +296,18 @@ def pending_months(last, now: str) -> list:
     return out
 
 
+def backoff_seconds(attempt: int) -> float:
+    """2, 4, 8, 16, 30, 30 ... minutes."""
+    return min(BACKOFF_BASE * 2 ** attempt, BACKOFF_CAP)
+
+
+def retry_delay(err, attempt: int) -> float:
+    """The server's Retry-After (at most an hour), else the exponential backoff."""
+    if err.retry_after is not None:
+        return min(max(0.0, err.retry_after), RETRY_AFTER_CAP)
+    return backoff_seconds(attempt)
+
+
 def seconds_to_wait(last_fetch, now_epoch: float) -> float:
     if last_fetch is None:
         return 0.0
@@ -292,7 +315,7 @@ def seconds_to_wait(last_fetch, now_epoch: float) -> float:
 
 
 def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.time,
-        max_months=None, decode=None):
+        max_months=None, decode=None, retries=RETRIES):
     sec = names[KEY]
     state_path = Path(state_dir) / f"{KEY}.json"
     state = common.load_state(state_path)
@@ -311,10 +334,22 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         wait = seconds_to_wait(state.get("last_fetch"), clock())
         if wait > 0:
             sleep(wait)
-        try:
-            data = fetch(url)
-        except NotPublished:
-            break  # not published yet: keep what was read, the next run starts here
+        data, attempt = None, 0
+        while data is None:
+            try:
+                data = fetch(url)
+            except NotPublished:
+                break  # not published yet: keep what was read, the next run starts here
+            except common.RateLimited as e:
+                if attempt >= retries:
+                    common.warn(f"chirps: rate limited ({e}) after {attempt} retries: stopping with the months read")
+                    break
+                delay = retry_delay(e, attempt)
+                common.warn(f"chirps: rate limited ({e}): waiting {delay:g} s, retry {attempt + 1} of {retries}")
+                sleep(delay)
+                attempt += 1
+        if data is None:
+            break
         state["last_fetch"] = clock()
         sha = common.sha256_hex(data)
         src = {"url": url, "retrieved": now, "sha256": sha}

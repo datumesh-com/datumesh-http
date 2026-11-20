@@ -2,7 +2,9 @@
 second, independent copy for conformance. BC_30YEARDISPLAY is a duplicate of BC_30YEAR and is ignored."""
 import datetime as dt
 import re
+import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import common
 import relay
@@ -60,7 +62,9 @@ def parse(data: bytes) -> list:
                 continue
             shape(DECIMAL.match(v), f"Treasury XML: bad value {v!r} for {name}")
             vals[XML_TENORS[name]] = v
-        shape(date and seen == set(XML_TENORS), f"Treasury XML: entry for {date} has {len(seen)} tenors")
+        # a day has the tenors Treasury quoted then: 9 in 1990, 14 since 2022; an unknown element is refused above.
+        # An entry with no tenor (a holiday, 2010-10-11) is a day without data: no rows.
+        shape(date, "Treasury XML: an entry has no date")
         for t in TENORS:
             if t in vals:
                 rows.append({"date": date, "value": vals[t], "tenor": t})
@@ -71,8 +75,8 @@ def parse(data: bytes) -> list:
 def parse_csv(data: bytes) -> list:
     """The year CSV (daily yield curve), the second copy. Dates are MM/DD/YYYY."""
     header, raw = common.csv_table(data)
-    shape(header and header[0] == "Date" and set(header[1:]) == set(CSV_TENORS) and len(header) == 15,
-          f"Treasury CSV: header is not Date and the 14 tenors: {header}")
+    shape(header and header[0] == "Date" and len(header) > 1 and set(header[1:]) <= set(CSV_TENORS)
+          and len(set(header)) == len(header), f"Treasury CSV: header is not Date and known tenors: {header}")
     cols = {i: CSV_TENORS[h] for i, h in enumerate(header) if i > 0}
     rows = []
     for cells in raw:
@@ -117,7 +121,87 @@ def conformance(rows, second_rows, names):
     return relay.conformance(KEY, rows, second_rows, names, KEYCOLS)
 
 
-def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
+FIRST_YEAR = 1990
+THROTTLE_SECONDS = 2.0  # at most one request every two seconds to the Treasury in a history run
+
+
+def seconds_to_wait(last_fetch, now_epoch: float) -> float:
+    if last_fetch is None:
+        return 0.0
+    return max(0.0, THROTTLE_SECONDS - (now_epoch - last_fetch))
+
+
+def _throttled(fetch, sleep, clock):
+    last = [None]
+
+    def get(url):
+        wait = seconds_to_wait(last[0], clock())
+        if wait > 0:
+            sleep(wait)
+        data = fetch(url)
+        last[0] = clock()
+        return data
+    return get
+
+
+def run_history(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.time):
+    """One year of the history from 1990 per call: the year after state["history_year"], its months one file at a
+    time (at least 2 s apart), the year's CSV for the tests of its latest dates. It writes one file for that year and
+    returns it; the next call does the next year, so a failure loses at most the year it was in. The history has its
+    own cursor (`history_last`), so a mesh that already has later daily cells still gets the earlier years."""
+    sec = names[KEY]
+    today = dt.date.fromisoformat(now[:10])
+    state_path = Path(state_dir) / f"{KEY}.json"
+    state = common.load_state(state_path)
+    get = _throttled(fetch, sleep, clock)
+    year = state.get("history_year", FIRST_YEAR - 1) + 1
+    while year <= today.year:
+        last_month = today.month if year == today.year else 12
+        st, lines, rows_all = dict(state), [], []
+        for month in range(1, last_month + 1):
+            url = sec["url"].format(month=f"{year:04d}{month:02d}")
+            data = get(url)
+            rows = parse(data)
+            rows_all += rows
+            src = {"url": url, "retrieved": now, "sha256": common.sha256_hex(data)}
+            more, st = relay.emit(KEY, rows, st, names, src, keycols=KEYCOLS, per_key=False, text=TEXT,
+                                  cursor="history_last")
+            lines += more
+        second_rows = relay.second_copy((sec["second_url"].format(year=year), parse_csv), get)
+        if second_rows is not None:
+            tests, st = relay.new_tests(KEY, rows_all, second_rows, names, KEYCOLS, st, tested_key="tested_history")
+            lines += tests
+        st["history_year"] = year
+        if "history_last" in st:  # the daily run goes on from the latest date there is
+            st["last_date"] = max(st.get("last_date", ""), st["history_last"])
+        marks = dict(st.get("tested", {}))
+        for k, d in st.get("tested_history", {}).items():
+            marks[k] = max(marks.get(k, ""), d)
+        if marks:
+            st["tested"] = marks
+        state = st
+        if lines:
+            relay.report(KEY, lines, second_rows, True, [l for l in lines if "test" in l])
+            path = Path(out_dir) / f"{KEY}-{relay._stamp(now)}-{year}.jsonl"
+            common.write_jsonl(path, lines)
+            if publish is not None:
+                try:
+                    publish(path)
+                except BaseException:
+                    path.unlink(missing_ok=True)
+                    raise
+            common.save_state(state_path, state)
+            return path
+        year += 1
+    common.save_state(state_path, state)
+    relay.report(KEY, [], None, True, [])
+    return None
+
+
+def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily", sleep=time.sleep, clock=time.time):
+    if mode == "history":
+        return run_history(names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
+                           sleep=sleep, clock=clock)
     sec = names[KEY]
     today = dt.date.fromisoformat(now[:10])
 
@@ -131,19 +215,28 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
         return out
 
+    used = []
+
     def inputs(state):
-        return [(sec["url"].format(month=mm), parse) for mm in months(state)]
+        out = [(sec["url"].format(month=mm), parse) for mm in months(state)]
+        used.extend(u for u, _ in out)
+        return out
+
+    def window(missing):
+        # months of the year file that the daily window (the last date's month to now) does not reach
+        want = sorted({d[:4] + d[5:7] for d in missing})
+        return [(sec["url"].format(month=mm), parse) for mm in want if sec["url"].format(month=mm) not in used]
 
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=inputs, second=(sec["second_url"].format(year=today.year), parse_csv), keycols=KEYCOLS,
+        inputs=inputs, second=(sec["second_url"].format(year=today.year), parse_csv), keycols=KEYCOLS, window=window,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 
 def main(argv=None):
-    a = common.base_parser().parse_args(argv)
+    a = common.base_parser(("daily", "history")).parse_args(argv)
     return common.finish(run(common.names(a.host), fetch=common.http_get, now=common.now_instant(),
-                             state_dir=a.state_dir, out_dir=a.out_dir))
+                             state_dir=a.state_dir, out_dir=a.out_dir, mode=a.mode))
 
 
 if __name__ == "__main__":

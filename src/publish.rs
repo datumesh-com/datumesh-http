@@ -1455,10 +1455,13 @@ fn overlay_of(ops: &[Op]) -> Result<Overlay, PublishError> {
     Ok(overlay)
 }
 
-/// The public rule over a file (Build 2 Part 3, E5): runs the tests of each computed function the
-/// file defines, over the store and the file's planned writes, and refuses the file when `checked`
-/// and a test fails or the tests leave a derived case or a branch arm unexercised. Returns the
-/// rows of the tests to hold (the file's and the held ones of those functions).
+/// The tests of a file, run over the store and the file's planned writes (Build 2 Part 3, E5;
+/// CONTRACT-build2-part5 F2). For a computed function the file defines (`formulas`), the public rule:
+/// `checked` refuses the file when a test fails or the tests leave a derived case or a branch arm
+/// unexercised. For a stored function, the tests of the file are run and stored with their results
+/// (a cell that is not stored is `error`), and the file is never refused for them (spec 7.2: a stored
+/// function's tests are source-conformance tests). Returns the rows of the tests to hold (the file's
+/// and the held ones of those functions).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_tests<S: Store + ?Sized>(
     store: &S,
@@ -1469,9 +1472,6 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
     now: &str,
     checked: bool,
 ) -> Result<Vec<RowWrite>, PublishError> {
-    if formulas.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut file_tests: Vec<(usize, TestSpec, String)> = Vec::new();
     for (n, spec) in tests {
         let at = spec.asof.clone().unwrap_or_else(|| now.to_string());
@@ -1486,12 +1486,26 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
             Err(e) => return Err(PublishError::at(*n, e)),
         }
     }
+    // The functions to run: the file's computed functions, then the stored functions of its tests.
+    let mut groups: Vec<(usize, String, String)> = formulas.to_vec();
+    for (n, spec, hash) in &file_tests {
+        if !groups.iter().any(|g| &g.2 == hash) {
+            groups.push((*n, spec.function.clone(), hash.clone()));
+        }
+    }
     let mut rows = Vec::new();
-    for (line, name, hash) in formulas {
+    for (line, name, hash) in &groups {
         let own: Vec<(usize, TestSpec)> =
             file_tests.iter().filter(|t| &t.2 == hash).map(|t| (t.0, t.1.clone())).collect();
         let held = testrun::held_tests(store, hash).map_err(|e| PublishError::at(*line, e))?;
         if !checked && own.is_empty() && held.is_empty() {
+            continue;
+        }
+        let mut run = testrun::Run::new(store, overlay, now);
+        let built = run.built(name, hash).map_err(|e| PublishError::at(*line, format!("{name}: {}", e.0)))?;
+        // A computed function this file does not define keeps its behaviour: its tests are neither
+        // checked nor stored here (as before stored functions' tests were held).
+        if built.compiled.is_some() && !formulas.iter().any(|f| &f.2 == hash) {
             continue;
         }
         let mut specs: Vec<(Option<usize>, TestSpec)> = own.into_iter().map(|(n, s)| (Some(n), s)).collect();
@@ -1501,9 +1515,23 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
             }
         }
         let ran: Vec<Ran> = specs.iter().map(|(_, s)| run_test(store, overlay, now, s)).collect();
-        let mut run = testrun::Run::new(store, overlay, now);
-        let built = run.built(name, hash).map_err(|e| PublishError::at(*line, format!("{name}: {}", e.0)))?;
-        let Some(compiled) = built.compiled.as_ref() else { continue };
+        let Some(compiled) = built.compiled.as_ref() else {
+            // A stored function: its tests are stored and counted; it has no branch arms.
+            for ((_, spec), r) in specs.iter().zip(&ran) {
+                let (result, detail) = testrun::result_of(spec, r);
+                rows.push(RowWrite {
+                    fn_hash: hash.clone(),
+                    case: spec.case.clone(),
+                    jcs: spec.jcs.clone(),
+                    signed_by: host.to_string(),
+                    result,
+                    detail,
+                    branches_total: 0,
+                    branches_covered: 0,
+                });
+            }
+            continue;
+        };
         if checked {
             let mut failing: Vec<(usize, String)> = Vec::new();
             for ((n, spec), r) in specs.iter().zip(&ran) {
@@ -1620,7 +1648,8 @@ fn publish_planned<S: Store + ?Sized>(
     }
     // The tests of the file's computed functions, run over the store and the file's own writes:
     // refused before anything is written (Build 2 Part 3, D8).
-    let rows = check_tests(store, &overlay_of(&ops)?, &tests, &formulas, host, &now, checked)?;
+    let overlay = overlay_of(&ops)?;
+    let rows = check_tests(store, &overlay, &tests, &formulas, host, &now, checked)?;
     let (out, written) = write_ops(store, &ops)?;
     index_cell_values(store, &ops).map_err(|e| PublishError::at(0, format!("catalogue: {e}")))?;
     testrun::apply_rows(store, &rows, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
@@ -1632,6 +1661,9 @@ fn publish_planned<S: Store + ?Sized>(
         })
         .collect();
     testrun::rerun_readers(store, &rebound, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
+    // The stored functions' tests read the cells this file writes, and the names it rebinds.
+    let touched: BTreeSet<String> = rebound.into_iter().chain(overlay.cells.iter().map(|c| c.name.clone())).collect();
+    testrun::rerun_stored_tests(store, &touched, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

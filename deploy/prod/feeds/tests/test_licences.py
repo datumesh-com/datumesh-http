@@ -54,22 +54,42 @@ def test_the_quotes_cover_what_each_licence_grants_and_asks():
     assert "non-commercial" in join(("worldbank.org", "commodity_prices"))
 
 
-def test_licence_clauses_cell_is_the_quotes_and_nothing_else(names):
+def test_licence_clauses_is_a_text_blob_of_the_quotes_and_nothing_else(names):
+    from test_register import blob_text
     cls = f"{names['register']['namespace']}/{names['register']['class']}"
-    lines, _ = reg.emit(entries(), {}, names)
+    blobs = {}
+    lines, _ = reg.emit(entries(), {}, names, blobs=blobs)
     cells = {(c["cell"]["args"]["source"]["value"], c["cell"]["args"]["code"]["value"]): c
              for c in lines if "cell" in c and c["cell"]["fn"] == f"{cls}/licence_clauses"}
     assert len(cells) == 8
     inputs = {r["source_domain"]: r for r in entries()}
+    over = 0
     for d in names["register"]["datasets"]:
         e = {(x["source"], x["code"]): x for x in licences()}[(d["source"], d["code"])]
         v = cells[(d["source"], d["code"])]["value"]
-        assert v["type"] == "string"
+        text = blob_text(v, blobs)
         want = " | ".join(e["quotes"])
         if "reason" in e:
             want = f"Not relayed. Reason: {e['reason']} Clauses: {want}"
-        assert v["value"] == want
-        # register.json's own paraphrased conditions and attribution are not in it
+        assert text == want and blobs[v["blob"]] == want.encode("utf-8")
+        over += len(want.encode("utf-8")) > 1024
         for cond in inputs[d["input"]]["conditions"]:
-            assert cond not in v["value"]
-        json.dumps(v)
+            assert cond not in text
+    assert over >= 1, "the reason this is a blob: a clauses text over the 1024-byte string limit"
+
+
+def test_the_clauses_method_returns_a_blob_and_the_others_keep_their_types(names):
+    lines, _ = reg.emit(entries(), {}, names, blobs={})
+    returns = {m: l["descriptor"]["signature"]["returns"] for m, l in zip(names["register"]["methods"], lines[:6])}
+    assert returns == {"name": "string", "status": "string", "licence_page": "string", "licence_hash": "string",
+                       "licence_clauses": "blob", "retrieved": "instant"}
+
+
+def test_every_string_value_fits_the_1024_byte_limit(names):
+    lines, _ = reg.emit(entries(), {}, names, blobs={})
+    n = 0
+    for l in lines:
+        if "cell" in l and l["value"].get("type") == "string":
+            n += 1
+            assert len(l["value"]["value"].encode("utf-8")) <= 1024, (l["cell"]["fn"], l["cell"]["args"])
+    assert n == 8 * 4

@@ -14,9 +14,10 @@ RASTER = b"not really a GeoTIFF, but bytes with a known hash and size"
 
 def test_throttle_waits_out_the_minute():
     assert chirps.seconds_to_wait(None, 1000.0) == 0.0
-    assert chirps.seconds_to_wait(1000.0, 1000.0) == 60.0
-    assert chirps.seconds_to_wait(1000.0, 1025.0) == 35.0
-    assert chirps.seconds_to_wait(1000.0, 1061.0) == 0.0
+    assert chirps.THROTTLE_SECONDS == 120.0
+    assert chirps.seconds_to_wait(1000.0, 1000.0) == 120.0
+    assert chirps.seconds_to_wait(1000.0, 1025.0) == 95.0
+    assert chirps.seconds_to_wait(1000.0, 1121.0) == 0.0
 
 
 def test_pending_months_start_and_stop():
@@ -64,7 +65,7 @@ def test_run_fetches_each_month_a_minute_apart_and_writes_one_file(names, tmp_pa
                       sleep=sleep, clock=clock, max_months=2, decode=lambda data: grid())
     assert fetched == [names["chirps"]["raster_url"].format(year="2024", month="06"),
                        names["chirps"]["raster_url"].format(year="2024", month="07")]
-    assert sleeps == [60.0]
+    assert sleeps == [120.0]
     lines = [json.loads(l) for l in path.read_text().splitlines()]
     cells = [l for l in lines if "cell" in l]
     # per month: one mean per region (the region has data in the synthetic grid), and nothing else: no raster
