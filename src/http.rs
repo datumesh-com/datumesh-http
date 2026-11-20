@@ -199,6 +199,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         mesh_document,
         bindings,
         describe,
+        takeover_page,
         whatif,
         health,
         metrics,
@@ -1265,6 +1266,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/explain/{*rest}" => "/explain/{cell}".to_string(),
         "/versions/{*rest}" => "/versions/{cell}".to_string(),
         "/fn/{*name}" => "/fn/{name}".to_string(),
+        "/takeover/{*domain}" => "/takeover/{domain}".to_string(),
         _ => route,
     };
     let id = req
@@ -1282,7 +1284,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     let method = req.method().clone();
     let also = if route == "/slice/{cell}" { Some(crate::slice::ARROW) } else { None };
     // The function page is HTML for people (Build 2 Part 4, P2) as well as JSON for agents.
-    let html_ok = route == "/fn/{name}" && accepts(req.headers(), "text/html");
+    let html_ok = (route == "/fn/{name}" || route == "/takeover/{domain}") && accepts(req.headers(), "text/html");
     let mut resp = if route != "/blob/{sha256}" && route != "/metrics" && !html_ok && !acceptable(req.headers(), also) {
         let mut r = Reply::json(
             406,
@@ -1409,6 +1411,33 @@ async fn function_page(
     }
 }
 
+/// `GET /takeover/<domain>` (D24): what a source's domain can do to publish the values this mesh
+/// relays from it; HTML, or JSON by `Accept` or `?format=json`.
+#[utoipa::path(get, path = "/takeover/{domain}",
+    params(("domain" = String, Path, description = "The source's DNS name (SPEC 2.1)")),
+    responses(
+        (status = 200, description = "`{\"domain\", \"host\", \"functions\": [{\"name\", \"page\", \"fn_hash\"}], \"steps\": [...]}`, or the HTML page", content_type = "application/json"),
+        (status = 400, description = "E_CANON_NAME: not a DNS name", content_type = "application/json"),
+        (status = 404, description = "not_covered: no function relayed from the domain on this mesh", content_type = "application/json")))]
+async fn takeover_page(
+    State(mesh): State<Mesh>,
+    Path(domain): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    req: Request,
+) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let format_json = uri.query().is_some_and(|q| q.split('&').any(|p| p == "format=json"));
+    let json_form = format_json || (accepts(&headers, JSON) && !accepts(&headers, "text/html"));
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::takeover::respond(&mesh.inner, &domain, json_form)).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 async fn fallback() -> Response {
     not_found("endpoint")
 }
@@ -1435,6 +1464,7 @@ impl Mesh {
             .route("/bindings", get(bindings))
             .route("/describe/{*id}", get(describe))
             .route("/fn/{*name}", get(function_page))
+            .route("/takeover/{*domain}", get(takeover_page))
             .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
             .route("/health", get(health))

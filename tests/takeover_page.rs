@@ -131,7 +131,7 @@ async fn the_json_shape() {
 async fn the_text_says_what_is_and_is_not_promised() {
     let m = served("tk-text", PublishDomains::Own).await;
     let t = plain(&get(&m, &format!("/takeover/{ECB}"), &[]).await.text());
-    assert!(t.contains(&format!("{HOST} relays these values from {ECB} unchanged")), "{t}");
+    assert!(t.contains(&format!("This mesh ({HOST}) relays these values from {ECB} unchanged")), "{t}");
     assert!(t.contains(&format!("{ECB} remains their source")), "{t}");
     assert!(t.contains(&format!("https://{ECB}/.well-known/datumesh.json")), "{t}");
     assert!(t.contains(&format!("under {ECB}/...")), "{t}");
