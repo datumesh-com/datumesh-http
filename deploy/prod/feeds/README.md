@@ -103,3 +103,7 @@ Every run prints one line on stderr (the job's log): `<module>: N cells, M tests
 
 - Treasury: an entry in a month XML with no tenor at all (2010-10-11, Columbus Day) is a day without data and gives no rows; unknown elements, non-numeric values and a missing date are still refused (`fixtures/treasury_201010_columbus_day.xml`).
 - CHIRPS: the server answers 429 to a raster a minute. `http_get` turns 429 and 503 into `common.RateLimited` (with the `Retry-After` seconds or date). The job spaces rasters 120 s apart (`THROTTLE_SECONDS`), and on `RateLimited` waits the `Retry-After` (at most an hour) or backs off 2, 4, 8, 16, 30, 30 minutes (`backoff_seconds`), retrying the same month up to `RETRIES` (5) times. Then it stops like an unpublished month: it writes the months already read and advances the state to the last of them (no file and no state change when not even the first month came). Use `--max-months 12` for a chunk that publishes every year.
+
+## Network retries
+
+`common.http_get` retries a transient network failure (connection reset or refused, a timeout, a failed name lookup, a connection dropped while reading, an HTTP 502 or 504) up to 4 times, after 5, 15, 45 and 120 s (`RETRY_WAITS`), each retry announced on stderr, and then raises the last error. 404 stays `NotPublished`, 429 and 503 stay `RateLimited` (CHIRPS backs off on those), and any other HTTP status is raised at once.
