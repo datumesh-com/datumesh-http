@@ -2,7 +2,8 @@
 //! `deploy/prod/feeds/sec_views.jsonl`, published as `publish-stored` does on mesh-test, with the public
 //! test rule ON (`publish_stored_checked`, the call the binary makes on datumesh-http), over stub relay
 //! cells for two companies (`deploy/prod/feeds/fixtures/sec_views_stub_relay.jsonl`: Caterpillar and
-//! JPMorgan Chase, the SEC's companyfacts as filed, fiscal years 2019 to 2024).
+//! JPMorgan Chase, the SEC's companyfacts as filed, fiscal years 2019 to 2024), generated from `sec.emit` by
+//! `fixtures/make_sec_stub.py` (D38), so the relay the views read is the relay the fetcher writes.
 //!
 //! The mesh is on PostgreSQL (`DATABASE_URL`). Checked here:
 //!
@@ -115,8 +116,9 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     let dir = tmp("pg");
     let p = common::bl(|| publish_all(&*store, &key, &dir, &lines)).unwrap_or_else(|e| panic!("{e}"));
     let formula_names = formulas(&lines);
-    // three stored relay functions and the formulas
-    assert_eq!(p.functions, 3 + formula_names.len(), "{p:?}");
+    // the five stored relay functions of the stub (D38: company_fact, company_fact_shares, company_fact_per_share,
+    // filing, filing_for) and the formulas
+    assert_eq!(p.functions, 5 + formula_names.len(), "{p:?}");
     assert!(formula_names.len() >= 28, "the K4 views and the K5 ratios: {}", formula_names.len());
     assert!(p.cells > 300 && stub_lines > 300, "{p:?}");
 

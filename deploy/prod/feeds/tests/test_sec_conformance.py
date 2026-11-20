@@ -137,3 +137,51 @@ def test_conformance_does_not_mutate_rows(names):
     before = copy.deepcopy(rows)
     sec.conformance(rows, [sec.parse_frames(frames_json(entries))], names, minimum=1)
     assert rows == before
+
+
+# ---------- D38: the test names the function of the unit form ----------
+
+def _mixed_rows(names):
+    from sec_helpers import mixed_company
+    return sec.parse_companyfacts(mixed_company())["rows"]
+
+
+def _frame(concept, unit, end, val, start=None, uom=None):
+    import json
+    d = json.loads(frames_json([(1234, "MIXED CO", "0000001234-24-000001", end, val)], concept=concept, unit=uom or unit,
+                               ccp="CY2023"))
+    if start:
+        d["data"][0]["start"] = start
+    return sec.parse_frames(json.dumps(d).encode())
+
+
+def test_per_share_shares_and_money_tests_call_their_own_function(names):
+    s = names["sec"]
+    ns = s["namespace"]
+    rows = _mixed_rows(names)
+    frames = [
+        _frame("EarningsPerShareDiluted", "USD/shares", "2023-12-31", 1.25, start="2023-01-01", uom="USD-per-shares"),
+        _frame("CommonStockSharesOutstanding", "shares", "2023-12-31", 100),
+        _frame("Assets", "EUR", "2023-12-31", 9),
+        _frame("GrossProfit", "pure", "2023-12-31", 0.5, start="2023-01-01"),
+    ]
+    tests = sec.conformance(rows, frames, names, minimum=1)
+    by = {t["test"]: t for t in tests}
+    assert set(by) == {f"{ns}/{s['per_share_function']}", f"{ns}/{s['shares_function']}", f"{ns}/{s['function']}",
+                       f"{ns}/{s['ratio_function']}"}
+    a = '"0000001234-24-000001"'
+    assert by[f"{ns}/{s['per_share_function']}"]["call"] == (
+        f'{ns}/{s["per_share_function"]}(cik: "0000001234", taxonomy: "us-gaap", concept: "EarningsPerShareDiluted", '
+        f'currency: "USD", accession: {a}, period: "2023-01-01/2023-12-31")')
+    assert by[f"{ns}/{s['shares_function']}"]["call"] == (
+        f'{ns}/{s["shares_function"]}(cik: "0000001234", taxonomy: "us-gaap", concept: "CommonStockSharesOutstanding", '
+        f'accession: {a}, period: "2023-12-31")')
+    assert 'unit: "EUR"' in by[f"{ns}/{s['function']}"]["call"]
+
+
+def test_a_frame_in_a_unit_that_is_not_relayed_is_skipped(names):
+    rows = _mixed_rows(names)
+    odd = _frame("Liabilities", "CAD/EUR", "2023-12-31", 7)
+    good = _frame("Assets", "EUR", "2023-12-31", 9)
+    tests = sec.conformance(rows, [odd, good], names, minimum=1)
+    assert len(tests) == 1

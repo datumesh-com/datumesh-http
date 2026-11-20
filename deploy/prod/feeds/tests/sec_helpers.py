@@ -81,6 +81,25 @@ def facts_json(cik: int, name: str, entries) -> bytes:
     return f'{{"cik":{cik},"entityName":{json.dumps(name)},"facts":{{{",".join(parts)}}}}}'.encode("utf-8")
 
 
+def mixed_company():
+    """One company holding every unit form (D38): money in three currencies, shares, per share in two currencies, a pure
+    number, and three units that are not relayed (CAD/EUR, acre, USD-per-gal)."""
+    a = "0000001234-24-000001"
+    r = lambda v, s="2023-01-01": rec("2023-12-31", v, a, 2023, start=s)
+    return facts_json(1234, "MIXED CO", [
+        ("us-gaap", "Assets", "USD", "Assets", [rec("2023-12-31", "10", a, 2023)]),
+        ("us-gaap", "Assets", "EUR", "Assets", [rec("2023-12-31", "9", a, 2023)]),
+        ("us-gaap", "Assets", "USN", "Assets", [rec("2023-12-31", "8", a, 2023)]),
+        ("us-gaap", "EarningsPerShareBasic", "EUR/shares", "EPS", [r("1.5")]),
+        ("us-gaap", "EarningsPerShareDiluted", "USD/shares", "EPS d", [r("1.25")]),
+        ("us-gaap", "CommonStockSharesOutstanding", "shares", "Shares", [rec("2023-12-31", "100", a, 2023)]),
+        ("us-gaap", "GrossProfit", "pure", "Ratio", [r("0.5")]),
+        ("us-gaap", "Liabilities", "CAD/EUR", "Odd", [rec("2023-12-31", "7", a, 2023)]),
+        ("us-gaap", "Revenues", "acre", "Acres", [r("3")]),
+        ("us-gaap", "NetIncomeLoss", "USD-per-gal", "Odd2", [r("4")]),
+    ])
+
+
 def synth_company(cik: int, name: str, accn: str, end: str, val: int) -> bytes:
     """A small companyfacts file whose latest annual `Assets` is the frame's (accn, end, val): 6 cells in scope
     (Assets, Revenues and NetIncomeLoss, each in the FY2023 report and the FY2022 report), and 3 facts out of scope
