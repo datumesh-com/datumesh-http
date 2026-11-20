@@ -2,7 +2,7 @@
 
 ## 0.4.5 (unreleased)
 
-For CONTRACT-build2-part6-pages (G1 to G6; QUESTIONS-build2 D25 to D27): month pages for relayed series, the year pages of monthly ones, their index and sitemap. Additive: `RateLimits` gains `series_per_ip` (a public field), and the public API otherwise does not change. Requires the same crates as 0.4.4.
+For CONTRACT-build2-part6-pages (G1 to G6; QUESTIONS-build2 D25, D26, D31): month pages for relayed series, the year pages of monthly ones, their index and sitemap. Additive: `RateLimits` gains `series_per_ip` (a public field), and the public API otherwise does not change. Requires the same crates as 0.4.4.
 
 - **The series file (G2).** `DATUMESH_SERIES_FILE` names a JSON array, one entry per series: `function`, `granularity` (`month` for a daily series, `year` for a monthly or event one), `date_arg`, `column_arg` (optional: the keyed argument whose dictionary values become columns), `fixed` (optional: arguments held fixed, as strings), `unit`, `kind` (`relayed` or `computed`), and `source` (optional: the name a computed series' page gives, else read from the function's description after ` from `). Without it there are no pages, and a function it does not list has none.
 - **The pages (G1, G3).** `/series/<function>/<YYYY-MM>` and `<YYYY>`, each with a `.csv` twin, and `/series/<function>/` as the index. A page is one `<table>` with one header row (`date`, then one column per dictionary value of the column argument, in the dictionary's order, each headed `value (unit)`; an unkeyed series has one `value (unit)` column), ISO dates, the stored decimal strings, empty cells where there is none. It carries the source line (relayed: `datumesh.com`'s relay of the source, with the link to `/takeover/<domain>`; computed: "Computed by <host> from <source>; not <owner>'s own values."), the licence of its cells, its as-of (the latest `tx` among its cells), a block for agents (JSON, CSV and Arrow slice addresses and the MCP `get` request), the verify link, previous and next links to the nearest periods with data, the index and the function page, and one schema.org `Dataset` JSON-LD script with no `<` in it.
@@ -13,7 +13,17 @@ For CONTRACT-build2-part6-pages (G1 to G6; QUESTIONS-build2 D25 to D27): month p
 - **Rate limit (G5).** `/series/*` takes one token of the per-IP limit and one of `DATUMESH_RATE_SERIES_PER_IP` (default 30 a minute, its own bucket).
 - **Documented.** OpenAPI paths for `/series/{page}` and `/series/sitemap.xml`; README rows for the routes and the two variables.
 
-## 0.4.4 (unreleased)
+Build 2 Part 3, the `calc` addition (CONTRACT-build2-part3-calc C1, C3; QUESTIONS-build2 D27, D30). Additive: `Config` gains `rate.calc_per_ip`, the mesh document gains `endpoints.x_calc`, and the OpenAPI document gains `/x/calc`. Requires the same crates as 0.4.4.
+
+- **`POST /x/calc` (D27: an extension, not in the spec).** The body is `{"formula": "<body>", "asof"?: <instant>}`. The formula is evaluated in a scope, as `whatif` evaluates: nothing is written, no receipt is signed, no name is bound. The answer is `kind: "calculation"` with `value`, `type` (and `unit`), `formula` as given, `canonical` (the printed canonical AST), `asof`, and `lineage`: each cell read, with its `call`, the `receipt` hash that answers it (`null` for a computed cell this mesh has not stored), its `publisher` (the host of its namespace) and its `trust` (as the envelope labels it). A computed cell is evaluated in the scope and never stored. Calls, slice aggregates and constant formulas are answered.
+- **Limits.** A formula of more than 4096 bytes is `413` `E_TOO_LARGE`. The mesh's evaluation budget (`DATUMESH_BUDGET_MS`) gives `E_EVAL_BUDGET` at once, with no pending job. `DATUMESH_RATE_CALC_PER_IP` (default 30 a minute) is a bucket of its own, taken after the per-IP limit.
+- **Errors.** A formula's codes are carried as written (`E_FORMULA_SYNTAX`, `E_FORMULA_TYPE`, ...): `bad_request` (400) for a formula that does not define, `not_covered` (404) with `fault` for an evaluation fault (`E_FORMULA_DIV_ZERO`, `E_FORMULA_ABSENT`, `E_FORMULA_EMPTY`, ...), and `error` with `cycle` (the 5.5 envelope, `E_EVAL_UNAVAILABLE`) for a cycle of computed cells. The core's error vocabulary has none of the formula's or the budget's codes; they are written as strings in this crate's envelopes.
+- **Access.** A licence or payment rule on a function the calculation reads answers as it does for `whatif`: `unlicensed`, or `payment_required` with its quote.
+- **Not done.** Class dispatch in a body, a range over a stored slice, and the versions of a computed function are refused (`E_EVAL_UNAVAILABLE`); `calc` on a foreign (relayed) function is not read from its source.
+
+- **Feed jobs (deploy only, not in the crate).** `series.py` writes the series file of the month pages from `names.toml` (`run_feed.sh series`); `http_get` retries transient network failures (4 times, after 5, 15, 45 and 120 s), while 404 and 429/503 keep their own paths.
+
+## 0.4.4 (2026-11-20)
 
 Fixes the tests of stored functions that share a signature (QUESTIONS-build2 D23) and serves the takeover page (D24). No API change: `testrun` is private, and no public item changes. Requires the same crates as 0.4.3.
 

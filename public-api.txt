@@ -363,6 +363,7 @@ pub fn datumesh_http::config::Policy::fmt(&self, &mut core::fmt::Formatter<'_>) 
 impl core::marker::StructuralPartialEq for datumesh_http::config::Policy
 #[non_exhaustive] pub struct datumesh_http::config::RateLimits
 pub datumesh_http::config::RateLimits::batch_cells_per_token: u32
+pub datumesh_http::config::RateLimits::calc_per_ip: u32
 pub datumesh_http::config::RateLimits::enabled: bool
 pub datumesh_http::config::RateLimits::ip_burst: u32
 pub datumesh_http::config::RateLimits::per_ip: u32

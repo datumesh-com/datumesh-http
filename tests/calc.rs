@@ -325,7 +325,8 @@ async fn bad_requests_have_their_codes() {
 async fn a_cycle_names_its_path() {
     let p = "mesh-test.datumesh.com/scratch_b3/cyc";
     let (a, b, reading_fn) = (format!("{p}/a"), format!("{p}/b"), format!("{p}/reading"));
-    let sig = r#"{"args":{"site":{"type":"string","valid":false}},"order":["site"],"returns":{"type":"number","unit":"1"}}"#;
+    let sig =
+        r#"{"args":{"site":{"type":"string","valid":false}},"order":["site"],"returns":{"type":"number","unit":"1"}}"#;
     let run1 = vec![
         function_line(&reading_fn, &reading_sig(), None),
         site_cell(&reading_fn, "N", "10"),

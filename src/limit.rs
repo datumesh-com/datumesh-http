@@ -63,6 +63,7 @@ pub(crate) struct Limiter {
     key: Buckets<String>,
     verify: Buckets<IpAddr>,
     series: Buckets<IpAddr>,
+    calc: Buckets<IpAddr>,
     pub(crate) refused: AtomicU64,
 }
 
@@ -74,6 +75,7 @@ impl Limiter {
             key: Buckets::new(),
             verify: Buckets::new(),
             series: Buckets::new(),
+            calc: Buckets::new(),
             refused: AtomicU64::new(0),
         }
     }
@@ -114,6 +116,18 @@ impl Limiter {
             return Ok(());
         }
         let r = self.series.take(&ip, 1.0, self.cfg.series_per_ip, self.cfg.series_per_ip);
+        if r.is_err() {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+        r
+    }
+
+    /// Admits a `POST /x/calc` from `ip` (`DATUMESH_RATE_CALC_PER_IP` a minute).
+    pub(crate) fn admit_calc(&self, ip: IpAddr) -> Result<(), u64> {
+        if !self.cfg.enabled {
+            return Ok(());
+        }
+        let r = self.calc.take(&ip, 1.0, self.cfg.calc_per_ip, self.cfg.calc_per_ip);
         if r.is_err() {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }

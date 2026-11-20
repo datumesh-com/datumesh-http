@@ -203,6 +203,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         series_page,
         series_sitemap,
         whatif,
+        x_calc,
         health,
         metrics,
         openapi_json
@@ -1383,6 +1384,45 @@ async fn whatif(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> R
     }
 }
 
+/// `POST /x/calc` (Build 2 Part 3 addition, C3; D27, D30): a formula over cells, evaluated in a
+/// scope: the value, its type, the formula and its canonical form, the asof and the lineage of the
+/// cells read. Nothing is written: no receipt, no version, no binding.
+#[utoipa::path(post, path = "/x/calc",
+    request_body(content = String, description = "`{\"formula\": <body>, \"asof\"?: <instant>}`; the body is at most 4096 bytes", content_type = "application/json"),
+    responses(
+        (status = 200, description = "`kind: calculation`: `{outcome, kind, value, type, unit?, formula, canonical, asof, lineage}`, no receipt, no trust; `lineage` is `[{call, receipt, publisher, trust}]`", content_type = "application/json"),
+        (status = 400, description = "`bad_request`, with the code (a request code, or a formula's `E_FORMULA_*`)", content_type = "application/json"),
+        (status = 404, description = "`not_covered`, with `fault` when the calculation faulted", content_type = "application/json"),
+        (status = 413, description = "`E_TOO_LARGE`: the formula is more than 4096 bytes", content_type = "application/json"),
+        (status = 429, description = "`rate_limited`", content_type = "application/json"),
+        (status = 500, description = "`error`", content_type = "application/json"),
+        (status = 503, description = "`error` with `E_EVAL_BUDGET` (the mesh's budget ran out; no job) or `E_EVAL_UNAVAILABLE`", content_type = "application/json"),
+    ))]
+async fn x_calc(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Response {
+    let inner = mesh.inner.clone();
+    let peer = peer_of(&req);
+    let (client, principal) = match who(&inner, &headers, peer) {
+        Ok(x) => x,
+        Err(r) => return to_response(r),
+    };
+    if let Err(r) = admit(&inner, &client, 1) {
+        return to_response(r);
+    }
+    if let Err(s) = inner.limiter.admit_calc(client_ip(&inner, &headers, peer)) {
+        return to_response(envelope::rate_limited_reply(s));
+    }
+    // A body of a 4 KiB formula with its JSON escapes is well under 64 KiB; more is refused as too large.
+    let body = match axum::body::to_bytes(req.into_body(), 64 << 10).await {
+        Ok(b) => b,
+        Err(_) => return to_response(crate::calc::too_large_reply()),
+    };
+    let mesh2 = mesh.clone();
+    match inner.pool.clone().run(move || mesh2.calc(&body, principal.as_ref())).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 #[utoipa::path(get, path = "/describe/{id}",
     params(("id" = String, Path, description = "A class name, an object's key encoding, an object id, a cell id or a short id (12 hex digits).")),
     responses((status = 200, description = "A describe-class or describe-object document (SPEC 16.8)", content_type = "application/json"), (status = 400, description = "`E_KEY_ENCODING`, `E_KEY_NORMALISATION` or `E_SHORT_ID_AMBIGUOUS`", content_type = "application/json"), (status = 404, description = "An id the mesh does not know", content_type = "application/json")))]
@@ -1577,6 +1617,7 @@ impl Mesh {
             .route("/series/{*rest}", get(series_page))
             .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
+            .route("/x/calc", post(x_calc))
             .route("/health", get(health))
             .route("/metrics", get(metrics))
             .route("/openapi.json", get(openapi_json))

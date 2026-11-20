@@ -144,6 +144,7 @@
 pub mod apikeys;
 pub mod bundle;
 mod bundles;
+mod calc;
 pub mod call;
 mod catalog;
 pub mod client;

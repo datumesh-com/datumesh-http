@@ -1144,6 +1144,11 @@ impl Mesh {
         self.inner.whatif(body, principal)
     }
 
+    /// `POST /x/calc` (Build 2 Part 3, `calc`): see [`crate::calc`].
+    pub(crate) fn calc(&self, body: &[u8], principal: Option<&Principal>) -> Reply {
+        self.inner.calc(body, principal)
+    }
+
     /// Verifies a receipt (SPEC 10.1) with the mesh's keys; at level `recomputed` with the
     /// engine as the resolver unless `signed_only`; `blob` is content for step 7.7.
     pub fn verify(&self, receipt: &[u8], signed_only: bool, blob: Option<&[u8]>) -> Verified {
@@ -1211,6 +1216,7 @@ impl Mesh {
             ("cell", format!("{o}/cell/{{cell}}")),
             ("cells", format!("{o}/cells")),
             ("x_bundles", format!("{o}/bundles")),
+            ("x_calc", format!("{o}/x/calc")),
             ("describe", format!("{o}/describe/{{id}}")),
             ("descriptor", format!("{o}/descriptor/{{hash}}")),
             ("explain", format!("{o}/explain/{{cell}}")),

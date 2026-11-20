@@ -44,6 +44,9 @@ pub struct RateLimits {
     pub per_key: u32,
     /// `POST /verify` per minute per IP, with or without a key (default 60; burst the same).
     pub verify_per_ip: u32,
+    /// `POST /x/calc` per minute per IP, with or without a key (default 30; burst the same). Its
+    /// own bucket, taken after the per-IP limit (Build 2 Part 3, `calc`).
+    pub calc_per_ip: u32,
     /// Cells per request token in a `POST /cells` batch (default 50: a batch of 1,000 cells
     /// counts as 20 requests).
     pub batch_cells_per_token: u32,
@@ -60,6 +63,7 @@ impl Default for RateLimits {
             ip_burst: 120,
             per_key: 600,
             verify_per_ip: 60,
+            calc_per_ip: 30,
             batch_cells_per_token: 50,
             series_per_ip: 30,
         }
@@ -395,6 +399,7 @@ impl Config {
         c.rate.per_key = num("DATUMESH_RATE_PER_KEY", c.rate.per_key as usize)? as u32;
         c.rate.verify_per_ip = num("DATUMESH_RATE_VERIFY_PER_IP", c.rate.verify_per_ip as usize)? as u32;
         c.rate.series_per_ip = num("DATUMESH_RATE_SERIES_PER_IP", c.rate.series_per_ip as usize)? as u32;
+        c.rate.calc_per_ip = num("DATUMESH_RATE_CALC_PER_IP", c.rate.calc_per_ip as usize)? as u32;
         c.ttl.key_doc = secs("DATUMESH_TTL_KEY_DOC", c.ttl.key_doc)?;
         c.ttl.mesh_doc = secs("DATUMESH_TTL_MESH_DOC", c.ttl.mesh_doc)?;
         c.ttl.binding = secs("DATUMESH_TTL_BINDING", c.ttl.binding)?;
