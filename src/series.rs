@@ -230,11 +230,21 @@ pub(crate) fn slice_redirect(inner: &Inner, rest: &str, headers: &axum::http::He
     Some(format!("{origin}/series/{function}/{period}"))
 }
 
+/// Whether deciding the redirect of this request reads the store: a browser's call form on a mesh with a
+/// series file (the call is resolved, which looks the name up). Such a decision runs on the pool, never on an
+/// async thread (http 0.4.7: the PostgreSQL client panics there).
+pub(crate) fn redirect_reads_store(inner: &Inner, rest: &str, headers: &axum::http::HeaderMap) -> bool {
+    let has_format = rest.split_once('?').is_some_and(|(_, q)| q.split('&').any(|p| p.starts_with("format=")));
+    !inner.config.series.is_empty() && !has_format && led_by_html(headers) && crate::call::is_call(rest)
+}
+
 /// Whether a request is answered by a page or a format of its own, so that `Accept` does not refuse it: a
-/// browser on a listed function's slice, or a `format=` of the slice.
+/// browser on a listed function's slice, or a `format=` of the slice. A browser's call form is not decided
+/// here (that reads the store): the slice handler decides it on the pool, and refuses it as 406 when it is
+/// no redirect; see [`redirect_reads_store`].
 pub(crate) fn negotiation_free(inner: &Inner, rest: &str, headers: &axum::http::HeaderMap) -> bool {
     let has_format = rest.split_once('?').is_some_and(|(_, q)| q.split('&').any(|p| p.starts_with("format=")));
-    has_format || slice_redirect(inner, rest, headers).is_some()
+    has_format || redirect_reads_store(inner, rest, headers) || slice_redirect(inner, rest, headers).is_some()
 }
 
 /// Whether the first media type of `Accept` is `text/html`.

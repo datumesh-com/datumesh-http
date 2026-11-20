@@ -53,7 +53,9 @@ fn early_lines() -> Vec<String> {
 
 fn lines() -> Vec<String> {
     let mut v = Vec::new();
-    for (d, cur, val) in [("2026-03-02", "USD", "1.0832"), ("2026-03-02", "JPY", "160.25"), ("2026-03-03", "USD", "1.0791")] {
+    for (d, cur, val) in
+        [("2026-03-02", "USD", "1.0832"), ("2026-03-02", "JPY", "160.25"), ("2026-03-03", "USD", "1.0791")]
+    {
         v.push(stored(
             FXR,
             json!({"currency": {"type": "string", "value": cur}, "date": date(d)}),
@@ -235,9 +237,9 @@ async fn a_json_client_on_the_call_form_still_gets_json_on_postgres() {
     }
     let r = m.ok(&format!("/slice/{BANK}(date:%20*)"), None).await;
     assert_eq!(r.json()["members"].as_array().map(Vec::len), Some(2), "{}", r.text());
-    // a browser on a call that is not a series' is refused as before, not left to die
+    // a browser on a call that is not a series' is refused (406) as before, not left to die
     let r = m.get("/slice/no.such.host/fn(date:%20*)", Some("text/html")).await;
-    assert!(r.status < 500, "{} {}", r.status, r.text());
+    assert_eq!(r.status, 406, "{}", r.text());
     m.alive().await;
 }
 

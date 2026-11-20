@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.7 (unreleased)
+
+Fix of a panic in 0.4.6. Requires the same crates as 0.4.6; the public API does not change.
+
+- **Panic on the call form of a slice address, on PostgreSQL.** On mesh-test (PostgreSQL store), `GET /slice/<fn>(date: *)` with `Accept: text/html` made the request's task panic (`postgres-0.19.14/src/connection.rs:66`, "Cannot start a runtime from within a runtime") and the proxy answered 502. Cause: 0.4.6's call-form redirect resolved the call with `call::resolve`, which reads the store (it looks the name up), directly on the async thread, from the `Accept` middleware (`negotiation_free`) and again from the slice handler; the synchronous PostgreSQL client may not run on a runtime thread. The query form (`?date=`) reads no store, so it never panicked, and the SQLite store used by the series tests does not mind, which is why the tests did not see it. Now the handler decides a browser's call form on the pool (`Pool::run`), as every other store read; the middleware no longer reads the store for it and leaves the `Accept` check to the handler, which answers the same 406 when the call is no redirect. Behaviour is otherwise identical: `303` `no-store` to the page or index, JSON for a JSON client, 406 for a browser on a call that is no listed series'.
+- **Audit of the 0.4.5 and 0.4.6 async-path code.** The series pages and sitemap, `/x/interval`, `/x/calc`, the takeover page, the function page, `/find` (the by-name summary count), `/slice` and the middleware were read for store use on an async thread: all of them already run on the pool; the call-form redirect was the only direct use. New tests (`tests/pg_async_paths.rs`) run every route that reads the store on a PostgreSQL store (the series pages, CSV, index and sitemap, `/x/interval` in JSON, CSV and Arrow, `/x/calc`, `/fn`, `/takeover`, `/find?summary=1`) and the call-form redirect (listed, keyed and unkeyed, percent-encoded or not, two browser `Accept` values), checking that the mesh keeps serving afterwards and that a JSON client on the call form still gets JSON.
+
 ## 0.4.6 (unreleased)
 
 Fixes from mesh-test and datumesh.com, and the interval call for agents (QUESTIONS-build2 D23, D32). Requires the same crates as 0.4.4 (datumesh-store 0.5.1 is unchanged).
