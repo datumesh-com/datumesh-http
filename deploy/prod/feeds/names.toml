@@ -238,6 +238,7 @@ namespace = "{host}/register"
 class = "dataset"
 keys = ["source", "code"]
 methods = ["name", "status", "licence_page", "licence_hash", "licence_clauses", "retrieved"]
+blob_media_type = "text/plain"
 steward_process = "https://{host}/classes/change"
 licence = "CC0-1.0"
 
@@ -256,6 +257,8 @@ licence_clauses = "clauses"
 retrieved = "entry.retrieved"
 [register.returns]
 retrieved = "instant"
+licence_clauses = "blob"
+
 
 # each method: its catalogue label and description, and the summary of its cells ({source} {code} {name} {status}
 # {retrieved} {licence_page} are filled from the entry)
@@ -277,7 +280,7 @@ description = "The SHA-256, in hex, of the licence page text as the operator fet
 summary = "SHA-256 of the licence page text of the dataset {code} from {source} ({name}), as fetched on {retrieved}."
 [register.method_text.licence_clauses]
 label = "Licence clauses (register)"
-description = "The reuse, modification and commercial-use clauses of the dataset's licence, and the attribution it asks for. For not_relayed datasets it starts with the reason the dataset is not relayed."
+description = "The reuse, modification and commercial-use clauses of the dataset's licence, quoted verbatim from its page, as a UTF-8 text blob (too long for a string). For not_relayed datasets it starts with the reason the dataset is not relayed."
 summary = "Licence clauses of the dataset {code} from {source} ({name}), as read on {retrieved}; status {status}."
 [register.method_text.retrieved]
 label = "Licence page fetched (register)"
