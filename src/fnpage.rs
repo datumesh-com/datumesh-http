@@ -210,7 +210,9 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         .collect();
     let rows = store.function_tests(&fn_hash).unwrap_or_default();
     let results: Vec<Option<&str>> = rows.iter().map(|r| r.last_result.as_deref()).collect();
-    let result = if let Some(bad) = results.iter().flatten().find(|r| **r != "pass") {
+    // The worst result first, whatever the store's order: error, then fail (QUESTIONS-build2 D22).
+    let worst = ["error", "fail"].into_iter().find(|w| results.iter().flatten().any(|r| r == w));
+    let result = if let Some(bad) = worst.or_else(|| results.iter().flatten().copied().find(|r| *r != "pass")) {
         bad.to_string()
     } else if !results.is_empty() && results.iter().all(|r| r.is_some()) {
         "pass".to_string()
