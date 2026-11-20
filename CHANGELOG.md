@@ -32,7 +32,7 @@ Fixes the tests of stored functions that share a signature (QUESTIONS-build2 D23
 - **Unchanged.** Foreign `<host>/test_case(function_hash, case)` cells stay per hash (spec 7.3 gives them no function name), so for stored functions of one signature a foreign counterexample applies to each; this is for a later spec round (D23). Test cells (`DATUMESH_TEST_CELLS=1`) are unaffected: the case id covers the call, so it differs per function.
 - **The takeover page (D24).** `GET /takeover/<domain>`, the URL that relayed receipts and `describe` give as `source.takeover`, answered 404 up to 0.4.3. HTML (no script, everything escaped) or, by `Accept: application/json` or `?format=json`, `{domain, host, functions: [{name, page, fn_hash}], steps}`; cached like the function page. It lists the functions bound on this mesh whose relay source name is the domain (the detection `describe` uses for `source`), each linked to its `/fn` page, and says this mesh relays these values from the domain unchanged and that the domain remains their source. The steps: serve a key document at `https://<domain>/.well-known/datumesh.json` (spec 9); publish the same functions under `<domain>/...`, on its own mesh or hosted on this mesh. Hosting here says `POST /bundles` is open to the domain when `DATUMESH_PUBLISH_DOMAINS` admits it, else that the operator of the mesh must allow it (D11). It names no contact address and does not say the relay is withdrawn. A domain that is not a DNS name is `E_CANON_NAME` (400); a domain with no relayed function here is `not_covered` (404). The mesh document gains no member (the function page has none); the OpenAPI document gains the path. The functions are those with a catalogue entry (the page reads `catalog_summary`).
 
-## 0.4.3 (unreleased)
+## 0.4.3 (2026-11-20)
 
 For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions; QUESTIONS-build2 D16, D20, D21). Additive: no signature of the public API changes. Requires datumesh-core 0.3.10, datumesh-formula 0.5.1 and datumesh-store 0.5.1, as 0.4.2 does.
 
@@ -45,7 +45,7 @@ For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions
 - **Test cells (`DATUMESH_TEST_CELLS=1`).** Each stored-function test is also the boolean cell `<host>/test_case(function_hash, case)`, trust `primary`, with `true` for a pass and `false` for a fail or error.
 - **Feed jobs (deploy only, not in the crate), from the mesh-test rehearsal:** source-conformance tests on every run from an independent second copy, with a test window read from the first copy when needed (QUESTIONS-build2 D21); Treasury history from 1990, one year per call, 2 s between requests; a Treasury day without tenor values is a day without data; CHIRPS reads the LZW GeoTIFF (`imagecodecs` pinned), takes -9999 as nodata when the file has no tag, spaces rasters 120 s apart and backs off on 429 and 503; one stderr line per run with the cells and tests written.
 
-## 0.4.2 (unreleased)
+## 0.4.2 (2026-11-20)
 
 For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datumesh-core 0.3.10 (`FunctionAnswer::with_publisher`, `Described::publisher`) and datumesh-formula 0.5.1. Additive: no signature of the public API changes.
 
@@ -57,7 +57,7 @@ For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datume
 - **URI error code (spec 5.4).** A cell URI whose function name core refuses (a segment over 64 characters, a non-canonical name) is answered with core's canonical code (`E_CANON_LIMIT`, `E_CANON_NAME`), not `not_covered`.
 - **Feed jobs under the final names (deploy only, not in the crate).** `deploy/prod/feeds/`: every name is spelled with the host, which must be given as `mesh-test.datumesh.com` or `datumesh.com` (no default). Relays at `<host>/relay/<domain>/<function>` (ecb.europa.eu, treasury.gov, bankofengland.co.uk); the licence register as the class `<host>/register/dataset(source, code)` with eight entries, verbatim licence clauses (`licences.toml`); rainfall as `<host>/earth/monthly_rainfall(dataset, region, month)` for 22 wheat regions from Natural Earth 10m admin-1, cells without `source` (QUESTIONS-build2 D17). State and output are kept per host.
 
-## 0.4.1 (unreleased)
+## 0.4.1 (2026-11-19)
 
 For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-build2-part5-feeds (F5, the http needs). Additive: `Config` gains `publish_domains` and `log_dir`, `PublishDomains` is new, `Client::key_document_live` is new, and the mesh document gains `endpoints.x_bundles`. A function's describe answer names its page in a `Link: <https://<host>/fn/<name>>; rel="describedby"` header, not in the answer: the answer is the spec's (16.8) and core checks it strictly.
 
@@ -94,7 +94,7 @@ For CONTRACT-build2-part2-read (datumesh-http part: R2, R3, R5). `GET /find` cha
 - **Catalogue in bundle 1 (R5).** An optional `catalog` member (entries sorted by name, in JCS), covered by the manifest signature: a changed entry fails import with `E_SIGNATURE`. `bundle::build_with_catalog` makes one; `build` makes a bundle without the member, as before.
 - **The operator's catalogue file** (`DATUMESH_CATALOG_FILE`) is stored as `source=operator` entries at start. It never replaces a publisher's entry.
 
-## 0.3.3 (unreleased)
+## 0.3.3 (2026-11-19)
 
 Loading is batched; no change to receipts. `publish-stored` makes its reads in chunks of up to 1,000 cell lines (one `latest_many` and one `receipts_many` per chunk, the store's binding, descriptor and namespace answers kept for the run) and writes consecutive cells with `put_cells` in calls of up to 1,000 (datumesh-store 0.4.3). The receipts, versions, counts and errors are those of 0.3.2: the golden files of `tests/perf_load.rs` were recorded with 0.3.2 and still match byte for byte. Signing runs on up to `available_parallelism()` threads. The earliest failing line still wins, with its line number and text.
 
