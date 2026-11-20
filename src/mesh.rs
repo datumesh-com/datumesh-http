@@ -125,6 +125,14 @@ impl MeshBuilder {
             crate::config::check_base_url(&self.config.host, u).map_err(BuildError::BaseUrl)?;
         }
         self.config.check().map_err(BuildError::Config)?;
+        let own_key_id = match (&self.key, &self.key_file) {
+            (Some(k), _) => Some(k.key_id().to_string()),
+            (None, Some(p)) => std::fs::read(p)
+                .ok()
+                .and_then(|b| crate::keynames::seed_of_file(&b))
+                .map(|s| datumesh_core::SigningKey::from_seed(&s).key_id().to_string()),
+            (None, None) => None,
+        };
         let keys = Arc::new(KeyCache::default());
         let foreign = Arc::new(Foreign::new(&self.config, self.store.clone(), keys.clone(), self.clock.clone()));
         let mut b = Engine::builder(self.store.clone(), self.config.host.clone()).clock(self.clock.clone());
@@ -168,6 +176,9 @@ impl MeshBuilder {
             relays: Mutex::new(HashMap::new()),
             name_cells: Mutex::new(HashMap::new()),
             series: Mutex::new(crate::series::Memo::default()),
+            challenges: Mutex::new(crate::keynames::Challenges::default()),
+            keys_lock: Mutex::new(()),
+            own_key_id,
             pool: Arc::new(Pool::new(config.pool_size)),
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
             limiter: Limiter::new(config.rate.clone()),
@@ -205,6 +216,31 @@ impl MeshBuilder {
         });
         if let Err(e) = spawned {
             tracing::warn!(error = %e, "the index thread is not started; find sees the catalogue as it is at start");
+        }
+        // The series overview (G5): the first build at start (unless a delay is set, then after it), then every
+        // refresh interval, on a thread of its own (the store's client is synchronous: the first build runs on a
+        // scoped thread the caller joins, as the catalogue's does). Requests read the last build; the thread stops
+        // with the mesh.
+        if !mesh.inner.config.series.is_empty() {
+            let weak = Arc::downgrade(&mesh.inner);
+            let (delay, refresh) = (mesh.inner.config.series_first_build_delay, mesh.inner.config.series_refresh);
+            if delay.is_zero() {
+                std::thread::scope(|s| {
+                    let inner = mesh.inner.clone();
+                    let _ = s.spawn(move || crate::series::rebuild(&inner, "background")).join();
+                });
+            }
+            let mut wait = if delay.is_zero() { refresh } else { delay };
+            let spawned = std::thread::Builder::new().name("datumesh-series".into()).spawn(move || loop {
+                std::thread::sleep(wait);
+                let Some(inner) = weak.upgrade() else { break };
+                crate::series::rebuild(&inner, "background");
+                drop(inner);
+                wait = refresh;
+            });
+            if let Err(e) = spawned {
+                tracing::warn!(error = %e, "the series thread is not started; the series overview is never built");
+            }
         }
         Ok(mesh)
     }
@@ -264,6 +300,12 @@ pub(crate) struct Inner {
     pub(crate) name_cells: Mutex<HashMap<String, (Instant, u64)>>,
     /// The overviews and dictionary orders of the series pages (Build 2 Part 6, G5).
     pub(crate) series: Mutex<crate::series::Memo>,
+    /// The challenges of `POST /x/keys` issued and not yet used (QUESTIONS-build2 D39).
+    pub(crate) challenges: Mutex<crate::keynames::Challenges>,
+    /// One registration at a time: the key document is read and written as a whole.
+    pub(crate) keys_lock: Mutex<()>,
+    /// The id of the mesh's own signing key, when the mesh knows it (a key of another id is a registered one).
+    pub(crate) own_key_id: Option<String>,
 }
 
 /// A Datumesh mesh: the engine behind the endpoints. Cheap to clone (shared).
@@ -1214,7 +1256,7 @@ impl Mesh {
     /// set ([`Config::base_url`]), else on `https://<host>`.
     pub fn mesh_document(&self) -> Vec<u8> {
         let o = self.inner.config.mesh_document_base();
-        let ep: BTreeMap<&str, String> = [
+        let mut ep: BTreeMap<&str, String> = [
             ("blob", format!("{o}/blob/{{sha256}}")),
             ("cell", format!("{o}/cell/{{cell}}")),
             ("cells", format!("{o}/cells")),
@@ -1235,6 +1277,9 @@ impl Mesh {
         ]
         .into_iter()
         .collect();
+        if self.inner.config.key_names {
+            ep.insert("x_keys", format!("{o}/x/keys"));
+        }
         Value::Object(vec![
             ("bindings".into(), Value::String(format!("{o}/bindings"))),
             (

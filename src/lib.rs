@@ -159,6 +159,7 @@ pub mod foreign;
 mod http;
 mod jobs;
 pub mod keydoc;
+mod keynames;
 mod limit;
 mod mesh;
 mod metrics;

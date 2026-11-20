@@ -64,6 +64,7 @@ pub(crate) struct Limiter {
     verify: Buckets<IpAddr>,
     series: Buckets<IpAddr>,
     calc: Buckets<IpAddr>,
+    keys: Buckets<IpAddr>,
     pub(crate) refused: AtomicU64,
 }
 
@@ -76,6 +77,7 @@ impl Limiter {
             verify: Buckets::new(),
             series: Buckets::new(),
             calc: Buckets::new(),
+            keys: Buckets::new(),
             refused: AtomicU64::new(0),
         }
     }
@@ -128,6 +130,18 @@ impl Limiter {
             return Ok(());
         }
         let r = self.calc.take(&ip, 1.0, self.cfg.calc_per_ip, self.cfg.calc_per_ip);
+        if r.is_err() {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+        r
+    }
+
+    /// Admits a `POST /x/keys` from `ip` (`DATUMESH_RATE_KEYS_PER_IP` a minute; every POST counts).
+    pub(crate) fn admit_keys(&self, ip: IpAddr) -> Result<(), u64> {
+        if !self.cfg.enabled {
+            return Ok(());
+        }
+        let r = self.keys.take(&ip, 1.0, self.cfg.keys_per_ip, self.cfg.keys_per_ip);
         if r.is_err() {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }

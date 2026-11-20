@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.8 (unreleased)
+
+Build 2 Part 6 follow-up and the key-derived names (QUESTIONS-build2 D39 to D41, G5). Additive: the new configuration (below) and `RateLimits::keys_per_ip` are new public items; the public API otherwise does not change. Requires the same crates as 0.4.7.
+
+- **Key-derived hosted names (D39, `DATUMESH_KEY_NAMES=1`, mesh-test only).** `GET /x/keys/challenge` issues a challenge, `POST /x/keys` registers an Ed25519 public key by its proof of possession (the signature of the challenge), and the key is added to the host's key document, valid from the registration, without rotating or closing any other key. Its namespace is `<host>/key/k<first 24 hex digits of SHA-256 of the raw public key>`. The registration is kept in the key document in the store (no store change). `POST /bundles` signed by a registered key is accepted only when every name is under that key's namespace (`E_NOT_OWNED`, 422 otherwise); the mesh's own key and the allowed domains are unchanged. Off by default, with `endpoints.x_keys` in the mesh document only when on; its own budget `DATUMESH_RATE_KEYS_PER_IP` (5 a minute, every POST counts).
+- **The takeover page states the policy (D40).** `GET /takeover/<domain>` says that no permission is needed (the source proves control with a key document on its own domain), that its relay name then stops taking new stored cells, is rebound to read the source's cells, and keeps its history as the mesh's signed statements. The JSON form gains `policy` (those sentences) and `contact` (null unless `DATUMESH_CONTACT` is set; then the page and the JSON name the address).
+- **The series overview is built in the background (G5).** The sitemap and the series indexes are read from an overview that a thread of the mesh builds at start (or after `DATUMESH_SERIES_FIRST_BUILD_DELAY_SECS`) and then every `DATUMESH_SERIES_REFRESH_SECS` (300). A request never builds it: before the first build the sitemap (and its parts) and the indexes answer `503` with `Retry-After` and `no-store`. Month and year pages and CSV do not wait for it (their previous and next links are missing until the first build). `GET /metrics` gains `datumesh_series_overview_builds_total{by="background"}` and `{by="request"}` (always 0).
+- **The function page is bounded.** `GET /fn/<name>` lists at most the first 100 tests (HTML "Each test" and the JSON `tests.cases`), with a note and the total (`tests.cases_total`).
+- **Production stays closed to other namespaces (D41).** `DATUMESH_PUBLISH_DOMAINS` set to the empty string behaves as unset; a regression test holds it.
+
 ## 0.4.7 (unreleased)
 
 Fix of a panic in 0.4.6. Requires the same crates as 0.4.6; the public API does not change.

@@ -204,6 +204,8 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         series_sitemap,
         whatif,
         x_calc,
+        x_keys_challenge,
+        x_keys,
         x_interval,
         health,
         metrics,
@@ -1439,6 +1441,68 @@ async fn x_calc(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> R
     }
 }
 
+/// `GET /x/keys/challenge` (QUESTIONS-build2 D39, `DATUMESH_KEY_NAMES=1`): a challenge to sign with the key to
+/// register. Off: `404`.
+#[utoipa::path(get, path = "/x/keys/challenge",
+    responses(
+        (status = 200, description = "`{\"challenge\", \"expires\"}`, no-store", content_type = "application/json"),
+        (status = 404, description = "Key-derived names are off on this mesh", content_type = "application/json"),
+        (status = 429, description = "`rate_limited`, with `Retry-After`", content_type = "application/json")))]
+async fn x_keys_challenge(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Response {
+    if !mesh.inner.config.key_names {
+        return not_found("endpoint");
+    }
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::keynames::challenge(&inner)).await {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
+/// `POST /x/keys` (QUESTIONS-build2 D39, `DATUMESH_KEY_NAMES=1`): registers a public key by its proof of
+/// possession (`{"public_key", "challenge", "signature"}`). The key's namespace is `<host>/key/k<24 hex>`.
+/// `201` when the key is added, `200` when it was there. Off: `404`.
+#[utoipa::path(post, path = "/x/keys",
+    request_body(content = String, description = "`{\"public_key\": <64 hex>, \"challenge\": <as issued>, \"signature\": <128 hex, Ed25519 over the challenge's UTF-8 bytes>}`", content_type = "application/json"),
+    responses(
+        (status = 201, description = "`{\"namespace\", \"key_id\"}`: the key is added to the key document", content_type = "application/json"),
+        (status = 200, description = "The same body: the key was registered before", content_type = "application/json"),
+        (status = 400, description = "`E_KEY_MALFORMED`, or `E_CHALLENGE` (unknown, expired or used)", content_type = "application/json"),
+        (status = 403, description = "`E_KEY_SIGNATURE`", content_type = "application/json"),
+        (status = 404, description = "Key-derived names are off on this mesh", content_type = "application/json"),
+        (status = 429, description = "`rate_limited`, with `Retry-After` (`DATUMESH_RATE_KEYS_PER_IP`)", content_type = "application/json")))]
+async fn x_keys(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Response {
+    let inner = mesh.inner.clone();
+    if !inner.config.key_names {
+        return not_found("endpoint");
+    }
+    if let Some(r) = ip_admit(&inner, &headers, &req) {
+        return r;
+    }
+    let ip = client_ip(&inner, &headers, peer_of(&req));
+    if let Err(s) = inner.limiter.admit_keys(ip) {
+        return to_response(crate::keynames::rate_limited(s));
+    }
+    // A body over the limit is read to its end and is then malformed, as any other that does not parse.
+    let body = axum::body::to_bytes(req.into_body(), crate::keynames::MAX_BODY).await.unwrap_or_default();
+    let i2 = inner.clone();
+    match inner
+        .pool
+        .clone()
+        .run(move || match crate::keynames::parse(&body) {
+            Ok(p) => crate::keynames::register(&i2, &p),
+            Err(detail) => crate::keynames::refuse(400, "E_KEY_MALFORMED", &detail),
+        })
+        .await
+    {
+        Some(r) => to_response(r),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 #[utoipa::path(get, path = "/describe/{id}",
     params(("id" = String, Path, description = "A class name, an object's key encoding, an object id, a cell id or a short id (12 hex digits).")),
     responses((status = 200, description = "A describe-class or describe-object document (SPEC 16.8)", content_type = "application/json"), (status = 400, description = "`E_KEY_ENCODING`, `E_KEY_NORMALISATION` or `E_SHORT_ID_AMBIGUOUS`", content_type = "application/json"), (status = 404, description = "An id the mesh does not know", content_type = "application/json")))]
@@ -1557,6 +1621,9 @@ fn series_response(o: crate::series::Out) -> Response {
     if let Some(e) = o.etag.as_deref().and_then(|e| HeaderValue::from_str(e).ok()) {
         h.insert(header::ETAG, e);
     }
+    if let Some(s) = o.retry_after {
+        h.insert(header::RETRY_AFTER, HeaderValue::from(s));
+    }
     resp
 }
 
@@ -1665,6 +1732,8 @@ impl Mesh {
             .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
             .route("/x/calc", post(x_calc))
+            .route("/x/keys/challenge", get(x_keys_challenge))
+            .route("/x/keys", post(x_keys))
             .route("/x/interval/{*function}", get(x_interval))
             .route("/health", get(health))
             .route("/metrics", get(metrics))

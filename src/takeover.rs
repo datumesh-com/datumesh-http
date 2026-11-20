@@ -43,6 +43,15 @@ fn relayed_from(inner: &Inner, domain: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The takeover policy (QUESTIONS-build2 D40), the same sentences in the JSON `policy` and on the page. It
+/// promises no withdrawal: the relay name is rebound and its history is kept.
+const POLICY: [&str; 4] = [
+    "No permission from the source is needed: it proves control of its domain with a key document on its own domain.",
+    "The relay name then stops taking new stored cells.",
+    "The relay name is rebound to read the source's cells.",
+    "Its history stays as the mesh's signed statements.",
+];
+
 /// The page's data, or `None` when this mesh relays nothing from `domain`.
 pub(crate) fn data(inner: &Inner, domain: &str) -> Option<Value> {
     let found = relayed_from(inner, domain);
@@ -65,10 +74,13 @@ pub(crate) fn data(inner: &Inner, domain: &str) -> Option<Value> {
         s(&format!("Serve a key document at https://{domain}/.well-known/datumesh.json (spec 9).")),
         s(&format!("Publish the same functions under {domain}/..., on its own mesh or hosted on this mesh. {hosting}")),
     ];
+    let contact = inner.config.contact.as_deref().map_or(Value::Null, s);
     Some(obj(vec![
+        ("contact", contact),
         ("domain", s(domain)),
         ("host", s(host)),
         ("functions", Value::Array(functions)),
+        ("policy", Value::Array(POLICY.iter().map(|p| s(p)).collect())),
         ("steps", Value::Array(steps)),
     ]))
 }
@@ -129,6 +141,15 @@ pub(crate) fn render(d: &Value) -> String {
         esc(domain),
         esc(domain)
     ));
+    h.push_str("<section id=\"policy\">\n<h2>What taking over means</h2>\n<ul>\n");
+    for p in POLICY {
+        h.push_str(&format!("<li>{}</li>\n", esc(p)));
+    }
+    h.push_str("</ul>\n");
+    if let Some(c) = d.get("contact").and_then(Value::as_str) {
+        h.push_str(&format!("<p>Contact: <code>{}</code>.</p>\n", esc(c)));
+    }
+    h.push_str("</section>\n");
     h.push_str("<section id=\"functions\">\n<h2>Functions relayed from this domain</h2>\n<ul>\n");
     if let Some(Value::Array(fs)) = d.get("functions") {
         for f in fs {

@@ -317,3 +317,31 @@ async fn describe_links_to_the_page() {
 fn unused() -> String {
     function_line("", "", None)
 }
+
+/// http 0.4.8: the page lists at most the first 100 tests and says how many there are; the JSON gives the
+/// same as `cases` and `cases_total`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_list_of_tests_is_bounded() {
+    let c = c();
+    let mut all = lines(&c);
+    // 120 more tests of the same function: the reading of 1000 + 2i at 2 units is 500 + i (no two alike)
+    for i in 1..=120 {
+        all.push(test_line(
+            &c.per_unit,
+            &pu_call(&c, "N", "2"),
+            Some(json!({ format!("{}(site: \"N\")", c.reading): num(&(1000 + 2 * i).to_string()) })),
+            None,
+            num(&(500 + i).to_string()),
+        ));
+    }
+    let m = serve_lite("fp-bounded", &all, None, |_| {}).await;
+    let j = get(&m, &format!("{}?format=json", path(&c.per_unit)), &[]).await.json();
+    let total = j["tests"]["count"].as_u64().unwrap();
+    assert_eq!(total, 126, "{}", j["tests"]);
+    assert_eq!(j["tests"]["cases_total"].as_u64(), Some(total));
+    assert_eq!(j["tests"]["cases"].as_array().unwrap().len(), 100);
+    let html = html_of(&get(&m, &path(&c.per_unit), &[]).await);
+    let tests = plain(&section(&html, "tests"));
+    assert!(tests.contains("Showing the first 100 of 126 tests"), "{tests}");
+    assert_eq!(tests.matches("expects").count(), 100, "{tests}");
+}

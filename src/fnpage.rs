@@ -79,6 +79,15 @@ fn read_relay(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDescriptor, 
     None
 }
 
+/// The most tests a function page lists (its JSON `cases` and its HTML "Each test"); the total is given beside.
+pub(crate) const CASES_SHOWN: usize = 100;
+
+/// The cases a function page shows (the first [`CASES_SHOWN`]) and the total of them.
+fn shown_cases(all: Vec<Value>) -> (Vec<Value>, usize) {
+    let total = all.len();
+    (all.into_iter().take(CASES_SHOWN).collect(), total)
+}
+
 fn s(v: &str) -> Value {
     Value::String(v.to_string())
 }
@@ -208,6 +217,7 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
             obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)])
         })
         .collect();
+    let (cases, cases_total) = shown_cases(cases);
     let rows: Vec<&datumesh_store::FunctionTest> = held.iter().map(|(r, _)| r).collect();
     let results: Vec<Option<&str>> = rows.iter().map(|r| r.last_result.as_deref()).collect();
     // The worst result first, whatever the store's order: error, then fail (QUESTIONS-build2 D22).
@@ -228,6 +238,7 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         ("open_counterexamples", Value::Array(open)),
         ("derived", Value::Array(derived)),
         ("cases", Value::Array(cases)),
+        ("cases_total", num(cases_total as u64)),
         ("last_run", obj(vec![("result", s(&result)), ("at", s(&at))])),
     ]);
 
@@ -474,6 +485,11 @@ pub(crate) fn render(d: &Value) -> String {
             ));
         }
     }
+    let shown = if let Value::Array(cs) = get(t, "cases") { cs.len() } else { 0 };
+    let total = n("cases_total") as usize;
+    if total > shown {
+        h.push_str(&format!("<p>Showing the first {shown} of {total} tests.</p>\n"));
+    }
     h.push_str("</ul>\n</section>\n");
 
     // lineage
@@ -558,4 +574,20 @@ pub(crate) fn render(d: &Value) -> String {
     h.push_str("</section>\n");
     h.push_str("</main>\n</body>\n</html>\n");
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_function_page_lists_at_most_the_first_100_cases_and_the_total() {
+        let all: Vec<Value> = (0..8_120).map(|i| s(&format!("case {i}"))).collect();
+        let (shown, total) = shown_cases(all);
+        assert_eq!((shown.len(), total), (CASES_SHOWN, 8_120));
+        assert_eq!(shown[0].as_str(), Some("case 0"));
+        assert_eq!(shown[99].as_str(), Some("case 99"));
+        let few: Vec<Value> = (0..3).map(|i| s(&format!("case {i}"))).collect();
+        assert_eq!(shown_cases(few).0.len(), 3);
+    }
 }

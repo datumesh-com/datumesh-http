@@ -302,11 +302,14 @@ pub datumesh_http::config::Config::base_url: core::option::Option<alloc::string:
 pub datumesh_http::config::Config::batch_max: usize
 pub datumesh_http::config::Config::budget: core::time::Duration
 pub datumesh_http::config::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_http::config::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::cross_mesh: bool
 pub datumesh_http::config::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub datumesh_http::config::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::explain_depth: usize
 pub datumesh_http::config::Config::host: alloc::string::String
+pub datumesh_http::config::Config::key_challenge_ttl: core::time::Duration
+pub datumesh_http::config::Config::key_names: bool
 pub datumesh_http::config::Config::log_dir: core::option::Option<std::path::PathBuf>
 pub datumesh_http::config::Config::max_jobs: usize
 pub datumesh_http::config::Config::namespaces: alloc::vec::Vec<alloc::string::String>
@@ -316,6 +319,8 @@ pub datumesh_http::config::Config::policy: datumesh_http::config::Policy
 pub datumesh_http::config::Config::pool_size: usize
 pub datumesh_http::config::Config::publish_domains: datumesh_http::config::PublishDomains
 pub datumesh_http::config::Config::rate: datumesh_http::config::RateLimits
+pub datumesh_http::config::Config::series_first_build_delay: core::time::Duration
+pub datumesh_http::config::Config::series_refresh: core::time::Duration
 pub datumesh_http::config::Config::slice_max: usize
 pub datumesh_http::config::Config::slice_page: usize
 pub datumesh_http::config::Config::test_cells: bool
@@ -366,6 +371,7 @@ pub datumesh_http::config::RateLimits::batch_cells_per_token: u32
 pub datumesh_http::config::RateLimits::calc_per_ip: u32
 pub datumesh_http::config::RateLimits::enabled: bool
 pub datumesh_http::config::RateLimits::ip_burst: u32
+pub datumesh_http::config::RateLimits::keys_per_ip: u32
 pub datumesh_http::config::RateLimits::per_ip: u32
 pub datumesh_http::config::RateLimits::per_key: u32
 pub datumesh_http::config::RateLimits::series_per_ip: u32
@@ -582,6 +588,7 @@ impl core::marker::StructuralPartialEq for datumesh_http::keydoc::Declared
 pub fn datumesh_http::keydoc::declare_at<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &str, &str, core::option::Option<&str>, core::option::Option<&str>, &dyn datumesh_engine::clock::Clock) -> core::result::Result<datumesh_http::keydoc::Declared, datumesh_http::keydoc::DeclareError>
 pub fn datumesh_http::keydoc::with_declaration(&str, &[u8], &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(alloc::vec::Vec<u8>, datumesh_http::keydoc::Declared), datumesh_core::error::Error>
 pub fn datumesh_http::keydoc::with_key(&str, core::option::Option<&[u8]>, &datumesh_core::sign::SigningKey, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_core::error::Error>
+pub fn datumesh_http::keydoc::with_registered(&str, &[u8], &[u8; 32], &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, datumesh_core::error::Error>
 pub mod datumesh_http::publish
 #[non_exhaustive] pub enum datumesh_http::publish::PublishErrorKind
 pub datumesh_http::publish::PublishErrorKind::Backfill(alloc::string::String)
@@ -673,11 +680,14 @@ pub datumesh_http::Config::base_url: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::batch_max: usize
 pub datumesh_http::Config::budget: core::time::Duration
 pub datumesh_http::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_http::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::cross_mesh: bool
 pub datumesh_http::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub datumesh_http::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::explain_depth: usize
 pub datumesh_http::Config::host: alloc::string::String
+pub datumesh_http::Config::key_challenge_ttl: core::time::Duration
+pub datumesh_http::Config::key_names: bool
 pub datumesh_http::Config::log_dir: core::option::Option<std::path::PathBuf>
 pub datumesh_http::Config::max_jobs: usize
 pub datumesh_http::Config::namespaces: alloc::vec::Vec<alloc::string::String>
@@ -687,6 +697,8 @@ pub datumesh_http::Config::policy: datumesh_http::config::Policy
 pub datumesh_http::Config::pool_size: usize
 pub datumesh_http::Config::publish_domains: datumesh_http::config::PublishDomains
 pub datumesh_http::Config::rate: datumesh_http::config::RateLimits
+pub datumesh_http::Config::series_first_build_delay: core::time::Duration
+pub datumesh_http::Config::series_refresh: core::time::Duration
 pub datumesh_http::Config::slice_max: usize
 pub datumesh_http::Config::slice_page: usize
 pub datumesh_http::Config::test_cells: bool

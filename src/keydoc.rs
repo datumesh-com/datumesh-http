@@ -218,3 +218,32 @@ pub fn declare_at<S: Store + ?Sized>(
     }
     Ok(what)
 }
+
+/// The key document `existing` of `host` with the key `public` registered from `valid_from` (QUESTIONS-build2
+/// D39): the key is added beside the keys there are, and no key is rotated or closed. `None` when the document
+/// holds that key already (then nothing is to be written). The declarations are kept. Checked by 9.2.
+pub fn with_registered(
+    host: &str,
+    existing: &[u8],
+    public: &[u8; 32],
+    valid_from: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    keys_from_response(host, 200, Some(existing))?;
+    let v = json::parse(existing)?;
+    let id = datumesh_core::key_id(public);
+    let mut keys: Vec<Value> = match v.get("keys") {
+        Some(Value::Array(ks)) => ks.clone(),
+        _ => Vec::new(),
+    };
+    if keys.iter().any(|k| k.get("id").and_then(Value::as_str) == Some(id.as_str())) {
+        return Ok(None);
+    }
+    keys.push(Value::Object(vec![
+        ("alg".into(), Value::String("ed25519".into())),
+        ("id".into(), Value::String(id)),
+        ("public".into(), Value::String(datumesh_core::lexical::to_hex(public))),
+        ("valid_from".into(), Value::String(valid_from.to_string())),
+    ]));
+    let declarations = v.get("declarations").cloned();
+    document(host, keys, declarations).map(Some)
+}

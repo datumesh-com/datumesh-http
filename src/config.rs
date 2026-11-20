@@ -53,6 +53,9 @@ pub struct RateLimits {
     /// `/series` pages per minute per IP, besides the per-IP limit (`DATUMESH_RATE_SERIES_PER_IP`,
     /// default 30; burst the same), so that a crawler that misses the cache cannot load the mesh.
     pub series_per_ip: u32,
+    /// `POST /x/keys` per minute per IP, besides the per-IP limit (`DATUMESH_RATE_KEYS_PER_IP`, default 5;
+    /// burst the same). Every `POST` counts, whatever its outcome (QUESTIONS-build2 D39).
+    pub keys_per_ip: u32,
 }
 
 impl Default for RateLimits {
@@ -66,6 +69,7 @@ impl Default for RateLimits {
             calc_per_ip: 30,
             batch_cells_per_token: 50,
             series_per_ip: 30,
+            keys_per_ip: 5,
         }
     }
 }
@@ -253,6 +257,20 @@ pub struct Config {
     pub log_dir: Option<std::path::PathBuf>,
     /// The series with month or year pages (`DATUMESH_SERIES_FILE`, Build 2 Part 6); none: no pages.
     pub(crate) series: Vec<crate::series::SeriesPage>,
+    /// Whether a key of a publisher can be registered for a namespace of its own: `DATUMESH_KEY_NAMES=1`
+    /// turns `GET /x/keys/challenge` and `POST /x/keys` on (QUESTIONS-build2 D39). Default off; any other
+    /// value is off too.
+    pub key_names: bool,
+    /// How long a registration challenge is valid (`DATUMESH_KEY_CHALLENGE_TTL_SECS`; default 300 s).
+    pub key_challenge_ttl: Duration,
+    /// The address the takeover page names for a source that wants to take over (`DATUMESH_CONTACT`,
+    /// D40). Default none: the page names no address.
+    pub contact: Option<String>,
+    /// How long the first build of the series overview waits after start (`DATUMESH_SERIES_FIRST_BUILD_DELAY_SECS`;
+    /// default 0). Until that build is done the sitemap and the index answer `503`.
+    pub series_first_build_delay: Duration,
+    /// How often the series overview is rebuilt (`DATUMESH_SERIES_REFRESH_SECS`; default 300 s, at least 1 s).
+    pub series_refresh: Duration,
 }
 
 /// Which hosts may publish with `POST /bundles` (`DATUMESH_PUBLISH_DOMAINS`): the mesh's own
@@ -328,6 +346,11 @@ impl Config {
             embed_url: None,
             api_keys: ApiKeys::default(),
             publish_domains: PublishDomains::Own,
+            key_names: false,
+            key_challenge_ttl: Duration::from_secs(300),
+            contact: None,
+            series_first_build_delay: Duration::ZERO,
+            series_refresh: Duration::from_secs(300),
             log_dir: None,
             series: Vec::new(),
         }
@@ -400,6 +423,13 @@ impl Config {
         c.rate.verify_per_ip = num("DATUMESH_RATE_VERIFY_PER_IP", c.rate.verify_per_ip as usize)? as u32;
         c.rate.series_per_ip = num("DATUMESH_RATE_SERIES_PER_IP", c.rate.series_per_ip as usize)? as u32;
         c.rate.calc_per_ip = num("DATUMESH_RATE_CALC_PER_IP", c.rate.calc_per_ip as usize)? as u32;
+        c.rate.keys_per_ip = num("DATUMESH_RATE_KEYS_PER_IP", c.rate.keys_per_ip as usize)? as u32;
+        // Off unless exactly `1` (an empty or other value is off too, not an error).
+        c.key_names = get("DATUMESH_KEY_NAMES").as_deref() == Some("1");
+        c.key_challenge_ttl = secs("DATUMESH_KEY_CHALLENGE_TTL_SECS", c.key_challenge_ttl)?;
+        c.contact = get("DATUMESH_CONTACT").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        c.series_first_build_delay = secs("DATUMESH_SERIES_FIRST_BUILD_DELAY_SECS", c.series_first_build_delay)?;
+        c.series_refresh = secs("DATUMESH_SERIES_REFRESH_SECS", c.series_refresh)?;
         c.ttl.key_doc = secs("DATUMESH_TTL_KEY_DOC", c.ttl.key_doc)?;
         c.ttl.mesh_doc = secs("DATUMESH_TTL_MESH_DOC", c.ttl.mesh_doc)?;
         c.ttl.binding = secs("DATUMESH_TTL_BINDING", c.ttl.binding)?;
@@ -447,6 +477,14 @@ impl Config {
     /// one ([`check_base_url`]), numbers in range.
     pub fn check(&self) -> Result<(), ConfigError> {
         lexical::check_dns_name(&self.host, "$").map_err(|e| ConfigError::new("host", e.to_string()))?;
+        if self.series_refresh < Duration::from_secs(1) {
+            return Err(ConfigError::new("DATUMESH_SERIES_REFRESH_SECS", "at least 1 second"));
+        }
+        if let Some(c) = &self.contact {
+            if c.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+                return Err(ConfigError::new("DATUMESH_CONTACT", "an address without spaces"));
+            }
+        }
         if let Some(u) = &self.base_url {
             check_base_url(&self.host, u).map_err(|e| ConfigError::new("base URL", format!("{u}: {e}")))?;
         }

@@ -21,6 +21,8 @@ pub(crate) struct Metrics {
     requests: Mutex<BTreeMap<(String, u16), u64>>,
     outcomes: Mutex<BTreeMap<(String, String), u64>>,
     latency: Mutex<BTreeMap<String, Hist>>,
+    /// Series overview builds, by what started them (`background`, or `request`, which never happens).
+    series_builds: Mutex<BTreeMap<&'static str, u64>>,
 }
 
 impl Metrics {
@@ -59,6 +61,11 @@ impl Metrics {
             .or_default() += 1;
     }
 
+    /// One series overview build, by what started it.
+    pub(crate) fn series_build(&self, by: &'static str) {
+        *self.series_builds.lock().unwrap_or_else(|p| p.into_inner()).entry(by).or_default() += 1;
+    }
+
     /// The requests counted for `route` (any status).
     pub(crate) fn requests_of(&self, route: &str) -> u64 {
         self.requests
@@ -81,6 +88,14 @@ impl Metrics {
         let _ = writeln!(out, "# TYPE datumesh_envelopes_total counter");
         for ((r, o), n) in self.outcomes.lock().unwrap_or_else(|p| p.into_inner()).iter() {
             let _ = writeln!(out, "datumesh_envelopes_total{{route=\"{r}\",outcome=\"{o}\"}} {n}");
+        }
+        let _ =
+            writeln!(out, "# HELP datumesh_series_overview_builds_total Series overview builds, by what started them.");
+        let _ = writeln!(out, "# TYPE datumesh_series_overview_builds_total counter");
+        let builds = self.series_builds.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        for by in ["background", "request"] {
+            let n = builds.get(by).copied().unwrap_or(0);
+            let _ = writeln!(out, "datumesh_series_overview_builds_total{{by=\"{by}\"}} {n}");
         }
         let _ = writeln!(out, "# HELP datumesh_http_request_seconds Request latency, by route.");
         let _ = writeln!(out, "# TYPE datumesh_http_request_seconds histogram");

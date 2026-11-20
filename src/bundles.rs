@@ -216,6 +216,14 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
             Err(e) => return fail(422, "E_KEY_UNAVAILABLE", e.to_string()),
         }
     };
+    // Key-derived names (D39): a bundle signed by a registered key goes under that key's namespace only.
+    if own {
+        if let Some(key_id) = doc.get("manifest").and_then(|m| text(m, "key_id")) {
+            if let Some((status, code, detail)) = crate::keynames::bundle_refusal(inner, namespace, key_id, &keydoc) {
+                return fail(status, code, detail);
+            }
+        }
+    }
     match bundle::prove(&*inner.store, &inner.config.host, &*inner.clock, bytes, &keydoc) {
         Ok(()) => {}
         Err(e) => return refused(&e),

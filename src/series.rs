@@ -13,8 +13,10 @@
 //! source), the catalogue (`catalog_summary`, `text_find`). A page of a function with no stored cell is
 //! `404`, and nothing is computed, written or fetched from another mesh.
 //!
-//! The index and the sitemap need every period of a series: they read the series' cells once (the
-//! `Overview`) and keep it for [`TTL`]; the neighbours of a page (previous and next) come from it too.
+//! The index and the sitemap need every period of a series. They read an overview of every listed series that
+//! the mesh's background thread builds at start and then every `DATUMESH_SERIES_REFRESH_SECS` (`rebuild`); a
+//! request reads the last one and never builds it. Before the first build they answer `503`. The previous and
+//! next links of a period page come from the same overview, and are missing until the first build.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use crate::config::ConfigError;
 use crate::fnpage::{esc, relay_of, Relay};
 use crate::mesh::Inner;
 
-/// How long an overview (and a column order) is kept in memory.
+/// How long a dictionary's order is kept in memory.
 const TTL: Duration = Duration::from_secs(300);
 /// The most URLs in one sitemap file (the sitemap protocol's limit).
 const SITEMAP_MAX: usize = 50_000;
@@ -388,30 +390,62 @@ fn build_overview(inner: &Inner, b: &Bound, page: &SeriesPage) -> Option<Overvie
 /// The values of a dictionary in their order, each with its value id.
 type Dictionary = Arc<Vec<(String, i64)>>;
 
-/// Remembered reads: overviews and dictionary orders, each for [`TTL`].
+/// The overviews of every listed series and the sitemap made from them (G4, G5; http 0.4.8): built by the
+/// background thread (`rebuild`) and read by the requests, which never build one.
+#[derive(Default)]
+pub(crate) struct Built {
+    overviews: HashMap<String, Arc<Overview>>,
+    /// `sitemap.xml`: the urlset, or the sitemap index of the parts when there are more than one.
+    root: String,
+    /// `sitemap-<n>.xml` (from index 0 for part 1): the urlsets of the parts.
+    parts: Vec<String>,
+}
+
+/// Remembered reads: the last built overviews and dictionary orders (the orders for [`TTL`]).
 #[derive(Default)]
 pub(crate) struct Memo {
-    overviews: HashMap<String, (Instant, Arc<Overview>)>,
+    built: Option<Arc<Built>>,
     columns: HashMap<String, (Instant, Dictionary)>,
 }
 
-fn overview(inner: &Inner, b: &Bound, page: &SeriesPage) -> Option<Arc<Overview>> {
-    let key = format!("{}\n{}", b.name, b.fn_hash);
-    {
-        let memo = inner.series.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, ov)) = memo.overviews.get(&key) {
-            if at.elapsed() < TTL {
-                return Some(ov.clone());
+/// The last built overviews, or `None` before the first build has completed.
+fn built(inner: &Inner) -> Option<Arc<Built>> {
+    inner.series.lock().unwrap_or_else(|p| p.into_inner()).built.clone()
+}
+
+/// The overview of a series as the last build made it (none before the first build, or for a series that had
+/// no bound function or no cell then). A request never builds one.
+fn overview(inner: &Inner, page: &SeriesPage) -> Option<Arc<Overview>> {
+    built(inner)?.overviews.get(&page.function).cloned()
+}
+
+/// Builds the overviews of every listed series and the sitemap from them: the store's reads, on the calling
+/// thread (the background thread of the mesh, never a request).
+pub(crate) fn build(inner: &Inner) -> Built {
+    let now = inner.now();
+    let origin = inner.config.origin();
+    let mut overviews = HashMap::new();
+    let mut urls: Vec<(String, String)> = Vec::new();
+    for page in &inner.config.series {
+        let Some(b) = bound(inner, page, &now) else { continue };
+        let Some(ov) = build_overview(inner, &b, page) else { continue };
+        if !ov.periods.is_empty() {
+            urls.push((format!("/series/{}/", b.name), ov.latest.clone()));
+            for (p, info) in &ov.periods {
+                urls.push((format!("/series/{}/{p}", b.name), info.latest_tx.clone()));
             }
         }
+        overviews.insert(page.function.clone(), Arc::new(ov));
     }
-    let ov = Arc::new(build_overview(inner, b, page)?);
-    let mut memo = inner.series.lock().unwrap_or_else(|p| p.into_inner());
-    if memo.overviews.len() >= 1_000 {
-        memo.overviews.clear();
-    }
-    memo.overviews.insert(key, (Instant::now(), ov.clone()));
-    Some(ov)
+    let (root, parts) = sitemap_bodies(&origin, &urls);
+    Built { overviews, root, parts }
+}
+
+/// Builds the overview now and makes it the one requests read; counted as `by` (`background`).
+pub(crate) fn rebuild(inner: &Inner, by: &'static str) {
+    let built = Arc::new(build(inner));
+    inner.series.lock().unwrap_or_else(|p| p.into_inner()).built = Some(built);
+    inner.metrics.series_build(by);
 }
 
 /// The values of a dictionary in the order the publisher gave them (the store's value ids), each with its id.
@@ -801,6 +835,8 @@ pub(crate) struct Out {
     pub(crate) content_type: &'static str,
     pub(crate) cache: String,
     pub(crate) etag: Option<String>,
+    /// `Retry-After` in seconds, on a `503` (the overview is not built yet).
+    pub(crate) retry_after: Option<u64>,
 }
 
 fn not_found() -> Out {
@@ -810,6 +846,7 @@ fn not_found() -> Out {
         content_type: HTML,
         cache: CACHE_NOW.to_string(),
         etag: None,
+        retry_after: None,
     }
 }
 
@@ -947,7 +984,7 @@ fn period_page(
     v.asof = latest.clone();
 
     let hashes: Vec<String> = members.iter().map(|m| m.version.receipt_hash.clone()).collect();
-    let (prev, next) = match overview(inner, b, page) {
+    let (prev, next) = match overview(inner, page) {
         Some(ov) => (
             ov.periods.keys().rfind(|k| k.as_str() < period).cloned(),
             ov.periods.keys().find(|k| k.as_str() > period).cloned(),
@@ -973,6 +1010,7 @@ fn period_page(
             content_type: if csv { CSV } else { HTML },
             cache: cache_for(current),
             etag: Some(etag),
+            retry_after: None,
         };
     }
     // The licences are read from the receipts only when an HTML body is rendered (not for a 304 or a CSV).
@@ -981,12 +1019,12 @@ fn period_page(
     }
     let (body, content_type) =
         if csv { (csv_of(&v.headers, &v.rows).into_bytes(), CSV) } else { (render(&v).into_bytes(), HTML) };
-    Out { status: 200, body, content_type, cache: cache_for(current), etag: Some(etag) }
+    Out { status: 200, body, content_type, cache: cache_for(current), etag: Some(etag), retry_after: None }
 }
 
 /// The index of a series: its periods, grouped by year for a monthly granularity.
 fn index_page(inner: &Inner, page: &SeriesPage, b: &Bound, inm: Option<&str>) -> Out {
-    let Some(ov) = overview(inner, b, page) else { return not_found() };
+    let Some(ov) = overview(inner, page) else { return not_found() };
     if ov.periods.is_empty() {
         return not_found();
     }
@@ -1034,10 +1072,11 @@ fn index_page(inner: &Inner, page: &SeriesPage, b: &Bound, inm: Option<&str>) ->
             content_type: HTML,
             cache: CACHE_NOW.to_string(),
             etag: Some(etag),
+            retry_after: None,
         };
     }
     let body = render(&v).into_bytes();
-    Out { status: 200, body, content_type: HTML, cache: CACHE_NOW.to_string(), etag: Some(etag) }
+    Out { status: 200, body, content_type: HTML, cache: CACHE_NOW.to_string(), etag: Some(etag), retry_after: None }
 }
 
 /// The sitemap part `n` (`sitemap-<n>.xml`), or `None` for `sitemap.xml` itself.
@@ -1049,27 +1088,9 @@ fn sitemap_part(rest: &str) -> Option<Option<usize>> {
     n.parse::<usize>().ok().filter(|k| *k >= 1).map(Some)
 }
 
-/// `/series/sitemap.xml`: every index and page of every listed series, `lastmod` the as-of. Over 50,000 URLs
-/// it is a sitemap index of `sitemap-<n>.xml` files of 50,000.
-fn sitemap(inner: &Inner, part: Option<usize>) -> Out {
-    if inner.config.series.is_empty() {
-        return not_found();
-    }
-    let now = inner.now();
-    let origin = inner.config.origin();
-    let mut urls: Vec<(String, String)> = Vec::new();
-    for page in &inner.config.series {
-        let Some(b) = bound(inner, page, &now) else { continue };
-        let Some(ov) = overview(inner, &b, page) else { continue };
-        if ov.periods.is_empty() {
-            continue;
-        }
-        urls.push((format!("/series/{}/", b.name), ov.latest.clone()));
-        for (p, info) in &ov.periods {
-            urls.push((format!("/series/{}/{p}", b.name), info.latest_tx.clone()));
-        }
-    }
-    let parts = urls.len().div_ceil(SITEMAP_MAX).max(1);
+/// The sitemap of `urls` (`(path, lastmod)`): the root (a urlset, or a sitemap index of the parts when there are
+/// more than [`SITEMAP_MAX`]) and the parts, each a urlset of at most [`SITEMAP_MAX`] URLs.
+fn sitemap_bodies(origin: &str, urls: &[(String, String)]) -> (String, Vec<String>) {
     let urlset = |chunk: &[(String, String)]| {
         let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
         for (path, last) in chunk {
@@ -1082,31 +1103,59 @@ fn sitemap(inner: &Inner, part: Option<usize>) -> Out {
         x.push_str("</urlset>\n");
         x
     };
+    let parts: Vec<String> =
+        if urls.is_empty() { vec![urlset(&[])] } else { urls.chunks(SITEMAP_MAX).map(urlset).collect() };
+    if parts.len() == 1 {
+        return (parts[0].clone(), parts);
+    }
+    let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+    for (i, chunk) in urls.chunks(SITEMAP_MAX).enumerate() {
+        let last = chunk.iter().map(|c| c.1.as_str()).max().unwrap_or("");
+        x.push_str(&format!(
+            "<sitemap><loc>{}</loc><lastmod>{}</lastmod></sitemap>\n",
+            esc(&format!("{origin}/series/sitemap-{}.xml", i + 1)),
+            esc(last)
+        ));
+    }
+    x.push_str("</sitemapindex>\n");
+    (x, parts)
+}
+
+/// `503` for the sitemap and the index before the first build: `Retry-After` the refresh interval (1 to 300 s),
+/// never cached.
+fn unavailable(inner: &Inner) -> Out {
+    Out {
+        status: 503,
+        body: b"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>not yet</title></head><body><h1>not yet</h1><p>The series overview is being built. Try again shortly.</p></body></html>\n".to_vec(),
+        content_type: HTML,
+        cache: "no-store".to_string(),
+        etag: None,
+        retry_after: Some(inner.config.series_refresh.as_secs().clamp(1, 300)),
+    }
+}
+
+/// `/series/sitemap.xml`: every index and page of every listed series, `lastmod` the as-of, read from the last
+/// build (`503` before it). Over 50,000 URLs it is a sitemap index of `sitemap-<n>.xml` files of 50,000.
+fn sitemap(inner: &Inner, part: Option<usize>) -> Out {
+    if inner.config.series.is_empty() {
+        return not_found();
+    }
+    let Some(b) = built(inner) else { return unavailable(inner) };
     let body = match part {
-        None if parts == 1 => urlset(&urls),
-        None => {
-            let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
-            for (i, chunk) in urls.chunks(SITEMAP_MAX).enumerate() {
-                let last = chunk.iter().map(|c| c.1.as_str()).max().unwrap_or("");
-                x.push_str(&format!(
-                    "<sitemap><loc>{}</loc><lastmod>{}</lastmod></sitemap>\n",
-                    esc(&format!("{origin}/series/sitemap-{}.xml", i + 1)),
-                    esc(last)
-                ));
-            }
-            x.push_str("</sitemapindex>\n");
-            x
-        }
-        Some(k) => {
-            if k > parts {
-                return not_found();
-            }
-            let start = (k - 1) * SITEMAP_MAX;
-            let end = (start + SITEMAP_MAX).min(urls.len());
-            urlset(&urls[start..end])
-        }
+        None => b.root.clone(),
+        Some(k) => match b.parts.get(k - 1) {
+            Some(p) => p.clone(),
+            None => return not_found(),
+        },
     };
-    Out { status: 200, body: body.into_bytes(), content_type: XML, cache: CACHE_NOW.to_string(), etag: None }
+    Out {
+        status: 200,
+        body: body.into_bytes(),
+        content_type: XML,
+        cache: CACHE_NOW.to_string(),
+        etag: None,
+        retry_after: None,
+    }
 }
 
 /// The answer to `GET /series/<rest>`: a period's page or its CSV, the index, or the sitemap. Every answer is
@@ -1120,6 +1169,9 @@ pub(crate) fn respond(inner: &Inner, rest: &str, inm: Option<&str>) -> Out {
     let now = inner.now();
     let Some(b) = bound(inner, page, &now) else { return not_found() };
     if last.is_empty() {
+        if built(inner).is_none() {
+            return unavailable(inner);
+        }
         return index_page(inner, page, &b, inm);
     }
     let (stem, csv) = match last.strip_suffix(".csv") {
@@ -1142,7 +1194,14 @@ fn interval_error(status: u16, outcome: &str, code: Option<&str>, cache: &str) -
     if let Some(c) = code {
         m.push(("error".to_string(), s(c)));
     }
-    Out { status, body: Value::Object(m).to_jcs(), content_type: JSON_TYPE, cache: cache.to_string(), etag: None }
+    Out {
+        status,
+        body: Value::Object(m).to_jcs(),
+        content_type: JSON_TYPE,
+        cache: cache.to_string(),
+        etag: None,
+        retry_after: None,
+    }
 }
 
 fn interval_bad(code: &str) -> Out {
@@ -1238,7 +1297,7 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
     };
     debug_assert!(ok);
     if not_modified(inm, &etag) {
-        return Out { status: 304, body: Vec::new(), content_type, cache, etag: Some(etag) };
+        return Out { status: 304, body: Vec::new(), content_type, cache, etag: Some(etag), retry_after: None };
     }
     let body = match form {
         "arrow" => match crate::slice::arrow_stream(&members, &open, &slice, &now, function) {
@@ -1251,7 +1310,7 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
         "csv" => interval_csv(inner, &b, page, &open, &members).into_bytes(),
         _ => interval_json(inner, function, (&from, &to), &now, &members, truncated),
     };
-    Out { status: 200, body, content_type, cache, etag: Some(etag) }
+    Out { status: 200, body, content_type, cache, etag: Some(etag), retry_after: None }
 }
 
 fn interval_json(
