@@ -277,7 +277,17 @@ async fn serve(label: &str, series: Option<String>, vars: &[(&str, &str)]) -> Se
         env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
     })
     .unwrap();
-    build_served(lite, Some(cfg), |_| {}).await
+    let m = build_served(lite, Some(cfg), |_| {}).await;
+    // http 0.4.8: the overview is built in the background; the index and the sitemap answer 503 until the
+    // first build is done, so wait for it (a mesh without the series file answers 404 at once)
+    for _ in 0..300 {
+        let r = reqwest::Client::builder().no_proxy().build().unwrap().get(format!("{}/series/sitemap.xml", m.base)).send().await.unwrap();
+        if r.status().as_u16() != 503 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    m
 }
 
 async fn served(label: &str) -> Served {

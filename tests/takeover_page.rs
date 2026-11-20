@@ -119,7 +119,7 @@ async fn the_json_shape() {
     assert!(steps[1].as_str().unwrap().contains(&format!("{ECB}/...")), "{j}");
     let mut keys: Vec<&String> = j.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["domain", "functions", "host", "steps"]);
+    assert_eq!(keys, ["contact", "domain", "functions", "host", "policy", "steps"]);
     // cached like the function page
     assert_eq!(
         by_query.header("cache-control"),
@@ -211,4 +211,74 @@ async fn the_mesh_and_openapi_documents() {
     assert!(doc["endpoints"].get("takeover").is_none(), "{doc}");
     let api = get(&m, "/openapi.json", &[]).await.json();
     assert!(api["paths"].get("/takeover/{domain}").is_some(), "{}", api["paths"]);
+}
+
+// ---- the takeover policy (QUESTIONS-build2 D40, http 0.4.8) -------------------------------------------
+
+/// The policy's sentences, as phrases the page must contain (the wording around them is the implementer's;
+/// the JSON `policy` is an array of the sentences, the HTML shows the same text).
+const POLICY: [&str; 5] = [
+    "no permission",
+    "key document on its own domain",
+    "stops taking new stored cells",
+    "rebound to read the source's cells",
+    "history stays as the mesh's signed statements",
+];
+
+async fn served_with(label: &str, contact: Option<&str>) -> Served {
+    let contact = contact.map(str::to_string);
+    let cfg = datumesh_http::Config::from_vars(move |k| match k {
+        "DATUMESH_HOST" => Some(HOST.to_string()),
+        "DATUMESH_CONTACT" => contact.clone(),
+        _ => None,
+    })
+    .unwrap();
+    serve_lite(label, &lines(), Some(cfg), |_| {}).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_page_states_the_takeover_policy() {
+    let m = served("tk-policy", PublishDomains::Own).await;
+    let t = plain(&get(&m, &format!("/takeover/{ECB}"), &[]).await.text()).to_lowercase();
+    for phrase in POLICY {
+        assert!(t.contains(phrase), "{phrase} missing: {t}");
+    }
+    // the JSON form carries the same sentences
+    let j = get(&m, &format!("/takeover/{ECB}?format=json"), &[]).await.json();
+    let sentences: Vec<&str> = j["policy"].as_array().unwrap_or_else(|| panic!("no policy array: {j}")).iter()
+        .map(|v| v.as_str().unwrap()).collect();
+    assert!(sentences.len() >= 4, "{j}");
+    assert!(sentences.iter().all(|s| s.trim().ends_with('.') && s.len() > 20), "{sentences:?}");
+    let all = sentences.join(" ").to_lowercase();
+    for phrase in POLICY {
+        assert!(all.contains(phrase), "{phrase} missing from the JSON policy: {j}");
+    }
+    // the policy does not say the relay is withdrawn: it is rebound, its history kept
+    for no in ["withdraw", "retire", "deleted", "removed"] {
+        assert!(!all.contains(no) && !t.contains(no), "{no}: {t}");
+    }
+    // the other statements are as before
+    assert!(t.contains(&format!("{ECB} remains their source")), "{t}");
+    assert_eq!(j["steps"].as_array().unwrap().len(), 2, "{j}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_contact_line_appears_only_when_a_contact_is_configured() {
+    // not set: no contact member value, no address, no contact line
+    for (label, contact) in [("tk-nocontact", None), ("tk-emptycontact", Some("  "))] {
+        let m = served_with(label, contact).await;
+        let j = get(&m, &format!("/takeover/{ECB}?format=json"), &[]).await.json();
+        assert!(j["contact"].is_null() && j.get("contact").is_some(), "{label}: {j}");
+        let t = plain(&get(&m, &format!("/takeover/{ECB}"), &[]).await.text()).to_lowercase();
+        assert!(!t.contains('@') && !t.contains("contact"), "{label}: {t}");
+        for phrase in POLICY {
+            assert!(t.contains(phrase), "{label}: {phrase}: {t}");
+        }
+    }
+    // set: the address is shown, in the page and in the JSON
+    let m = served_with("tk-contact", Some("takeover@datumesh.example")).await;
+    let j = get(&m, &format!("/takeover/{ECB}?format=json"), &[]).await.json();
+    assert_eq!(j["contact"], "takeover@datumesh.example", "{j}");
+    let t = plain(&get(&m, &format!("/takeover/{ECB}"), &[]).await.text());
+    assert!(t.contains("takeover@datumesh.example"), "{t}");
 }
