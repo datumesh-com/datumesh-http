@@ -245,8 +245,12 @@ async fn the_page_states_the_takeover_policy() {
     }
     // the JSON form carries the same sentences
     let j = get(&m, &format!("/takeover/{ECB}?format=json"), &[]).await.json();
-    let sentences: Vec<&str> = j["policy"].as_array().unwrap_or_else(|| panic!("no policy array: {j}")).iter()
-        .map(|v| v.as_str().unwrap()).collect();
+    let sentences: Vec<&str> = j["policy"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no policy array: {j}"))
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert!(sentences.len() >= 4, "{j}");
     assert!(sentences.iter().all(|s| s.trim().ends_with('.') && s.len() > 20), "{sentences:?}");
     let all = sentences.join(" ").to_lowercase();

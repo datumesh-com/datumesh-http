@@ -62,8 +62,12 @@ async fn mesh(label: &str, vars: &[(&str, &str)]) -> Public {
     let mut all = vec![("DATUMESH_KEY_NAMES", "1")];
     all.extend_from_slice(vars);
     // later entries win: Config::from_vars looks for the first, so drop the default when overridden
-    let all: Vec<(&str, &str)> =
-        all.iter().enumerate().filter(|(i, (k, _))| !all[i + 1..].iter().any(|(k2, _)| k2 == k)).map(|(_, kv)| *kv).collect();
+    let all: Vec<(&str, &str)> = all
+        .iter()
+        .enumerate()
+        .filter(|(i, (k, _))| !all[i + 1..].iter().any(|(k2, _)| k2 == k))
+        .map(|(_, kv)| *kv)
+        .collect();
     let cfg = config(&all, &log_dir);
     let m = build_served(lite, Some(cfg), |_| {}).await;
     Public { m, log_dir }
@@ -91,15 +95,14 @@ async fn post_keys(p: &Public, body: Value) -> Reply4 {
 }
 
 async fn post_raw(p: &Public, body: Vec<u8>) -> Reply4 {
-    let r = p
-        .m
-        .http
-        .post(format!("{}/x/keys", p.m.base))
-        .header("content-type", "application/json")
-        .body(body)
-        .send()
-        .await
-        .unwrap();
+    let r =
+        p.m.http
+            .post(format!("{}/x/keys", p.m.base))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
     let (status, headers) = (r.status().as_u16(), r.headers().clone());
     Reply4 { status, headers, body: r.bytes().await.unwrap().to_vec() }
 }
@@ -117,7 +120,8 @@ async fn register(p: &Public, seed: &[u8; 32]) -> Reply4 {
 }
 
 fn key_ids_of(doc: &[u8]) -> Vec<String> {
-    let keys = datumesh_core::keys_from_response(HOST, 200, Some(doc)).unwrap_or_else(|e| panic!("not a key document: {e}"));
+    let keys =
+        datumesh_core::keys_from_response(HOST, 200, Some(doc)).unwrap_or_else(|e| panic!("not a key document: {e}"));
     keys.key_ids().iter().map(|s| s.to_string()).collect()
 }
 
@@ -189,7 +193,10 @@ async fn a_valid_proof_adds_the_key_and_gives_its_namespace() {
     assert_eq!(j["namespace"], ns_of_key(&SEED), "{j}");
     assert_eq!(j["key_id"], SigningKey::from_seed(&SEED).key_id(), "{j}");
     assert_eq!(j.as_object().unwrap().len(), 2, "{j}");
-    assert!(ns_of_key(&SEED).strip_prefix(&format!("{HOST}/key/k")).unwrap().starts_with(j["key_id"].as_str().unwrap()));
+    assert!(ns_of_key(&SEED)
+        .strip_prefix(&format!("{HOST}/key/k"))
+        .unwrap()
+        .starts_with(j["key_id"].as_str().unwrap()));
     // the key is in the served key document, which core accepts, beside the mesh's own key
     let doc = key_doc_bytes(&p).await;
     let ids = key_ids_of(&doc);
@@ -223,7 +230,8 @@ async fn registering_again_is_idempotent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refusals_have_codes_and_change_nothing() {
-    let p = mesh("kn-refuse", &[]).await;
+    // A budget high enough for every refusal to get its code; the budget itself is tested below.
+    let p = mesh("kn-refuse", &[("DATUMESH_RATE_KEYS_PER_IP", "1000")]).await;
     let before = key_doc_bytes(&p).await;
     let pk = public_hex(&SEED);
 
@@ -237,7 +245,11 @@ async fn refusals_have_codes_and_change_nothing() {
     assert_eq!((r.status, code(&r)), (403, "E_KEY_SIGNATURE".to_string()), "{}", r.text());
 
     // an unknown challenge
-    let r = post_keys(&p, json!({"public_key": pk, "challenge": "never-issued", "signature": sign(&SEED, b"never-issued")})).await;
+    let r = post_keys(
+        &p,
+        json!({"public_key": pk, "challenge": "never-issued", "signature": sign(&SEED, b"never-issued")}),
+    )
+    .await;
     assert_eq!((r.status, code(&r)), (400, "E_CHALLENGE".to_string()), "{}", r.text());
 
     // a challenge is good once
@@ -312,7 +324,12 @@ async fn registering_has_a_budget_of_its_own() {
 // ---- publishing under the key's namespace ------------------------------------------------------
 
 fn key_receipt(ns: &str, seed: &[u8; 32], site: &str, value: &str) -> Vec<u8> {
-    let cell = Cell { ns: ns.into(), fn_name: "level".into(), fn_hash: stored_fn().hash(), args: common::args(&[("site", common::s(site))]) };
+    let cell = Cell {
+        ns: ns.into(),
+        fn_name: "level".into(),
+        fn_hash: stored_fn().hash(),
+        args: common::args(&[("site", common::s(site))]),
+    };
     let key = SigningKey::from_seed(seed);
     let r = ReceiptBuilder::new()
         .cell(cell)
@@ -391,7 +408,10 @@ async fn a_key_may_not_publish_under_any_other_namespace() {
         ("the key segment itself", format!("{HOST}/key")),
         ("the key's namespace with a segment less", format!("{HOST}/key/k{hex}x")),
         ("23 digits (wrong length)", format!("{HOST}/key/k{}", &hex[..23])),
-        ("25 digits (wrong length)", format!("{HOST}/key/k{}", &sha256_hex(&SigningKey::from_seed(&SEED).public_key())[..25])),
+        (
+            "25 digits (wrong length)",
+            format!("{HOST}/key/k{}", &sha256_hex(&SigningKey::from_seed(&SEED).public_key())[..25]),
+        ),
         ("no leading k", format!("{HOST}/key/{hex}")),
     ] {
         let r = p.post(key_bundle(&ns, &SEED)).await;
@@ -418,7 +438,10 @@ async fn a_key_may_not_publish_under_any_other_namespace() {
         let r = p.post(b).await;
         assert!([400, 403, 422].contains(&r.status), "{} {}", r.status, r.text());
     }
-    assert!(p.m.lite.store.resolve_name(&format!("{own}/level"), END).unwrap().is_none(), "nothing of the key's own was written");
+    assert!(
+        p.m.lite.store.resolve_name(&format!("{own}/level"), END).unwrap().is_none(),
+        "nothing of the key's own was written"
+    );
     // and the key's own namespace still works after all that
     assert_eq!(p.post(key_bundle(&own, &SEED)).await.status, 201);
 }

@@ -41,7 +41,8 @@ fn index() -> String {
 }
 
 fn bank_sig() -> String {
-    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
+    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#
+        .to_string()
 }
 
 fn bank_cell(date: &str, value: &str, tx: &str) -> String {
@@ -64,7 +65,14 @@ async fn serve(label: &str, days: usize, vars: &[(&str, &str)]) -> Served {
         lines.push(bank_cell(&d, &format!("{}.25", 1 + i % 7), "2026-03-01T12:00:00.000000Z"));
         d = next_day(&d);
     }
-    lines.push(common::readpath::catalog_line(BANK, "function", "Bank rate", "The bank rate.", json!({"date": "the day"}), json!({})));
+    lines.push(common::readpath::catalog_line(
+        BANK,
+        "function",
+        "Bank rate",
+        "The bank rate.",
+        json!({"date": "the day"}),
+        json!({}),
+    ));
     let f = write(&lite, "fixture.jsonl", &lines);
     run(&lite, &f, NOW).unwrap_or_else(|e| panic!("fixture refused: {e}"));
     let p = lite.path("series.json");
@@ -77,7 +85,11 @@ async fn serve(label: &str, days: usize, vars: &[(&str, &str)]) -> Served {
     let mut env: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     env.push(("DATUMESH_SERIES_FILE".into(), p.to_string_lossy().into_owned()));
     // these tests poll: the budgets of the rate limiter are out of their way
-    for (k, v) in [("DATUMESH_RATE_PER_IP", "1000000"), ("DATUMESH_RATE_IP_BURST", "1000000"), ("DATUMESH_RATE_SERIES_PER_IP", "1000000")] {
+    for (k, v) in [
+        ("DATUMESH_RATE_PER_IP", "1000000"),
+        ("DATUMESH_RATE_IP_BURST", "1000000"),
+        ("DATUMESH_RATE_SERIES_PER_IP", "1000000"),
+    ] {
         env.push((k.into(), v.into()));
     }
     let cfg = Config::from_vars(move |k| {
