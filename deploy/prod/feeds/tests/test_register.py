@@ -16,6 +16,16 @@ METHODS = ["name", "status", "licence_page", "licence_hash", "licence_clauses", 
 NOW = "2026-11-19T12:00:00.000000Z"
 
 
+def blob_text(value, blobs):
+    """A blob value is {"blob": "blobs/<sha256>", "media_type": "text/plain"} (as the scripture loader writes it): the
+    file is next to the lines file, named by the SHA-256 of its bytes. `blobs` is what emit() was given to fill."""
+    assert set(value) == {"blob", "media_type"} and value["media_type"] == "text/plain", value
+    assert value["blob"].startswith("blobs/") and len(value["blob"]) == len("blobs/") + 64
+    data = blobs[value["blob"]]
+    assert hashlib.sha256(data).hexdigest() == value["blob"][len("blobs/"):]
+    return data.decode("utf-8")
+
+
 def entries():
     return reg.parse(fixture("register.json"))
 
@@ -64,7 +74,8 @@ def test_first_run_class_descriptors_catalogue_and_cells(names):
     sec = names["register"]
     host = REHEARSAL
     cls = f"{host}/register/dataset"
-    lines, state = reg.emit(entries(), {}, names)
+    blobs = {}
+    lines, state = reg.emit(entries(), {}, names, blobs=blobs)
     parts = split(lines)
 
     # the six stored methods, as descriptor lines
@@ -74,7 +85,7 @@ def test_first_run_class_descriptors_catalogue_and_cells(names):
     for m, line in zip(METHODS, parts["descriptor"]):
         assert set(line) == {"descriptor"}
         d = line["descriptor"]
-        returns = "instant" if m == "retrieved" else "string"
+        returns = {"retrieved": "instant", "licence_clauses": "blob"}.get(m, "string")
         assert d == {"code": {"body": "", "lang": "stored"}, "inputs": [],
                      "signature": {"args": keyargs, "order": ["source", "code"], "returns": returns}}
         descs[m] = hashlib.sha256(jcs(d)).hexdigest()
@@ -131,12 +142,12 @@ def test_first_run_class_descriptors_catalogue_and_cells(names):
         assert v("licence_hash") == {"type": "string", "value": r["sha256"]} and HEX64.match(r["sha256"])
         assert v("retrieved") == {"type": "instant", "value": r["retrieved"]} and INSTANT.match(r["retrieved"])
         clauses = v("licence_clauses")
-        assert clauses["type"] == "string"
         lic = {(x["source"], x["code"]): x for x in common.licences()}[(d["source"], d["code"])]
+        text = blob_text(clauses, blobs)
         for q in lic["quotes"]:
-            assert q in clauses["value"], (d["code"], q[:60])
+            assert q in text, (d["code"], q[:60])
         if d["status"] == "not_relayed":
-            assert lic["reason"] in clauses["value"] and r["verdict"] == "SKIP"
+            assert lic["reason"] in text and r["verdict"] == "SKIP"
         else:
             assert r["verdict"] == "RELAY" and "reason" not in lic
 
@@ -147,8 +158,8 @@ def test_first_run_class_descriptors_catalogue_and_cells(names):
                       ("bankofengland.co.uk", "bank_rate"): "relayed", ("chc.ucsb.edu", "chirps"): "computed_from",
                       ("worldbank.org", "commodity_prices"): "not_relayed", ("fao.org", "asis"): "not_relayed"}
     # the reasons are those of LICENCES.md
-    wb = by[("worldbank.org", "commodity_prices", "licence_clauses")]["value"]["value"]
-    fao = by[("fao.org", "asis", "licence_clauses")]["value"]["value"]
+    wb = blob_text(by[("worldbank.org", "commodity_prices", "licence_clauses")]["value"], blobs)
+    fao = blob_text(by[("fao.org", "asis", "licence_clauses")]["value"], blobs)
     assert "not clear enough" in wb.lower() or "does not state a licence" in wb.lower()
     assert "non-commercial" in fao.lower()
     assert state
@@ -215,6 +226,11 @@ def test_run_writes_one_file_then_nothing(names, tmp_path):
     out = reg.run(names, path=path, now=NOW, state_dir=state_dir, out_dir=out_dir)
     lines = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 6 + 1 + 7 + 48
+    # the blob files are next to the lines file, named by their SHA-256, with the quotes as UTF-8
+    files = sorted(p.name for p in (out_dir / "blobs").iterdir())
+    assert 1 <= len(files) <= 8 and all(hashlib.sha256((out_dir / "blobs" / n).read_bytes()).hexdigest() == n for n in files)
+    clauses = [l for l in lines if "cell" in l and l["cell"]["fn"].endswith("/licence_clauses")]
+    assert {l["value"]["blob"] for l in clauses} == {"blobs/" + n for n in files}  # equal texts share a file
     assert reg.run(names, path=path, now=NOW, state_dir=state_dir, out_dir=out_dir) is None
 
 
@@ -228,4 +244,4 @@ def test_a_failed_publish_keeps_no_state(names, tmp_path):
         raise RuntimeError("publish failed")
     with pytest.raises(RuntimeError):
         reg.run(names, path=path, now=NOW, state_dir=state_dir, out_dir=out_dir, publish=boom)
-    assert list(out_dir.iterdir()) == [] and list(state_dir.iterdir()) == []
+    assert list(out_dir.glob("*.jsonl")) == [] and list(state_dir.iterdir()) == []  # blob files are content-addressed and may stay
