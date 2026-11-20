@@ -107,3 +107,13 @@ Every run prints one line on stderr (the job's log): `<module>: N cells, M tests
 ## Network retries
 
 `common.http_get` retries a transient network failure (connection reset or refused, a timeout, a failed name lookup, a connection dropped while reading, an HTTP 502 or 504) up to 4 times, after 5, 15, 45 and 120 s (`RETRY_WAITS`), each retry announced on stderr, and then raises the last error. 404 stays `NotPublished`, 429 and 503 stay `RateLimited` (CHIRPS backs off on those), and any other HTTP status is raised at once.
+
+## The series file of the month pages (Part 6)
+
+`series.py --host <host> --out <file>` writes the file that tells the mesh which series get month and year pages, from the `[series]` table and the `page_*` keys of `names.toml` (fx_reference, estr, bank_rate and par_yield by month; policy_rate and the computed monthly_rainfall, with `dataset` fixed and its source named, by year; no register, no test cells, no scripture). The host has no default. To (re)generate it on the VM:
+
+```
+FEEDS_HOST=<host> run_feed.sh series        # writes /srv/datumesh/feeds/series.<host>.json
+```
+
+Run it again after names.toml changes. The mesh reads it through `DATUMESH_SERIES_FILE=/series.json` (or any path), with `/srv/datumesh/feeds/series.<host>.json` mounted into the mesh container **read-only**; without the file there are no pages.

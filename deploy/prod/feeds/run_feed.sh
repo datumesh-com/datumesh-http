@@ -6,6 +6,8 @@
 #   FEEDS_HOST: mesh-test.datumesh.com (rehearsal) or datumesh.com (production). There is no default: the names
 #   a job publishes are spelled for that host, and state and output are kept per host.
 #   module: ecb_fx estr policy_rates treasury boe chirps   (register runs by hand, see README.md)
+#   series: writes /srv/datumesh/feeds/series.<host>.json, the series file of the month pages, from names.toml
+#     (nothing is fetched or published; the mesh reads it through DATUMESH_SERIES_FILE)
 #   history: ecb_fx treasury: ecb_fx backfills from eurofxref-hist.zip; treasury backfills from 1990, a year a file,
 #     and this script goes on year by year until there is nothing new (a failure loses at most the year it was in)
 #
@@ -22,7 +24,7 @@ case "$host" in
   *) echo "run_feed.sh: set FEEDS_HOST to mesh-test.datumesh.com or datumesh.com (got '$host')" >&2; exit 2 ;;
 esac
 case "$module" in
-  ecb_fx|estr|policy_rates|treasury|boe|chirps) ;;
+  ecb_fx|estr|policy_rates|treasury|boe|chirps|series) ;;
   *) echo "run_feed.sh: unknown module $module" >&2; exit 2 ;;
 esac
 
@@ -51,6 +53,16 @@ set -a
 set +a
 [ -n "${PYTHON_DIGEST:-}" ] || fail "PYTHON_DIGEST is not set in $root/.env"
 image="python:3.13-slim@sha256:$PYTHON_DIGEST"
+
+if [ "$module" = series ]; then
+  {
+    echo "== $(date -u +%FT%TZ) $host series"
+    docker run --rm -v "$here:/feeds:ro" -v "$feeds:/data" -w /feeds "$image" \
+        python -B series.py --host "$host" --out "/data/series.$host.json" || fail "series file failed"
+    echo "wrote $feeds/series.$host.json"
+  } >>"$log" 2>&1
+  exit 0
+fi
 
 {
   echo "== $(date -u +%FT%TZ) $host $module $mode"
