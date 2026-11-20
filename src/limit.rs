@@ -62,12 +62,20 @@ pub(crate) struct Limiter {
     ip: Buckets<IpAddr>,
     key: Buckets<String>,
     verify: Buckets<IpAddr>,
+    series: Buckets<IpAddr>,
     pub(crate) refused: AtomicU64,
 }
 
 impl Limiter {
     pub(crate) fn new(cfg: RateLimits) -> Limiter {
-        Limiter { cfg, ip: Buckets::new(), key: Buckets::new(), verify: Buckets::new(), refused: AtomicU64::new(0) }
+        Limiter {
+            cfg,
+            ip: Buckets::new(),
+            key: Buckets::new(),
+            verify: Buckets::new(),
+            series: Buckets::new(),
+            refused: AtomicU64::new(0),
+        }
     }
 
     /// Admits a request costing `cost` requests, or refuses it with the seconds to wait.
@@ -94,6 +102,18 @@ impl Limiter {
             return Ok(());
         }
         let r = self.verify.take(&ip, 1.0, self.cfg.verify_per_ip, self.cfg.verify_per_ip);
+        if r.is_err() {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+        r
+    }
+
+    /// Admits a request on a `/series` route from `ip`: `DATUMESH_RATE_SERIES_PER_IP` a minute, its own bucket.
+    pub(crate) fn admit_series(&self, ip: IpAddr) -> Result<(), u64> {
+        if !self.cfg.enabled {
+            return Ok(());
+        }
+        let r = self.series.take(&ip, 1.0, self.cfg.series_per_ip, self.cfg.series_per_ip);
         if r.is_err() {
             self.refused.fetch_add(1, Ordering::Relaxed);
         }

@@ -80,7 +80,8 @@ fn fx_sig() -> String {
     r#"{"args":{"currency":{"type":"string","valid":false},"date":{"type":"date","valid":true}},"order":["currency","date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
 }
 fn bank_sig() -> String {
-    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
+    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#
+        .to_string()
 }
 fn policy_sig() -> String {
     r#"{"args":{"date":{"type":"date","valid":true},"rate":{"type":"string","valid":false}},"order":["rate","date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
@@ -111,10 +112,24 @@ fn d(v: &str) -> Value {
 }
 
 fn fx_cell(cur: &str, date: &str, value: &str) -> String {
-    stored(FXR, json!({"currency": s(cur), "date": d(date)}), value, &format!("{date}T15:00:00.000000Z"), ECB_LICENCE, Some(source("ecb.europa.eu")))
+    stored(
+        FXR,
+        json!({"currency": s(cur), "date": d(date)}),
+        value,
+        &format!("{date}T15:00:00.000000Z"),
+        ECB_LICENCE,
+        Some(source("ecb.europa.eu")),
+    )
 }
 fn bank_cell(date: &str, value: &str) -> String {
-    stored(BANK, json!({"date": d(date)}), value, &format!("{date}T12:00:00.000000Z"), "OGL-UK-3.0", Some(source("bankofengland.co.uk")))
+    stored(
+        BANK,
+        json!({"date": d(date)}),
+        value,
+        &format!("{date}T12:00:00.000000Z"),
+        "OGL-UK-3.0",
+        Some(source("bankofengland.co.uk")),
+    )
 }
 /// Event dates are old; the cells were signed (`tx`) in 2026 (a mesh signs from its key's start).
 fn policy_cell(rate: &str, date: &str, value: &str) -> String {
@@ -183,7 +198,12 @@ fn lines() -> Vec<String> {
     v.push(rain_cell("us_kansas", "2025-01-01", "0.25", t25));
     v.push(rain_cell("ua_kharkiv", "2025-01-01", "33.75", t25));
     // a computed function that reads the stored one: it has NO stored cell, so a page of it must not exist
-    v.push(formula_line(DERIVED, &format!("{RAIN}(dataset: dataset, region: region, month: month) * 2"), &rain_sig(), None));
+    v.push(formula_line(
+        DERIVED,
+        &format!("{RAIN}(dataset: dataset, region: region, month: month) * 2"),
+        &rain_sig(),
+        None,
+    ));
     // listed in no series file: a scripture-shaped function and a plain one
     v.push(function_line(VERSE, &reading_sig(), None));
     v.push(site_cell(VERSE, "N", "3"));
@@ -191,16 +211,34 @@ fn lines() -> Vec<String> {
     v.push(site_cell(PLAIN, "N", "7"));
     // the catalogue
     let usd = [("USD", "US dollar"), ("JPY", "Japanese yen"), ("GBP", "Pound sterling")];
-    v.push(catalog_line(FXR, "function", FX_LABEL, "The euro foreign exchange reference rates, relayed from the ECB.",
-        json!({"currency": "the currency", "date": "the day"}), json!({"currency": dict(&usd)})));
+    v.push(catalog_line(
+        FXR,
+        "function",
+        FX_LABEL,
+        "The euro foreign exchange reference rates, relayed from the ECB.",
+        json!({"currency": "the currency", "date": "the day"}),
+        json!({"currency": dict(&usd)}),
+    ));
     v.push(catalog_line(BANK, "function", BANK_LABEL, BANK_DESC, json!({"date": "the day"}), json!({})));
     v.push(catalog_line(POLICY, "function", "ECB key interest rates", "The key rates of the ECB, on the days they change.",
         json!({"rate": "the rate", "date": "the day"}),
         json!({"rate": dict(&[("mro", "Main refinancing operations"), ("dfr", "Deposit facility"), ("mlfr", "Marginal lending facility")])})));
-    v.push(catalog_line(RAIN, "function", "Monthly rainfall", "Rainfall of a region in a month, from CHIRPS v3.",
+    v.push(catalog_line(
+        RAIN,
+        "function",
+        "Monthly rainfall",
+        "Rainfall of a region in a month, from CHIRPS v3.",
         json!({"dataset": "the dataset", "region": "the region", "month": "the first day of the month"}),
-        json!({"region": dict(&[("us_kansas", "Kansas, United States"), ("ua_kharkiv", "Kharkiv Oblast, Ukraine")])})));
-    v.push(catalog_line(DERIVED, "function", "Doubled rainfall", "Twice the rainfall, computed.", json!({}), json!({})));
+        json!({"region": dict(&[("us_kansas", "Kansas, United States"), ("ua_kharkiv", "Kharkiv Oblast, Ukraine")])}),
+    ));
+    v.push(catalog_line(
+        DERIVED,
+        "function",
+        "Doubled rainfall",
+        "Twice the rainfall, computed.",
+        json!({}),
+        json!({}),
+    ));
     v
 }
 
@@ -272,7 +310,11 @@ fn index(f: &str) -> String {
 async fn html(m: &Served, path: &str) -> String {
     let r = fetch(m, path, &[]).await;
     assert_eq!(r.status, 200, "{path}: {}", r.text());
-    assert!(r.header("content-type").unwrap_or_default().starts_with("text/html"), "{path}: {:?}", r.header("content-type"));
+    assert!(
+        r.header("content-type").unwrap_or_default().starts_with("text/html"),
+        "{path}: {:?}",
+        r.header("content-type")
+    );
     r.text()
 }
 
@@ -292,7 +334,9 @@ fn decode(t: &str) -> String {
             "quot" => Some('"'),
             "apos" => Some('\''),
             "nbsp" => Some(' '),
-            n if n.starts_with("#x") || n.starts_with("#X") => u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32),
+            n if n.starts_with("#x") || n.starts_with("#X") => {
+                u32::from_str_radix(&n[2..], 16).ok().and_then(char::from_u32)
+            }
             n if n.starts_with('#') => n[1..].parse::<u32>().ok().and_then(char::from_u32),
             _ => None,
         });
@@ -561,8 +605,14 @@ async fn a_page_has_no_script_but_the_json_ld() {
         let lower = h.to_lowercase();
         assert_eq!(lower.matches("<script").count(), 1, "{p}: only the JSON-LD");
         assert_eq!(lower.matches("</script").count(), 1, "{p}");
-        assert!(lower.contains("<script type=\"application/ld+json\"") || lower.contains("<script type='application/ld+json'"), "{p}");
-        for no in ["javascript:", " onload=", " onclick=", " onerror=", "<iframe", "<link rel=\"stylesheet\"", "<style src"] {
+        assert!(
+            lower.contains("<script type=\"application/ld+json\"")
+                || lower.contains("<script type='application/ld+json'"),
+            "{p}"
+        );
+        for no in
+            ["javascript:", " onload=", " onclick=", " onerror=", "<iframe", "<link rel=\"stylesheet\"", "<style src"]
+        {
             assert!(!lower.contains(no), "{p}: {no}");
         }
         assert!(!ld_text(&h).contains('<'), "{p}: the JSON-LD escapes `<`");
@@ -668,7 +718,13 @@ async fn a_browser_on_the_slice_address_is_sent_to_the_page() {
     for accept in ["text/html", BROWSER] {
         for (from, to) in &cases {
             let r = fetch(&m, from, &[("accept", accept)]).await;
-            assert!(is_to(&r, to), "{from} ({accept}): {} {:?} {:?}", r.status, r.header("location"), r.header("cache-control"));
+            assert!(
+                is_to(&r, to),
+                "{from} ({accept}): {} {:?} {:?}",
+                r.status,
+                r.header("location"),
+                r.header("cache-control")
+            );
             // the target is a page
             let t = fetch(&m, to, &[]).await;
             assert_eq!(t.status, 200, "{to}");
@@ -808,7 +864,13 @@ async fn the_sitemap_lists_every_page_with_its_as_of() {
     let mut got: Vec<(String, String)> = Vec::new();
     for u in x.split("<url>").skip(1) {
         let loc = u.split("<loc>").nth(1).and_then(|t| t.split("</loc>").next()).expect("a loc").trim().to_string();
-        let last = u.split("<lastmod>").nth(1).and_then(|t| t.split("</lastmod>").next()).expect("a lastmod").trim().to_string();
+        let last = u
+            .split("<lastmod>")
+            .nth(1)
+            .and_then(|t| t.split("</lastmod>").next())
+            .expect("a lastmod")
+            .trim()
+            .to_string();
         if !loc.ends_with(".csv") {
             got.push((path_of(&decode(&loc)), last));
         }
@@ -831,7 +893,10 @@ async fn the_sitemap_lists_every_page_with_its_as_of() {
     ];
     let got_paths: BTreeSet<&String> = got.iter().map(|g| &g.0).collect();
     let want_paths: BTreeSet<&String> = want.iter().map(|w| &w.0).collect();
-    assert_eq!(got_paths, want_paths, "every index and page, and nothing else (no derived function, no scripture): {x}");
+    assert_eq!(
+        got_paths, want_paths,
+        "every index and page, and nothing else (no derived function, no scripture): {x}"
+    );
     assert_eq!(got.len(), want.len(), "each once: {x}");
     for (loc, date) in &want {
         let (_, last) = got.iter().find(|g| &g.0 == loc).unwrap();
@@ -893,7 +958,10 @@ async fn a_page_without_stored_cells_is_404_and_nothing_is_computed_or_fetched()
         assert_eq!(r.status, 404, "{p}: {}", r.text());
     }
     let sm = fetch(&m, "/series/sitemap.xml", &[]).await.text();
-    assert!(!sm.contains(DERIVED) && !sm.contains(FOREIGN) && !sm.contains("verse") && !sm.contains("plain/level"), "{sm}");
+    assert!(
+        !sm.contains(DERIVED) && !sm.contains(FOREIGN) && !sm.contains("verse") && !sm.contains("plain/level"),
+        "{sm}"
+    );
     assert_eq!(snapshot(&m.lite), before, "the store is as it was: nothing computed, nothing stored");
     assert_eq!(fetched.load(Ordering::SeqCst), 0, "nothing fetched from another mesh");
 }
@@ -906,12 +974,12 @@ async fn periods_that_are_no_period_are_404() {
         page(FXR, "2026-13"),
         page(FXR, "2026-00"),
         page(FXR, "2026-3"),
-        page(FXR, "2026"),          // a daily series has month pages, not year pages
-        page(POLICY, "2022-07"),    // a yearly series has year pages, not month pages
+        page(FXR, "2026"),       // a daily series has month pages, not year pages
+        page(POLICY, "2022-07"), // a yearly series has year pages, not month pages
         page(FXR, "abcd"),
         page(FXR, "2026-03-02"),
-        page(FXR, "1999-01"),       // before the data
-        page(FXR, "9999-12"),       // after it
+        page(FXR, "1999-01"), // before the data
+        page(FXR, "9999-12"), // after it
         "/series/mesh-test.datumesh.com/nope/fn/2026-03".to_string(),
     ] {
         let r = fetch(&m, &p, &[]).await;
@@ -985,7 +1053,14 @@ async fn etag_and_304() {
     let f = write(
         &m.lite,
         "v2.jsonl",
-        &[stored(FXR, json!({"currency": s("USD"), "date": d("2026-03-02")}), "1.0833", T2, ECB_LICENCE, Some(source("ecb.europa.eu")))],
+        &[stored(
+            FXR,
+            json!({"currency": s("USD"), "date": d("2026-03-02")}),
+            "1.0833",
+            T2,
+            ECB_LICENCE,
+            Some(source("ecb.europa.eu")),
+        )],
     );
     run(&m.lite, &f, T2).unwrap_or_else(|e| panic!("{e}"));
     let after = fetch(&m, &p, &[("if-none-match", &tag)]).await;
@@ -1020,7 +1095,10 @@ async fn the_json_ld_describes_the_dataset() {
     assert_eq!(vars.len(), 3, "{j}");
     for (v, code) in vars.iter().zip(["USD", "JPY", "GBP"]) {
         let t = v.to_string();
-        assert!(v["name"].as_str().unwrap_or("").starts_with(code) || v.as_str().is_some_and(|x| x.starts_with(code)), "{t}");
+        assert!(
+            v["name"].as_str().unwrap_or("").starts_with(code) || v.as_str().is_some_and(|x| x.starts_with(code)),
+            "{t}"
+        );
         assert!(t.contains("units per EUR"), "the unit: {t}");
     }
     let dist = j["distribution"].as_array().expect("distribution");
@@ -1057,11 +1135,9 @@ async fn the_json_ld_describes_the_dataset() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_relayed_page_says_who_relays_and_how_the_source_takes_over() {
     let m = served("sp-source").await;
-    for (f, period, domain) in [
-        (FXR, "2026-03", "ecb.europa.eu"),
-        (BANK, "2026-03", "bankofengland.co.uk"),
-        (POLICY, "2022", "ecb.europa.eu"),
-    ] {
+    for (f, period, domain) in
+        [(FXR, "2026-03", "ecb.europa.eu"), (BANK, "2026-03", "bankofengland.co.uk"), (POLICY, "2022", "ecb.europa.eu")]
+    {
         for p in [page(f, period), index(f)] {
             let h = html(&m, &p).await;
             let t = plain(&h);
@@ -1081,7 +1157,10 @@ async fn a_computed_page_says_it_is_computed_by_the_mesh() {
         let t = plain(&h);
         assert!(t.contains(&format!("Computed by {HOST} from CHIRPS v3; not CHIRPS's own values.")), "{p}: {t}");
         assert!(!t.contains("relays these values"), "{p}: {t}");
-        assert!(!anchors(&h).iter().any(|a| path_of(&a.href).starts_with("/takeover/")), "{p}: no takeover for a computed series");
+        assert!(
+            !anchors(&h).iter().any(|a| path_of(&a.href).starts_with("/takeover/")),
+            "{p}: no takeover for a computed series"
+        );
     }
 }
 
@@ -1115,7 +1194,9 @@ async fn licence_as_of_and_verify() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_block_for_agents() {
     let m = served("sp-agents").await;
-    for (f, period, keyed) in [(FXR, "2026-03", true), (BANK, "2026-03", false), (POLICY, "2022", true), (RAIN, "2024", true)] {
+    for (f, period, keyed) in
+        [(FXR, "2026-03", true), (BANK, "2026-03", false), (POLICY, "2022", true), (RAIN, "2024", true)]
+    {
         for p in [page(f, period), index(f)] {
             let h = html(&m, &p).await;
             assert_eq!(h.matches("<pre").count(), 1, "{p}: one block for agents");
@@ -1225,7 +1306,6 @@ async fn without_a_series_file_there_are_no_pages() {
     assert_eq!(fetch(&empty, &page(FXR, "2026-03"), &[]).await.status, 404);
     assert_eq!(fetch(&empty, &path, &[("accept", BROWSER)]).await.status, 200, "no series, no redirect");
 }
-
 
 // ---- the readers above, on a sample (this one passes before the pages exist) -----------------------------------
 

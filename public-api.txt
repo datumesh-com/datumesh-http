@@ -367,6 +367,7 @@ pub datumesh_http::config::RateLimits::enabled: bool
 pub datumesh_http::config::RateLimits::ip_burst: u32
 pub datumesh_http::config::RateLimits::per_ip: u32
 pub datumesh_http::config::RateLimits::per_key: u32
+pub datumesh_http::config::RateLimits::series_per_ip: u32
 pub datumesh_http::config::RateLimits::verify_per_ip: u32
 impl core::clone::Clone for datumesh_http::config::RateLimits
 pub fn datumesh_http::config::RateLimits::clone(&self) -> Self

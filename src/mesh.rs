@@ -166,6 +166,7 @@ impl MeshBuilder {
             reindex: Mutex::new(()),
             publish_limits: Mutex::new(crate::bundles::Limits::default()),
             relays: Mutex::new(HashMap::new()),
+            series: Mutex::new(crate::series::Memo::default()),
             pool: Arc::new(Pool::new(config.pool_size)),
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
             limiter: Limiter::new(config.rate.clone()),
@@ -258,6 +259,8 @@ pub(crate) struct Inner {
     pub(crate) publish_limits: Mutex<crate::bundles::Limits>,
     /// Where a relayed function's source was read, by function name and hash (Build 2 Part 5, F5).
     pub(crate) relays: Mutex<HashMap<String, (Instant, Option<crate::fnpage::Relay>)>>,
+    /// The overviews and dictionary orders of the series pages (Build 2 Part 6, G5).
+    pub(crate) series: Mutex<crate::series::Memo>,
 }
 
 /// A Datumesh mesh: the engine behind the endpoints. Cheap to clone (shared).

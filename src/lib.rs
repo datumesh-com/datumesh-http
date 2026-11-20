@@ -164,6 +164,7 @@ mod metrics;
 mod pool;
 pub mod publish;
 mod scenario;
+mod series;
 pub mod slice;
 mod takeover;
 mod testrun;

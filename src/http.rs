@@ -200,6 +200,8 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         bindings,
         describe,
         takeover_page,
+        series_page,
+        series_sitemap,
         whatif,
         health,
         metrics,
@@ -687,19 +689,43 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
     if let Err(r) = admit(&inner, &client, 1) {
         return to_response(r);
     }
-    // One manifest path since spec-0.4.2: /manifest/<slice id>/<members hash>.
+    // A browser on a listed series is sent to its page (Build 2 Part 6, G1): never cached.
     let rest = rest_of(&uri, "/slice/");
-    let arrow = accepts(&headers, crate::slice::ARROW);
+    if let Some(to) = crate::series::slice_redirect(&inner.config, &rest, &headers) {
+        return see_other(&to);
+    }
+    let (rest, format) = match crate::slice::split_format(&rest) {
+        Ok(x) => x,
+        Err(c) => return to_response(envelope::bad_request_reply(c)),
+    };
+    // `?format=` is its own address; without it, an Accept that chooses Arrow gets Arrow, uncached (G1).
+    let accept_arrow = format.is_none() && accepts(&headers, crate::slice::ARROW);
+    let form = if accept_arrow { crate::slice::Form::Arrow } else { format.unwrap_or_default() };
     let r = inner
         .pool
         .clone()
         .run(move || {
             let now = inner.now();
-            inner.slice(&rest, &now, arrow)
+            inner.slice(&rest, &now, form)
         })
         .await
         .unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable));
+    let mut r = r;
+    if accept_arrow {
+        r.cache = Cache::NoStore;
+    }
     to_response(r)
+}
+
+/// `303 See Other` to `location`, `no-store`.
+fn see_other(location: &str) -> Response {
+    let mut resp = Response::new(Body::empty());
+    *resp.status_mut() = StatusCode::SEE_OTHER;
+    if let Ok(v) = HeaderValue::from_str(location) {
+        resp.headers_mut().insert(header::LOCATION, v);
+    }
+    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
 }
 
 fn accepts(headers: &HeaderMap, media: &str) -> bool {
@@ -1267,6 +1293,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/versions/{*rest}" => "/versions/{cell}".to_string(),
         "/fn/{*name}" => "/fn/{name}".to_string(),
         "/takeover/{*domain}" => "/takeover/{domain}".to_string(),
+        "/series/{*rest}" => "/series/{page}".to_string(),
         _ => route,
     };
     let id = req
@@ -1285,7 +1312,17 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     let also = if route == "/slice/{cell}" { Some(crate::slice::ARROW) } else { None };
     // The function page is HTML for people (Build 2 Part 4, P2) as well as JSON for agents.
     let html_ok = (route == "/fn/{name}" || route == "/takeover/{domain}") && accepts(req.headers(), "text/html");
-    let mut resp = if route != "/blob/{sha256}" && route != "/metrics" && !html_ok && !acceptable(req.headers(), also) {
+    // The series pages and the sitemap choose their own media type, and a slice's browser redirect or
+    // format is answered whatever its Accept (Build 2 Part 6, G1).
+    let own_form = matches!(route.as_str(), "/series/{page}" | "/series/sitemap.xml")
+        || (route == "/slice/{cell}"
+            && crate::series::negotiation_free(&mesh.inner.config, &rest_of(req.uri(), "/slice/"), req.headers()));
+    let mut resp = if route != "/blob/{sha256}"
+        && route != "/metrics"
+        && !html_ok
+        && !own_form
+        && !acceptable(req.headers(), also)
+    {
         let mut r = Reply::json(
             406,
             Value::Object(vec![("error".into(), Value::String("not acceptable: application/json only".into()))])
@@ -1438,6 +1475,77 @@ async fn takeover_page(
     }
 }
 
+/// The per-IP budget of the series pages (`DATUMESH_RATE_SERIES_PER_IP`), after the ordinary per-IP limit.
+fn series_admit(inner: &Inner, headers: &HeaderMap, req: &Request) -> Option<Response> {
+    let peer = peer_of(req);
+    let client = match who(inner, headers, peer) {
+        Ok((c, _)) => c,
+        Err(r) => return Some(to_response(r)),
+    };
+    if let Err(r) = admit(inner, &client, 1) {
+        return Some(to_response(r));
+    }
+    let ip = client_ip(inner, headers, peer);
+    inner.limiter.admit_series(ip).err().map(|s| to_response(envelope::rate_limited_reply(s)))
+}
+
+/// A series answer as a response: its status, body, media type, `Cache-Control` and `ETag`.
+fn series_response(o: crate::series::Out) -> Response {
+    let mut resp = Response::new(Body::from(o.body));
+    *resp.status_mut() = StatusCode::from_u16(o.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(o.content_type));
+    if let Ok(v) = HeaderValue::from_str(&o.cache) {
+        h.insert(header::CACHE_CONTROL, v);
+    }
+    if let Some(e) = o.etag.as_deref().and_then(|e| HeaderValue::from_str(e).ok()) {
+        h.insert(header::ETAG, e);
+    }
+    resp
+}
+
+async fn series_answer(mesh: Mesh, headers: &HeaderMap, rest: String) -> Response {
+    let inm = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::series::respond(&mesh.inner, &rest, inm.as_deref())).await {
+        Some(o) => series_response(o),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
+/// `GET /series/<function>/<YYYY-MM>[.csv]`, `/series/<function>/<YYYY>[.csv]` and `/series/<function>/`: the
+/// month or year page of a relayed or computed series, its CSV, or its index (Build 2 Part 6, G1 to G5).
+#[utoipa::path(get, path = "/series/{page}",
+    params(("page" = String, Path, description = "The series' function name, then `/YYYY-MM`, `/YYYY` (each with an optional `.csv`) or `/` for the index")),
+    responses(
+        (status = 200, description = "The page (HTML with a JSON-LD dataset), its CSV (`text/csv`), or the index", content_type = "text/html"),
+        (status = 304, description = "`ETag` unchanged"),
+        (status = 404, description = "No stored value at this address, or the function is not in the series file (cacheable 600 s)", content_type = "text/html"),
+        (status = 429, description = "`rate_limited`, with `Retry-After` (the per-IP and the series budgets)", content_type = "application/json"),
+    ))]
+async fn series_page(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = series_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let rest = uri.path().strip_prefix("/series/").unwrap_or("").to_string();
+    series_answer(mesh, &headers, rest).await
+}
+
+/// `GET /series/sitemap.xml`: every index and page of the listed series, with `lastmod` (the as-of); a sitemap
+/// index of `sitemap-<n>.xml` files past 50,000 URLs.
+#[utoipa::path(get, path = "/series/sitemap.xml",
+    responses(
+        (status = 200, description = "A sitemap (`application/xml`) or a sitemap index", content_type = "application/xml"),
+        (status = 404, description = "No series file: no pages", content_type = "text/html"),
+        (status = 429, description = "`rate_limited`, with `Retry-After`", content_type = "application/json"),
+    ))]
+async fn series_sitemap(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = series_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    series_answer(mesh, &headers, "sitemap.xml".to_string()).await
+}
+
 async fn fallback() -> Response {
     not_found("endpoint")
 }
@@ -1465,6 +1573,8 @@ impl Mesh {
             .route("/describe/{*id}", get(describe))
             .route("/fn/{*name}", get(function_page))
             .route("/takeover/{*domain}", get(takeover_page))
+            .route("/series/sitemap.xml", get(series_sitemap))
+            .route("/series/{*rest}", get(series_page))
             .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
             .route("/health", get(health))
