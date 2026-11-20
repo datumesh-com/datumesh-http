@@ -92,3 +92,9 @@ A test is a (key, date) pair both copies have, not tested before: dates after ea
 ## Treasury history from 1990
 
 `python -B treasury.py --host H --mode history --state-dir D --out-dir D` does **one year** per call (the year after `history_year` in the state): its month XMLs one at a time, at least 2 s apart (`THROTTLE_SECONDS`), the year's CSV for the tests of its latest dates, one `treasury-<stamp>-<year>.jsonl`. It has its own cursor (`history_last`), so a mesh that already has daily cells still gets the earlier years; `last_date` moves to the latest date there is. `FEEDS_HOST=H run_feed.sh treasury history` publishes year by year until nothing is new; a failure loses at most the year it was in, and the state of the years done is kept. The parsers accept the tenors a year had (9 in 1990).
+
+## The test window and the run line
+
+A daily fetch may not reach the dates of the second copy (Bank Rate's page lists change dates only; a rerun asks IUDBEDR only from `last_date`). When the second copy's latest 20 untested dates of a key include dates the first copy's rows lack, the run reads a **test window** from the first copy (`relay.missing_dates`, `relay.with_window`): boe asks IUDBEDR over the span of those dates, ecb_fx reads `window_url` (the 90-day file), treasury reads the month XMLs of those dates it has not fetched. Those rows are used only for tests, never as cells. estr and policy_rates fetch their whole series every run and need no window. A date the second copy has and the first does not (the second is ahead) stays untested, and the window is read again next run.
+
+Every run prints one line on stderr (the job's log): `<module>: N cells, M tests written; second copy: K pairs compared` (or `unavailable`, `none`), so a run that wrote nothing is visible.

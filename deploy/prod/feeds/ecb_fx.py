@@ -147,12 +147,15 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
     if mode == "history":
         inputs = lambda st: [(sec["history_url"], parse_hist_zip)]  # noqa: E731
         second = (sec["second_url_history"], parse_sdmx)  # the last 20 observations: tests on the latest dates
+        window = None
     else:
         inputs = lambda st: [(sec["url"], parse)]  # noqa: E731
         second = (sec["second_url"], parse_sdmx)
+        # the daily file has one day: earlier days of the second copy are read from the 90-day file, for tests only
+        window = lambda missing: [(sec["window_url"], parse)]  # noqa: E731
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=inputs, second=second, keycols=KEYCOLS,
+        inputs=inputs, second=second, keycols=KEYCOLS, window=window,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 

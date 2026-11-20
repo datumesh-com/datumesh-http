@@ -120,6 +120,48 @@ def new_tests(key, rows, second_rows, names, keycols, state, *, tested_key="test
     return tests, st
 
 
+def missing_dates(rows, second_rows, keycols, state, *, tested_key="tested", cap=TEST_DATES):
+    """The dates (sorted) among the second copy's latest `cap` untested dates of a key that the first copy's rows do
+    not have, for keys the first copy has: the daily window of the first copy misses them, so a test window is read."""
+    after = state.get(tested_key, {})
+    present = {_keystr(r, keycols) for r in rows}
+    covered = {(_keystr(r, keycols), r["date"]) for r in rows}
+    cand = {}
+    for r in second_rows:
+        ks = _keystr(r, keycols)
+        if ks in present and r["date"] > after.get(ks, ""):
+            cand.setdefault(ks, set()).add(r["date"])
+    miss = {d for ks, ds in cand.items() for d in sorted(ds, reverse=True)[:cap] if (ks, d) not in covered}
+    return sorted(miss)
+
+
+def with_window(rows, second_rows, keycols, state, window, fetch):
+    """`rows` and, when the second copy has dates they miss, the rows of the test window `window(missing dates)`
+    -> [(url, parse)]: first-copy rows read only for tests (never cells); `rows` win where both have a date."""
+    if window is None or second_rows is None:
+        return rows
+    miss = missing_dates(rows, second_rows, keycols, state)
+    if not miss:
+        return rows
+    covered = {(_keystr(r, keycols), r["date"]) for r in rows}
+    extra = []
+    for url, parse in window(miss):
+        extra += [r for r in parse(fetch(url)) if (_keystr(r, keycols), r["date"]) not in covered]
+    return rows + extra
+
+
+def report(key, lines, second_rows, has_second, tests):
+    """One line on stderr per run: what was written and what the second copy gave, so a no-op shows in the log."""
+    cells = sum(1 for l in lines if "cell" in l)
+    if not has_second:
+        status = "none"
+    elif second_rows is None:
+        status = "unavailable"
+    else:
+        status = f"{len(tests)} pairs compared"
+    common.warn(f"{key}: {cells} cells, {sum(1 for l in lines if 'test' in l)} tests written; second copy: {status}")
+
+
 def advance(state, new, keycols, per_key, cursor="last_date"):
     st = dict(state)
     if per_key:
@@ -179,13 +221,14 @@ def _stamp(now: str) -> str:
 
 
 def run_series(key, names, *, fetch, now, state_dir, out_dir, inputs, second, emit_one, publish=None,
-               keycols=(), per_key=False, conformance_fn=None):
+               keycols=(), per_key=False, conformance_fn=None, window=None):
     """Fetch, parse and check every input first (a ShapeError leaves no file and no state), emit, add the tests of
     the second copy (every run that has one), write one publish-stored file, then either publish it (state saved only
     after that returns) or save the state.
 
     inputs(state) -> [(url, parse)]; second -> None or (url, parse2) for the conformance copy;
-    emit_one(rows, state, source) -> (lines, state)."""
+    emit_one(rows, state, source) -> (lines, state); window(missing dates) -> [(url, parse)] reads first-copy rows for
+    tests when the daily fetch misses the dates of the second copy (those rows are never cells)."""
     state_path = Path(state_dir) / f"{key}.json"
     state = load_state(state_path)
     parsed = []
@@ -198,10 +241,14 @@ def run_series(key, names, *, fetch, now, state_dir, out_dir, inputs, second, em
         src = {"url": url, "retrieved": now, "sha256": sha256_hex(data)}
         more, state = emit_one(rows, state, src)
         lines += more
+    tests = []
     if second_rows is not None:
-        tests, state = new_tests(key, [r for _, _, rows in parsed for r in rows], second_rows, names, keycols, state)
+        first = [r for _, _, rows in parsed for r in rows]
+        tests, state = new_tests(key, with_window(first, second_rows, keycols, state, window, fetch), second_rows,
+                                 names, keycols, state)
         lines += tests
     if not lines:
+        report(key, lines, second_rows, second is not None, tests)
         return None
     path = Path(out_dir) / f"{key}-{_stamp(now)}.jsonl"
     write_jsonl(path, lines)
@@ -212,6 +259,7 @@ def run_series(key, names, *, fetch, now, state_dir, out_dir, inputs, second, em
             path.unlink(missing_ok=True)
             raise
     save_state(state_path, state)
+    report(key, lines, second_rows, second is not None, tests)
     return path
 
 

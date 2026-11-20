@@ -21,6 +21,8 @@ takeover = "https://{host}/takeover/ecb.europa.eu"
 url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 history_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
 second_url = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=1"
+# the 90-day file: first-copy rows for tests when the daily file does not reach a day of the second copy
+window_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
 # the history run's second copy: the last 20 observations of every currency, for tests on the latest dates
 second_url_history = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=20"
 

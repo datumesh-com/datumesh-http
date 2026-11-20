@@ -180,6 +180,7 @@ def run_history(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=ti
             st["tested"] = marks
         state = st
         if lines:
+            relay.report(KEY, lines, second_rows, True, [l for l in lines if "test" in l])
             path = Path(out_dir) / f"{KEY}-{relay._stamp(now)}-{year}.jsonl"
             common.write_jsonl(path, lines)
             if publish is not None:
@@ -192,6 +193,7 @@ def run_history(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=ti
             return path
         year += 1
     common.save_state(state_path, state)
+    relay.report(KEY, [], None, True, [])
     return None
 
 
@@ -212,12 +214,21 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily", sl
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
         return out
 
+    used = []
+
     def inputs(state):
-        return [(sec["url"].format(month=mm), parse) for mm in months(state)]
+        out = [(sec["url"].format(month=mm), parse) for mm in months(state)]
+        used.extend(u for u, _ in out)
+        return out
+
+    def window(missing):
+        # months of the year file that the daily window (the last date's month to now) does not reach
+        want = sorted({d[:4] + d[5:7] for d in missing})
+        return [(sec["url"].format(month=mm), parse) for mm in want if sec["url"].format(month=mm) not in used]
 
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=inputs, second=(sec["second_url"].format(year=today.year), parse_csv), keycols=KEYCOLS,
+        inputs=inputs, second=(sec["second_url"].format(year=today.year), parse_csv), keycols=KEYCOLS, window=window,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 

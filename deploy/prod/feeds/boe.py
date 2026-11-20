@@ -88,9 +88,14 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
         start = dt.date.fromisoformat(last) if last else FIRST_DAY
         return [(sec["url"].format(**{"from": _dd_mon_yyyy(start), "to": _dd_mon_yyyy(today)}), parse)]
 
+    def window(missing):
+        # the page lists change dates only: read IUDBEDR over the span of the dates to test
+        start = dt.date.fromisoformat(missing[0])
+        return [(sec["url"].format(**{"from": _dd_mon_yyyy(start), "to": _dd_mon_yyyy(today)}), parse)]
+
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=inputs, second=(sec["second_url"], parse_page), keycols=KEYCOLS,
+        inputs=inputs, second=(sec["second_url"], parse_page), keycols=KEYCOLS, window=window,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 

@@ -243,10 +243,20 @@ def test_daily_continues_after_history(names, tmp_path):
     w = World(names)
     all_years(names, w, state_dir, out_dir)
     w2 = World(names)
-    later = "1992-04-10T12:00:00.000000Z"
-    assert treasury.run(names, fetch=w2.fetch, now="1992-03-20T12:00:00.000000Z", state_dir=state_dir, out_dir=out_dir,
+    csv_1992 = names["treasury"]["second_url"].format(year=1992)
+
+    def upto(month):  # the real year file has no day that is not published yet
+        def fetch(url):
+            if url != csv_1992:
+                return w2.fetch(url)
+            keep = [l for l in year_csv(1992).decode().splitlines() if l.startswith("Date") or int(l[:2]) <= month]
+            return ("\n".join(keep) + "\n").encode()
+        return fetch
+
+    assert treasury.run(names, fetch=upto(3), now="1992-03-20T12:00:00.000000Z", state_dir=state_dir, out_dir=out_dir,
                         sleep=w2.sleep, clock=w2.clock) is None  # only March and what it has already
-    p = treasury.run(names, fetch=w2.fetch, now=later, state_dir=state_dir, out_dir=out_dir, sleep=w2.sleep, clock=w2.clock)
+    p = treasury.run(names, fetch=upto(4), now="1992-04-10T12:00:00.000000Z", state_dir=state_dir, out_dir=out_dir,
+                     sleep=w2.sleep, clock=w2.clock)
     cells = [l for l in read(p) if "cell" in l]
     assert {c["cell"]["args"]["date"]["value"][:7] for c in cells} == {"1992-04"}
 
