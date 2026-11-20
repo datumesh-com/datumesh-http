@@ -81,7 +81,9 @@ image="python:3.13-slim@sha256:$PYTHON_DIGEST"
     [ -s "$file" ] || fail "no file $file"
     echo "wrote $file ($(wc -l <"$file") lines)"
 
+    # The file (and its blobs/) mounted read-only at the same path, so the mesh container can read it.
     docker compose -f "$root/compose.yml" run --rm \
+        -v "$out:$out:ro" \
         -e DATUMESH_PUBLISH_LANES="${DATUMESH_PUBLISH_LANES:-2}" \
         datumesh-mesh publish-stored "$file" || fail "publish-stored failed; the state is unchanged"
 
