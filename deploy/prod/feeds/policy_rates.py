@@ -38,6 +38,45 @@ def parse(data: bytes) -> list:
     return out
 
 
+MONTHS = {m: i for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+                                     start=1)}
+PAGE_DAY = re.compile(r"^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?$")
+# the page's columns: year, date, deposit facility, main refinancing (fixed rate), main refinancing (minimum bid),
+# marginal lending
+PAGE_RATES = {2: "dfr", 3: "mro", 5: "mlfr"}
+
+
+def parse_page(data: bytes) -> list:
+    """The second copy: the ECB's page of the key interest rates, one row per change with effect from a date. The
+    fixed rate tenders column is the main refinancing rate; '-' is no value."""
+    text = common.decode(data)
+    table = re.search(r"<table[^>]*>(.*?)</table>", text, re.S)
+    shape(table, "key rates page: no table")
+    head = re.sub(r"<[^>]+>", " ", table.group(1).split("<tbody", 1)[0])
+    shape(all(h in head for h in ("Deposit facility", "Main refinancing operations", "Marginal lending facility")),
+          "key rates page: the columns are not those known")
+    body = re.search(r"<tbody[^>]*>(.*?)</tbody>", table.group(1), re.S)
+    shape(body, "key rates page: no table body")
+    out, year = [], None
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", body.group(1), re.S):
+        cells = [re.sub(r"<[^>]+>", "", re.sub(r"<sup>.*?</sup>", "", c, flags=re.S)).replace("&nbsp;", " ").strip()
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        shape(len(cells) == 6 and (re.match(r"^\d{4}$", cells[0]) or (cells[0] == "" and year)),
+              f"key rates page: unexpected row {cells!r}")
+        year = cells[0] or year  # a second change in a year may leave the year cell empty
+        m = PAGE_DAY.match(cells[1])
+        shape(m and m.group(2) in MONTHS, f"key rates page: bad date {cells[1]!r}")
+        date = f"{year}-{MONTHS[m.group(2)]:02d}-{int(m.group(1)):02d}"
+        for i, rate in PAGE_RATES.items():
+            v = cells[i].replace("\u2212", "-")  # the page writes a negative rate with a real minus sign
+            if v in ("-", ""):
+                continue
+            shape(DECIMAL.match(v), f"key rates page: bad value {v!r} on {date}")
+            out.append({"date": date, "value": v, "rate": rate})
+    shape(out, "key rates page: no rows")
+    return out
+
+
 def _dictionary(rows):
     series = common.series(KEY)
     return {"rate": [{"value": k, "label": LABELS[k]} for k in sorted(series)]}
@@ -68,7 +107,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
     rates = sorted(sec["urls"])
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=lambda st: [(sec["urls"][r], parse) for r in rates], second=None, keycols=KEYCOLS, per_key=True,
+        inputs=lambda st: [(sec["urls"][r], parse) for r in rates], second=(sec["second_url"], parse_page), keycols=KEYCOLS, per_key=True,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 

@@ -146,7 +146,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
     sec = names[KEY]
     if mode == "history":
         inputs = lambda st: [(sec["history_url"], parse_hist_zip)]  # noqa: E731
-        second = None
+        second = (sec["second_url_history"], parse_sdmx)  # the last 20 observations: tests on the latest dates
     else:
         inputs = lambda st: [(sec["url"], parse)]  # noqa: E731
         second = (sec["second_url"], parse_sdmx)

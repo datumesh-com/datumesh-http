@@ -32,6 +32,30 @@ def parse(data: bytes) -> list:
     return rows
 
 
+PAGE_DAY = re.compile(r"^(\d\d) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d\d)$")
+
+
+def parse_page(data: bytes) -> list:
+    """The second copy: the Bank's page of the dates Bank Rate changed (two-digit years: the page starts in 1975, so
+    75 to 99 are 19xx and the rest 20xx)."""
+    text = common.decode(data)
+    table = re.search(r'<table[^>]*id="stats-table"[^>]*>(.*?)</table>', text, re.S)
+    shape(table, "Bank Rate page: no table")
+    shape("Date Changed" in table.group(1) and "Rate" in table.group(1), "Bank Rate page: the columns are not those known")
+    out = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", table.group(1).split("<tbody", 1)[-1], re.S):
+        cells = [c.strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        shape(len(cells) == 2, f"Bank Rate page: unexpected row {cells!r}")
+        m = PAGE_DAY.match(cells[0])
+        shape(m, f"Bank Rate page: bad date {cells[0]!r}")
+        yy = int(m.group(3))
+        date = dt.date(1900 + yy if yy >= 75 else 2000 + yy, MONTHS[m.group(2)], int(m.group(1))).isoformat()
+        shape(DECIMAL.match(cells[1]), f"Bank Rate page: bad value {cells[1]!r} on {date}")
+        out.append({"date": date, "value": cells[1]})
+    shape(out, "Bank Rate page: no rows")
+    return out
+
+
 def _dd_mon_yyyy(d: dt.date) -> str:
     return f"{d.day:02d}/{['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.month - 1]}/{d.year}"
 
@@ -66,7 +90,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
 
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=inputs, second=None, keycols=KEYCOLS,
+        inputs=inputs, second=(sec["second_url"], parse_page), keycols=KEYCOLS,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 

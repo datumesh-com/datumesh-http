@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import sys
 import tomllib
 import unicodedata
 import urllib.error
@@ -182,6 +183,11 @@ def save_state(path: Path, state: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def warn(message: str) -> None:
+    """A line on stderr (the job's log), never on stdout (which carries the path of the file)."""
+    print(message, file=sys.stderr)
 
 
 def http_get(url: str) -> bytes:

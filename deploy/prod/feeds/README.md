@@ -77,3 +77,18 @@ A module's name is its section in `names.toml`.
 ## The 22 CHIRPS regions
 
 `[chirps.regions.*]` in `names.toml` lists them; polygons are in `fixtures/regions/<id>.wkt`, exactly as in Natural Earth 10m admin-1 v5.1.2 (`region_source_url`, sha256 pinned; nothing simplified). `fixtures/regions/extract_regions.py` makes the files and `regions.json` from the downloaded GeoJSON (untrusted data: it only parses it; run with `python -I`). The two French regions are not single features in the 10m file (it has departments), so they are the union of their departments (`members`, `note`); every other region is one feature (`ne_vertices` is its vertex count, and a test checks the file has exactly that many).
+
+## Source-conformance tests (every run with a second copy)
+
+Every relay function carries `test` lines from a second copy of the same organisation's data by another channel, on **every run** that can fetch one (not only the first):
+- ecb_fx: the ECB SDMX API (`second_url`, the latest day; `second_url_history`, the last 20 observations of each currency, for a history run) against the daily XML or `eurofxref-hist.zip`.
+- estr: the ECB's €STR web page (the latest rate and its reference date) against the SDMX series. One test a day.
+- policy_rates: the ECB's key interest rates web page (every change since 1999, `parse_page`) against the three SDMX series.
+- boe: the Bank's Bank Rate web page (`Bank-Rate.asp`, the dates the rate changed) against the IADB series IUDBEDR. This page is not a URL listed in LICENCES.md; it sits under the Bank's legal page (OGL for the Database).
+- treasury: the year CSV against the month XML.
+
+A test is a (key, date) pair both copies have, not tested before: dates after each key's high-water mark in `state["tested"]`, the latest 20 dates a key (`relay.TEST_DATES`). A disagreement among them refuses the run (nothing written). A run with new tests and no new cells still writes a file (tests only). A second copy that is down or has changed its shape does not stop the relay: a warning on stderr and no new tests that run.
+
+## Treasury history from 1990
+
+`python -B treasury.py --host H --mode history --state-dir D --out-dir D` does **one year** per call (the year after `history_year` in the state): its month XMLs one at a time, at least 2 s apart (`THROTTLE_SECONDS`), the year's CSV for the tests of its latest dates, one `treasury-<stamp>-<year>.jsonl`. It has its own cursor (`history_last`), so a mesh that already has daily cells still gets the earlier years; `last_date` moves to the latest date there is. `FEEDS_HOST=H run_feed.sh treasury history` publishes year by year until nothing is new; a failure loses at most the year it was in, and the state of the years done is kept. The parsers accept the tenors a year had (9 in 1990).

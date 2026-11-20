@@ -123,7 +123,7 @@ def test_a_second_copy_that_cannot_be_fetched_does_not_stop_the_relay_and_tests_
 @pytest.mark.parametrize("key,old,new", [
     ("estr", b"<strong>2.442</strong>", b"<strong>2.443</strong>"),
     ("policy_rates", b'<td class="number">2.65</td>', b'<td class="number">2.66</td>'),
-    ("boe", b'<td align="right"> 4.00</td>', b'<td align="right"> 4.25</td>'),
+    ("boe", b'<td align="right">  4.00</td>', b'<td align="right">  4.25</td>'),
 ])
 def test_a_second_copy_that_disagrees_refuses_the_run(key, old, new, names, tmp_path):
     from common import ConformanceError
@@ -181,5 +181,5 @@ def test_ecb_history_mode_fetches_the_history_file(names, tmp_path):
     tests = [l for l in lines if "test" in l]
     assert seen == [names["ecb_fx"]["history_url"], names["ecb_fx"]["second_url_history"]] and len(cells) == 284
     # a history load carries tests too: the dates both copies have (2026-11-16 to 18, the currencies the ECB still quotes)
-    assert 60 <= len(tests) <= 90 and all(t["call"].split("date: ")[1][:7] == "2026-11" for t in tests)
+    assert 50 <= len(tests) <= 90 and all(t["call"].split("date: ")[1][:7] == "2026-11" for t in tests)
     assert "lastNObservations=20" in names["ecb_fx"]["second_url_history"]

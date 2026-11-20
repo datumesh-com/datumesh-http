@@ -6,7 +6,8 @@
 #   FEEDS_HOST: mesh-test.datumesh.com (rehearsal) or datumesh.com (production). There is no default: the names
 #   a job publishes are spelled for that host, and state and output are kept per host.
 #   module: ecb_fx estr policy_rates treasury boe chirps   (register runs by hand, see README.md)
-#   history: ecb_fx only, backfills from eurofxref-hist.zip
+#   history: ecb_fx treasury: ecb_fx backfills from eurofxref-hist.zip; treasury backfills from 1990, a year a file,
+#     and this script goes on year by year until there is nothing new (a failure loses at most the year it was in)
 #
 # Reads /srv/datumesh/.env (PYTHON_DIGEST, DATUMESH_PUBLISH_LANES) and /srv/datumesh/compose.yml.
 # The fetch step uses the default bridge network (it needs the internet, not the datumesh_backend network).
@@ -59,30 +60,34 @@ image="python:3.13-slim@sha256:$PYTHON_DIGEST"
   if [ -f "$state/$module.json" ]; then cp "$state/$module.json" "$work/state/"; fi
 
   modeargs=""
-  if [ "$module" = ecb_fx ]; then modeargs="--mode $mode"; fi
+  if [ "$module" = ecb_fx ] || [ "$module" = treasury ]; then modeargs="--mode $mode"; fi
   deps=""
   if [ "$module" = chirps ]; then deps="pip install -q --no-cache-dir numpy==2.1.3 tifffile==2024.8.30 && "; fi
 
-  # fetch and check: prints the one file it wrote (nothing when there is nothing new)
-  docker run --rm \
-      -v "$here:/feeds:ro" -v "$out:/out" -v "$work/state:/state" \
-      -w /feeds "$image" \
-      sh -c "${deps}python -B $module.py --host \"$host\" --state-dir /state --out-dir /out $modeargs" \
-    >"$work/stdout" || fail "fetch step failed"
-  path=$(tail -n 1 "$work/stdout")
+  while :; do
+    # fetch and check: prints the one file it wrote (nothing when there is nothing new)
+    docker run --rm \
+        -v "$here:/feeds:ro" -v "$out:/out" -v "$work/state:/state" \
+        -w /feeds "$image" \
+        sh -c "${deps}python -B $module.py --host \"$host\" --state-dir /state --out-dir /out $modeargs" \
+      >"$work/stdout" || fail "fetch step failed"
+    path=$(tail -n 1 "$work/stdout")
 
-  if [ -z "$path" ]; then
-    echo "nothing new"
-    exit 0
-  fi
-  file="$out/$(basename "$path")"
-  [ -s "$file" ] || fail "no file $file"
-  echo "wrote $file ($(wc -l <"$file") lines)"
+    if [ -z "$path" ]; then
+      echo "nothing new"
+      break
+    fi
+    file="$out/$(basename "$path")"
+    [ -s "$file" ] || fail "no file $file"
+    echo "wrote $file ($(wc -l <"$file") lines)"
 
-  docker compose -f "$root/compose.yml" run --rm \
-      -e DATUMESH_PUBLISH_LANES="${DATUMESH_PUBLISH_LANES:-2}" \
-      datumesh-mesh publish-stored "$file" || fail "publish-stored failed; the state is unchanged"
+    docker compose -f "$root/compose.yml" run --rm \
+        -e DATUMESH_PUBLISH_LANES="${DATUMESH_PUBLISH_LANES:-2}" \
+        datumesh-mesh publish-stored "$file" || fail "publish-stored failed; the state is unchanged"
 
-  cp "$work/state/$module.json" "$state/$module.json" || fail "could not keep the state"
-  echo "published $file"
+    cp "$work/state/$module.json" "$state/$module.json" || fail "could not keep the state"
+    echo "published $file"
+    # a history run writes one year a file: go on until there is nothing new; any other run is one file
+    if [ "$mode" != history ]; then break; fi
+  done
 } >>"$log" 2>&1

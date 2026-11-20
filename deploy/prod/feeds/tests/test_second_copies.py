@@ -58,7 +58,7 @@ def test_bank_rate_page_is_the_dates_the_rate_changed():
     assert {"date": "1998-12-10", "value": "6.00"} in rows or any(r["date"].startswith("1998") for r in rows)
     assert all(r["date"] >= "1975-01-01" for r in rows)  # two-digit years: 75 to 99 are 19xx, the rest 20xx
     for old, new in [(b"05 Nov 26", b"2026-11-05"), (b'id="stats-table"', b'id="other"'),
-                     (b'<td align="right"> 4.00</td>', b'<td align="right"> abc</td>')]:
+                     (b'<td align="right">  4.00</td>', b'<td align="right">  abc</td>')]:
         with pytest.raises(ShapeError):
             boe.parse_page(mutate("boe_bank_rate.html", old, new))
 

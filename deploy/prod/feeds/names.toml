@@ -21,6 +21,8 @@ takeover = "https://{host}/takeover/ecb.europa.eu"
 url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 history_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
 second_url = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=1"
+# the history run's second copy: the last 20 observations of every currency, for tests on the latest dates
+second_url_history = "https://data-api.ecb.europa.eu/service/data/EXR/D..EUR.SP00.A?format=csvdata&lastNObservations=20"
 
 [estr]
 namespace = "{host}/relay/ecb.europa.eu"
@@ -32,6 +34,8 @@ register_code = "estr"
 licence = "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html"
 takeover = "https://{host}/takeover/ecb.europa.eu"
 url = "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?format=csvdata"
+# the second copy: the ECB's own web page of the rate (the latest rate and its reference date), not the data API
+second_url = "https://www.ecb.europa.eu/stats/financial_markets_and_interest_rates/euro_short-term_rate/html/index.en.html"
 
 [policy_rates]
 namespace = "{host}/relay/ecb.europa.eu"
@@ -42,6 +46,8 @@ register_source = "ecb.europa.eu"
 register_code = "policy_rates"
 licence = "https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html"
 takeover = "https://{host}/takeover/ecb.europa.eu"
+# the second copy: the ECB's web page of the key interest rates (every change since 1999), not the data API
+second_url = "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html"
 # the value of the `rate` argument -> the FM dataflow series key and its file
 [policy_rates.series]
 mro = "MRR_FR"
@@ -74,6 +80,8 @@ register_source = "bankofengland.co.uk"
 register_code = "bank_rate"
 licence = "OGL-UK-3.0"
 takeover = "https://{host}/takeover/bankofengland.co.uk"
+# the second copy: the Bank's web page of the dates Bank Rate changed (not the IADB series)
+second_url = "https://www.bankofengland.co.uk/boeapps/database/Bank-Rate.asp"
 # {from} and {to} are DD/Mon/YYYY (Mon in English, e.g. 02/Nov/2026) or the word now
 url = "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom={from}&Dateto={to}&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
 

@@ -1,4 +1,6 @@
 """ECB euro short-term rate, €STR (F1): one row per TARGET day, from the SDMX csvdata."""
+import re
+
 import common
 import relay
 from common import DECIMAL, ISO_DATE, shape
@@ -21,6 +23,22 @@ def parse(data: bytes) -> list:
         out.append({"date": date, "value": v})
     shape(out, "€STR: no rows")
     return out
+
+
+PAGE_RATE = re.compile(r"<th><strong>Rate</strong></th>\s*<td><strong>([^<]*)</strong></td>")
+PAGE_DATE = re.compile(r"<th>Reference date</th>\s*<td>(\d\d)-(\d\d)-(\d{4})</td>")
+
+
+def parse_page(data: bytes) -> list:
+    """The second copy: the ECB's page of the rate, which shows the latest rate and its reference date (DD-MM-YYYY)."""
+    text = common.decode(data)
+    rate, day = PAGE_RATE.search(text), PAGE_DATE.search(text)
+    shape(rate and day, "€STR page: no rate and reference date")
+    v = rate.group(1).strip()
+    shape(DECIMAL.match(v), f"€STR page: bad rate {v!r}")
+    date = f"{day.group(3)}-{day.group(2)}-{day.group(1)}"
+    shape(ISO_DATE.match(date), f"€STR page: bad date {date!r}")
+    return [{"date": date, "value": v}]
 
 
 def _summary(sec, r, value):
@@ -50,7 +68,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, mode="daily"):
     sec = names[KEY]
     return relay.run_series(
         KEY, names, fetch=fetch, now=now, state_dir=state_dir, out_dir=out_dir, publish=publish,
-        inputs=lambda st: [(sec["url"], parse)], second=None, keycols=KEYCOLS,
+        inputs=lambda st: [(sec["url"], parse)], second=(sec["second_url"], parse_page), keycols=KEYCOLS,
         emit_one=lambda rows, st, src: emit(rows, st, names, src))
 
 
