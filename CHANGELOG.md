@@ -11,6 +11,7 @@ For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions
 - **describe.** A stored function's `tests` counts its stored tests, with `branches` and `covered` 0; its `counterexamples` counts its failing and erroring tests and the `false` `<host>/test_case` cells, as before.
 - **Function page.** Each case of `tests.cases` gains `result` (`pass`, `fail` or `error`; null before its first run), additively; the HTML shows it beside each case. `tests.last_run.result` is the worst stored result (as before).
 - **Test cells (`DATUMESH_TEST_CELLS=1`).** Each stored-function test is also the boolean cell `<host>/test_case(function_hash, case)`, trust `primary`, with `true` for a pass and `false` for a fail or error.
+- **Feed jobs (deploy only, not in the crate), from the mesh-test rehearsal:** source-conformance tests on every run from an independent second copy, with a test window read from the first copy when needed (QUESTIONS-build2 D21); Treasury history from 1990, one year per call, 2 s between requests; a Treasury day without tenor values is a day without data; CHIRPS reads the LZW GeoTIFF (`imagecodecs` pinned), takes -9999 as nodata when the file has no tag, spaces rasters 120 s apart and backs off on 429 and 503; one stderr line per run with the cells and tests written.
 
 ## 0.4.2 (unreleased)
 
