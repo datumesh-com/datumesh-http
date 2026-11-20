@@ -24,6 +24,8 @@ PATHS = [
     "/cell/*", "/cells*", "/slice/*", "/receipt/*", "/descriptor/*", "/manifest/*", "/versions/*", "/blob/*",
     "/explain/*", "/find*", "/verify*", "/jobs/*", "/bindings*", "/describe/*", "/openapi.json*",
     "/.well-known/datumesh.json*", "/.well-known/datumesh-mesh.json*", "/.well-known/acme-challenge/*",
+    # Build 2 (http 0.4.x): function pages, takeover pages, scoped evaluation, signed bundles.
+    "/fn/*", "/takeover/*", "/whatif*", "/bundles*",
 ]
 ROUTES = [ZONE + p for p in PATHS]
 
