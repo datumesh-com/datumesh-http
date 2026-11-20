@@ -283,3 +283,16 @@ def test_a_company_with_no_annual_facts_in_scope_has_no_rows_and_no_error():
     p = parsed_one([("us-gaap", "Assets", "USD", "Assets", [rec("2023-12-31", "1", "0000001234-24-000001", 2023, form="10-Q", fp="Q1")])])
     assert p["rows"] == [] and p["filings"] == {} and p["filing_for"] == {}
     assert sec.count_cells(facts_json(1234, "X", [])) == 0
+
+
+def test_a_cik_written_as_a_zero_padded_string_is_read():
+    # Seen live: the SEC writes "cik": "0001889539" (Corebridge Financial) for some companies, a number for most.
+    raw = json.loads(facts_file(CIK_JPM))
+    as_number = sec.parse_companyfacts(json.dumps(raw).encode())
+    raw["cik"] = f"{int(raw['cik']):010d}"
+    as_string = sec.parse_companyfacts(json.dumps(raw).encode())
+    assert as_string["rows"] == as_number["rows"]
+    for bad in ["", "12a", "00000000000", "0", "-5", None, True, 1.5]:
+        raw["cik"] = bad
+        with pytest.raises(common.ShapeError):
+            sec.parse_companyfacts(json.dumps(raw).encode())

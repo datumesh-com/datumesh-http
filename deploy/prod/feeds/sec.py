@@ -145,6 +145,10 @@ def parse_companyfacts(data: bytes) -> dict:
     raw = _load(data)
     common.shape(isinstance(raw, dict), "companyfacts is not an object")
     cik = raw.get("cik")
+    # The SEC writes the CIK as a number for most companies and as a zero-padded string for some
+    # (seen: "0001889539", Corebridge Financial); both are read, nothing else is.
+    if isinstance(cik, str) and 1 <= len(cik) <= 10 and cik.isascii() and cik.isdigit():
+        cik = int(cik)
     common.shape(_int(cik) and 0 < cik < 10 ** 10, "companyfacts cik is not a CIK")
     entity = raw.get("entityName")
     common.shape(isinstance(entity, str) and entity.strip() != "", "companyfacts entityName is missing")
