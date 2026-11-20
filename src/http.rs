@@ -693,7 +693,17 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
     }
     // A browser on a listed series is sent to its page (Build 2 Part 6, G1): never cached.
     let rest = rest_of(&uri, "/slice/");
-    if let Some(to) = crate::series::slice_redirect(&inner, &rest, &headers) {
+    if crate::series::redirect_reads_store(&inner, &rest, &headers) {
+        // The call is resolved against the store: on the pool, not on this thread (0.4.7).
+        let (i2, r2, h2) = (inner.clone(), rest.clone(), headers.clone());
+        match inner.pool.clone().run(move || crate::series::slice_redirect(&i2, &r2, &h2)).await {
+            None => return to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+            Some(Some(to)) => return see_other(&to),
+            // no redirect: the middleware left the `Accept` check to this point
+            Some(None) if !acceptable(&headers, Some(crate::slice::ARROW)) => return not_acceptable(),
+            Some(None) => {}
+        }
+    } else if let Some(to) = crate::series::slice_redirect(&inner, &rest, &headers) {
         return see_other(&to);
     }
     let (rest, format) = match crate::slice::split_format(&rest) {
@@ -740,6 +750,17 @@ fn accepts(headers: &HeaderMap, media: &str) -> bool {
 
 /// Whether the client takes JSON (no `Accept`, `*/*`, `application/*` or
 /// `application/json`); for slices also Arrow.
+/// The `406` of a request whose `Accept` allows no media type the route has.
+fn not_acceptable() -> Response {
+    let mut r = Reply::json(
+        406,
+        Value::Object(vec![("error".into(), Value::String("not acceptable: application/json only".into()))]).to_jcs(),
+        Cache::NoStore,
+    );
+    r.content_type = JSON;
+    to_response(r)
+}
+
 fn acceptable(headers: &HeaderMap, also: Option<&str>) -> bool {
     let vals: Vec<&str> = headers.get_all(header::ACCEPT).iter().filter_map(|v| v.to_str().ok()).collect();
     if vals.is_empty() {
@@ -1326,14 +1347,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         && !own_form
         && !acceptable(req.headers(), also)
     {
-        let mut r = Reply::json(
-            406,
-            Value::Object(vec![("error".into(), Value::String("not acceptable: application/json only".into()))])
-                .to_jcs(),
-            Cache::NoStore,
-        );
-        r.content_type = JSON;
-        to_response(r)
+        not_acceptable()
     } else {
         next.run(req).instrument(tracing::info_span!("request", request_id = %id)).await
     };
