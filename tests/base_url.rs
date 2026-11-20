@@ -80,7 +80,8 @@ const DOC_0_3_0: &str = concat!(
     r#""verify":"https://mesh-a.example/verify","#,
     r#""versions":"https://mesh-a.example/versions/{cell}","#,
     r#""whatif":"https://mesh-a.example/whatif","x_bundles":"https://mesh-a.example/bundles","#,
-    r#""x_calc":"https://mesh-a.example/x/calc"},"#,
+    r#""x_calc":"https://mesh-a.example/x/calc","#,
+    r#""x_interval":"https://mesh-a.example/x/interval/{function}"},"#,
     r#""host":"mesh-a.example","proto":"datumesh/1"}"#
 );
 

@@ -1333,3 +1333,243 @@ fn the_html_readers_read_a_sample_page() {
     assert_eq!(csv_lines("a,b\r\n1,\r\n"), strs(&["a,b", "1,"]));
     assert_eq!(decode("&#60;&#x3C;&amp;lt;"), "<<&lt;");
 }
+
+// ---- 0.4.6: the call form of the slice address, and the interval call (QUESTIONS-build2 D32) -------------------
+//
+// * a browser on `/slice/<fn>(<args>)` (percent-encoded or not) is sent to the page like the query form;
+// * `GET /x/interval/<function>?<key>=<value|*>...&from=YYYY-MM-DD&to=YYYY-MM-DD[&format=csv|arrow]`: the stored
+//   cells of a listed series in `[from, to]`, each with its receipt, JSON by default; CSV (long form, D33: one
+//   row a cell, the open keys, then `date`, `value`, `receipt`; the page CSV has no receipt column) and
+//   Arrow are addresses of their own. At most 10 years for a month series (`400` `E_RANGE_TOO_LARGE`),
+//   `from <= to`, an unlisted function `404`; cached as the pages are (a past range `s-maxage=86400`, one
+//   touching the current period 600); the series' rate-limit bucket.
+
+fn interval(f: &str, query: &str) -> String {
+    format!("/x/interval/{f}?{query}")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_on_the_call_form_of_the_slice_address_is_sent_to_the_page() {
+    let m = served("sp-redirect-call").await;
+    let cases = [
+        (format!("/slice/{FXR}(currency:%20*,%20date:%202026-03-02)"), page(FXR, "2026-03")),
+        (format!("/slice/{FXR}(currency:%20%22USD%22,%20date:%202026-01-06)"), page(FXR, "2026-01")),
+        (format!("/slice/{FXR}%28currency%3A%20%2A%2C%20date%3A%202026-03-03%29"), page(FXR, "2026-03")),
+        (format!("/slice/{BANK}(date:%202026-05-07)"), page(BANK, "2026-05")),
+        (format!("/slice/{POLICY}(rate:%20*,%20date:%202022-07-27)"), page(POLICY, "2022")),
+        (format!("/slice/{RAIN}(dataset:%20%22chirps%22,%20region:%20*,%20month:%202024-12-01)"), page(RAIN, "2024")),
+        (format!("/slice/{FXR}(currency:%20*,%20date:%20*)"), index(FXR)),
+        (format!("/slice/{POLICY}(rate:%20%22mro%22,%20date:%20*)"), index(POLICY)),
+    ];
+    for accept in ["text/html", BROWSER] {
+        for (from, to) in &cases {
+            let r = fetch(&m, from, &[("accept", accept)]).await;
+            assert!(is_to(&r, to), "{from} ({accept}): {} {:?} {:?}", r.status, r.header("location"), r.text());
+            assert_eq!(fetch(&m, to, &[]).await.status, 200, "{to}");
+        }
+    }
+    // JSON clients, other formats and unlisted functions are as they were
+    let call = format!("/slice/{FXR}(currency:%20*,%20date:%202026-03-02)");
+    let r = fetch(&m, &call, &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = fetch(&m, &format!("{call}?format=csv"), &[("accept", "text/html")]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.header("content-type").unwrap_or_default().starts_with("text/csv"));
+    let r = fetch(&m, &format!("/slice/{PLAIN}(site:%20*)"), &[("accept", "text/html")]).await;
+    assert_ne!(r.status, 303);
+    // a call that names no function, or an unknown one, is not redirected
+    let r = fetch(&m, "/slice/no.such.host/fn(date:%20*)", &[("accept", "text/html")]).await;
+    assert_ne!(r.status, 303);
+}
+
+fn members_of(v: &Value) -> Vec<Value> {
+    v["members"].as_array().unwrap_or_else(|| panic!("no members in {v}")).clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interval_call_answers_json_with_receipts() {
+    let m = served("sp-interval-json").await;
+    let r = fetch(&m, &interval(FXR, "currency=*&from=2026-01-01&to=2026-03-31"), &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.header("content-type").unwrap_or_default().starts_with("application/json"));
+    assert_eq!(edge(&r), (true, Some(86400)), "{:?}", r.header("cache-control"));
+    let v = r.json();
+    assert_eq!(v["function"], FXR, "{v}");
+    assert_eq!((v["from"].as_str(), v["to"].as_str()), (Some("2026-01-01"), Some("2026-03-31")));
+    let ms = members_of(&v);
+    assert_eq!(ms.len(), 11, "{v}");
+    for x in &ms {
+        let date = x["keys"]["date"].as_str().unwrap();
+        assert!(("2026-01-01"..="2026-03-31").contains(&date), "{x}");
+        assert!(x["receipt"].is_object(), "each member carries its receipt: {x}");
+        assert_eq!(x["receipt_hash"].as_str().map(str::len), Some(64), "{x}");
+        assert!(x["value"].is_string() && x["tx"].is_string() && x["type"] == "number", "{x}");
+    }
+    let usd = ms.iter().find(|x| x["keys"]["currency"] == "USD" && x["keys"]["date"] == "2026-03-02").unwrap();
+    assert_eq!(usd["value"], "1.0832", "{usd}");
+    // a bound key, and an inclusive range of one day
+    let v = fetch(&m, &interval(FXR, "currency=USD&from=2026-01-01&to=2026-03-31"), &[]).await.json();
+    assert_eq!(members_of(&v).len(), 4, "{v}");
+    let v = fetch(&m, &interval(FXR, "currency=USD&from=2026-03-02&to=2026-03-02"), &[]).await.json();
+    assert_eq!(members_of(&v).len(), 1, "{v}");
+    // an omitted key is open; an unkeyed series has none
+    let v = fetch(&m, &interval(FXR, "from=2026-03-01&to=2026-03-31"), &[]).await.json();
+    assert_eq!(members_of(&v).len(), 6, "{v}");
+    let v = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31"), &[]).await.json();
+    assert_eq!(members_of(&v).len(), 3, "{v}");
+    // fixed arguments of the series file apply
+    let v = fetch(&m, &interval(RAIN, "region=*&from=2024-01-01&to=2025-12-31"), &[]).await.json();
+    assert_eq!(members_of(&v).len(), 5, "{v}");
+    // an empty range is an empty list, not an error
+    let r = fetch(&m, &interval(BANK, "from=2025-01-01&to=2025-02-01"), &[]).await;
+    assert_eq!(r.status, 200);
+    assert!(members_of(&r.json()).is_empty());
+    // a browser's Accept does not refuse it
+    let r = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31"), &[("accept", BROWSER)]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interval_call_is_cached_like_the_pages() {
+    let m = served("sp-interval-cache").await;
+    let past = fetch(&m, &interval(FXR, "currency=*&from=2026-01-01&to=2026-03-31"), &[]).await;
+    assert_eq!(edge(&past), (true, Some(86400)));
+    let now = fetch(&m, &interval(FXR, "currency=*&from=2026-11-01&to=2026-11-30"), &[]).await;
+    assert_eq!(now.status, 200, "{}", now.text());
+    assert_eq!(edge(&now), (true, Some(600)), "{:?}", now.header("cache-control"));
+    let wide = fetch(&m, &interval(FXR, "currency=*&from=2026-03-01&to=2026-12-31"), &[]).await;
+    assert_eq!(edge(&wide), (true, Some(600)), "a range that touches the current month");
+    let tag = past.header("etag").expect("an ETag");
+    let again = fetch(&m, &interval(FXR, "currency=*&from=2026-01-01&to=2026-03-31"), &[("if-none-match", &tag)]).await;
+    assert_eq!(again.status, 304);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interval_call_in_csv_and_arrow() {
+    let m = served("sp-interval-formats").await;
+    let r = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31&format=csv"), &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(r.header("content-type").unwrap_or_default().starts_with("text/csv"));
+    let lines = csv_lines(&r.text());
+    assert_eq!(lines[0], "date,value,receipt", "long form: no key, so date, value, receipt");
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    let hash = |l: &str| l.rsplit(',').next().unwrap().to_string();
+    assert!(lines[1].starts_with("2026-03-19,4.5,") && hash(&lines[1]).len() == 64, "{}", lines[1]);
+    assert!(lines[3].starts_with("2026-05-07,4.25,"), "{}", lines[3]);
+    // a keyed series: one row a cell, the open keys first, by date then key in dictionary order (USD, JPY, GBP)
+    let r = fetch(&m, &interval(FXR, "currency=*&from=2026-03-01&to=2026-03-31&format=csv"), &[]).await;
+    let lines = csv_lines(&r.text());
+    assert_eq!(lines[0], "currency,date,value,receipt");
+    assert_eq!(lines.len(), 7, "{lines:?}");
+    let heads: Vec<String> = lines[1..].iter().map(|l| l.split(',').take(3).collect::<Vec<_>>().join(",")).collect();
+    assert_eq!(
+        heads,
+        strs(&[
+            "USD,2026-03-02,1.0832",
+            "JPY,2026-03-02,160.25",
+            "GBP,2026-03-02,0.8301",
+            "USD,2026-03-03,1.0791",
+            "JPY,2026-03-03,150",
+            "GBP,2026-03-03,0.829"
+        ])
+    );
+    assert!(lines[1..].iter().all(|l| hash(l).len() == 64), "{lines:?}");
+    // a bound key is still a column; a fixed argument of the series file is not
+    let r = fetch(&m, &interval(FXR, "currency=USD&from=2026-03-01&to=2026-03-31&format=csv"), &[]).await;
+    assert_eq!(csv_lines(&r.text()).len(), 3);
+    let r = fetch(&m, &interval(RAIN, "region=*&from=2024-11-01&to=2024-12-31&format=csv"), &[]).await;
+    let lines = csv_lines(&r.text());
+    assert_eq!(lines[0], "region,date,value,receipt", "{lines:?}");
+    // the same cache as the JSON, and an address of its own
+    assert_eq!(edge(&r), (true, Some(86400)));
+    let r = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31&format=arrow"), &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.header("content-type").as_deref(), Some(ARROW_TYPE));
+    assert!(r.body.len() > 8 && r.body[..4] == [0xff, 0xff, 0xff, 0xff], "an Arrow IPC stream");
+    assert_eq!(edge(&r), (true, Some(86400)));
+    let r = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31&format=xml"), &[]).await;
+    assert_eq!(r.status, 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interval_call_refuses_what_it_cannot_take() {
+    let m = served("sp-interval-errors").await;
+    let status = |q: &str| {
+        let m = &m;
+        let q = q.to_string();
+        async move { fetch(m, &interval(BANK, &q), &[]).await }
+    };
+    assert_eq!(status("from=2026-05-01&to=2026-03-01").await.status, 400, "from after to");
+    assert_eq!(status("to=2026-03-01").await.status, 400, "no from");
+    assert_eq!(status("from=2026-03-01").await.status, 400, "no to");
+    assert_eq!(status("from=2026-3-1&to=2026-03-02").await.status, 400, "not a date");
+    assert_eq!(status("from=2026-02-30&to=2026-03-02").await.status, 400, "not a day");
+    assert_eq!(status("from=2026-03-01&to=2026-03-02&colour=red").await.status, 400, "no such argument");
+    assert_eq!(status("date=2026-03-01&from=2026-03-01&to=2026-03-02").await.status, 400, "the date is from and to");
+    // ten years of a month series is the most
+    let r = status("from=2016-01-01&to=2026-01-01").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let r = status("from=2015-12-31&to=2026-01-01").await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.text().contains("E_RANGE_TOO_LARGE"), "{}", r.text());
+    // a year series has no such limit
+    let r = fetch(&m, &interval(POLICY, "rate=*&from=1990-01-01&to=2026-12-31"), &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(members_of(&r.json()).len(), 9);
+    // a function no series lists, one that does not exist, and no series file at all
+    assert_eq!(fetch(&m, &interval(PLAIN, "site=*&from=2026-01-01&to=2026-02-01"), &[]).await.status, 404);
+    assert_eq!(fetch(&m, &interval("no.such.host/fn", "from=2026-01-01&to=2026-02-01"), &[]).await.status, 404);
+    let bare = serve("sp-interval-bare", None, &[]).await;
+    assert_eq!(fetch(&bare, &interval(BANK, "from=2026-01-01&to=2026-02-01"), &[]).await.status, 404);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_interval_call_takes_the_series_budget() {
+    let m = serve("sp-interval-rate", Some(series_json()), &[("DATUMESH_RATE_SERIES_PER_IP", "3")]).await;
+    let q = interval(BANK, "from=2026-03-01&to=2026-05-31");
+    let (mut ok, mut limited) = (0, 0);
+    for _ in 0..12 {
+        match fetch(&m, &q, &[]).await.status {
+            200 => ok += 1,
+            429 => limited += 1,
+            other => panic!("{other}"),
+        }
+    }
+    assert!((1..=6).contains(&ok) && limited >= 6, "{ok} served, {limited} refused");
+    // the budget is shared with the pages
+    assert_eq!(fetch(&m, &page(BANK, "2026-03"), &[]).await.status, 429);
+    assert_eq!(fetch(&m, &format!("/fn/{BANK}"), &[]).await.status, 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mesh_document_and_openapi_list_the_interval_call() {
+    let m = served("sp-interval-doc").await;
+    let md = fetch(&m, "/.well-known/datumesh-mesh.json", &[]).await.json();
+    assert_eq!(md["endpoints"]["x_interval"], format!("https://{HOST}/x/interval/{{function}}"), "{md}");
+    assert_eq!(md["endpoints"]["x_calc"], format!("https://{HOST}/x/calc"), "{md}");
+    let api = fetch(&m, "/openapi.json", &[]).await.json();
+    let paths = api["paths"].as_object().unwrap();
+    let p = paths.iter().find(|(k, _)| k.starts_with("/x/interval")).unwrap_or_else(|| panic!("{}", api["paths"])).1;
+    assert!(p.get("get").is_some() && p.get("post").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_block_for_agents_gives_the_interval_call() {
+    let m = served("sp-agents-interval").await;
+    let pre_of = |h: &str| squash(&decode(&strip_tags(&h[h.find("<pre").unwrap()..h.find("</pre>").unwrap()])));
+    let pre = pre_of(&html(&m, &page(FXR, "2026-03")).await);
+    let base = format!("/x/interval/{FXR}?currency=USD&from=2026-03-01&to=2026-03-31");
+    assert!(pre.contains(&base), "the JSON interval call of the page: {pre}");
+    assert!(pre.contains(&format!("{base}&format=csv")) && pre.contains(&format!("{base}&format=arrow")), "{pre}");
+    assert!(pre.contains("Anyinterval"), "says it takes any interval (whitespace is squashed): {pre}");
+    // the old lines stay
+    assert!(pre.contains(&format!("/slice/{FXR}")) && pre.contains("format=csv") && pre.contains("{\"request\":\""));
+    let pre = pre_of(&html(&m, &page(BANK, "2026-03")).await);
+    assert!(pre.contains(&format!("/x/interval/{BANK}?from=2026-03-01&to=2026-03-31")), "{pre}");
+    // a year page: the year
+    let pre = pre_of(&html(&m, &page(POLICY, "2022")).await);
+    assert!(pre.contains("from=2022-01-01&to=2022-12-31"), "{pre}");
+    // the index: from the first period to the last
+    let pre = pre_of(&html(&m, &index(BANK)).await);
+    assert!(pre.contains(&format!("/x/interval/{BANK}?from=2026-03-01&to=2026-05-31")), "{pre}");
+}

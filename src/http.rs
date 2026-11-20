@@ -204,6 +204,7 @@ fn admit(inner: &Inner, client: &Client, cost: u32) -> Result<(), Reply> {
         series_sitemap,
         whatif,
         x_calc,
+        x_interval,
         health,
         metrics,
         openapi_json
@@ -692,7 +693,7 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
     }
     // A browser on a listed series is sent to its page (Build 2 Part 6, G1): never cached.
     let rest = rest_of(&uri, "/slice/");
-    if let Some(to) = crate::series::slice_redirect(&inner.config, &rest, &headers) {
+    if let Some(to) = crate::series::slice_redirect(&inner, &rest, &headers) {
         return see_other(&to);
     }
     let (rest, format) = match crate::slice::split_format(&rest) {
@@ -1295,6 +1296,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/fn/{*name}" => "/fn/{name}".to_string(),
         "/takeover/{*domain}" => "/takeover/{domain}".to_string(),
         "/series/{*rest}" => "/series/{page}".to_string(),
+        "/x/interval/{*function}" => "/x/interval/{function}".to_string(),
         _ => route,
     };
     let id = req
@@ -1315,9 +1317,9 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     let html_ok = (route == "/fn/{name}" || route == "/takeover/{domain}") && accepts(req.headers(), "text/html");
     // The series pages and the sitemap choose their own media type, and a slice's browser redirect or
     // format is answered whatever its Accept (Build 2 Part 6, G1).
-    let own_form = matches!(route.as_str(), "/series/{page}" | "/series/sitemap.xml")
+    let own_form = matches!(route.as_str(), "/series/{page}" | "/series/sitemap.xml" | "/x/interval/{function}")
         || (route == "/slice/{cell}"
-            && crate::series::negotiation_free(&mesh.inner.config, &rest_of(req.uri(), "/slice/"), req.headers()));
+            && crate::series::negotiation_free(&mesh.inner, &rest_of(req.uri(), "/slice/"), req.headers()));
     let mut resp = if route != "/blob/{sha256}"
         && route != "/metrics"
         && !html_ok
@@ -1586,6 +1588,37 @@ async fn series_sitemap(State(mesh): State<Mesh>, headers: HeaderMap, req: Reque
     series_answer(mesh, &headers, "sitemap.xml".to_string()).await
 }
 
+/// `GET /x/interval/<function>?<key>=<value|*>...&from=<date>&to=<date>[&format=csv|arrow]` (D32, an extension):
+/// the stored cells of a listed series in `[from, to]`, each with its receipt.
+#[utoipa::path(get, path = "/x/interval/{function}",
+    params(
+        ("function" = String, Path, description = "The function name of a series listed in the series file"),
+        ("from" = String, Query, description = "The first date, `YYYY-MM-DD`, inclusive"),
+        ("to" = String, Query, description = "The last date, `YYYY-MM-DD`, inclusive; at most 10 years after `from` for a series with month pages"),
+        ("format" = Option<String>, Query, description = "`csv` or `arrow`; JSON without it. Each is an address of its own"),
+    ),
+    responses(
+        (status = 200, description = "JSON `{function, from, to, asof, count, members: [{keys, value, type, tx, asof, receipt_hash, receipt}]}`; CSV (long form: the open keys, `date`, `value`, `receipt`); or an Arrow IPC stream", content_type = "application/json"),
+        (status = 304, description = "`ETag` unchanged"),
+        (status = 400, description = "`bad_request`: a missing or malformed `from` or `to`, `from` after `to`, an argument the function lacks, or `E_RANGE_TOO_LARGE`", content_type = "application/json"),
+        (status = 404, description = "The function is not in the series file", content_type = "application/json"),
+        (status = 429, description = "`rate_limited`, with `Retry-After` (the per-IP and the series budgets)", content_type = "application/json"),
+    ))]
+async fn x_interval(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = series_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let function = uri.path().strip_prefix("/x/interval/").unwrap_or("").to_string();
+    let query = uri.query().unwrap_or("").to_string();
+    let inm = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::series::interval(&mesh.inner, &function, &query, inm.as_deref())).await
+    {
+        Some(o) => series_response(o),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 async fn fallback() -> Response {
     not_found("endpoint")
 }
@@ -1618,6 +1651,7 @@ impl Mesh {
             .route("/bundles", post(bundles))
             .route("/whatif", post(whatif))
             .route("/x/calc", post(x_calc))
+            .route("/x/interval/{*function}", get(x_interval))
             .route("/health", get(health))
             .route("/metrics", get(metrics))
             .route("/openapi.json", get(openapi_json))
