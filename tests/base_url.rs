@@ -79,7 +79,8 @@ const DOC_0_3_0: &str = concat!(
     r#""slice":"https://mesh-a.example/slice/{cell}","#,
     r#""verify":"https://mesh-a.example/verify","#,
     r#""versions":"https://mesh-a.example/versions/{cell}","#,
-    r#""whatif":"https://mesh-a.example/whatif","x_bundles":"https://mesh-a.example/bundles"},"#,
+    r#""whatif":"https://mesh-a.example/whatif","x_bundles":"https://mesh-a.example/bundles","#,
+    r#""x_calc":"https://mesh-a.example/x/calc"},"#,
     r#""host":"mesh-a.example","proto":"datumesh/1"}"#
 );
 

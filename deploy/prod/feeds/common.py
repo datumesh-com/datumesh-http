@@ -3,6 +3,7 @@ import argparse
 import csv
 import datetime as dt
 import email.utils
+import http.client
 import hashlib
 import io
 import json
@@ -216,17 +217,41 @@ def _retry_after(headers):
     return max(0.0, when.timestamp() - time.time())
 
 
-def http_get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=180) as r:
-            return r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise NotPublished(url) from e
-        if e.code in (429, 503):
-            raise RateLimited(url, _retry_after(e.headers), e.code) from e
-        raise
+RETRY_WAITS = (5.0, 15.0, 45.0, 120.0)  # a transient network failure is retried after each of these
+
+
+def _transient(e: BaseException) -> bool:
+    """A failure worth another try: no HTTP answer (reset, refused, timeout, name lookup, a dropped connection) or a
+    502 or 504. Not 404 (not published), 429 and 503 (rate limited, a different path), nor any other HTTP status."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code in (502, 504)
+    return isinstance(e, (OSError, http.client.HTTPException))  # URLError, timeouts and resets are OSErrors
+
+
+def http_get(url: str, *, sleep=None) -> bytes:
+    """The body of url. A transient network failure is retried up to 4 times (waits 5, 15, 45, 120 s) and then
+    raised as it was; 404 is NotPublished, 429 and 503 are RateLimited, other HTTP errors are raised at once."""
+    sleep = sleep or time.sleep
+    for attempt in range(len(RETRY_WAITS) + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise NotPublished(url) from e
+            if e.code in (429, 503):
+                raise RateLimited(url, _retry_after(e.headers), e.code) from e
+            if not _transient(e) or attempt == len(RETRY_WAITS):
+                raise
+            err = e
+        except (OSError, http.client.HTTPException) as e:
+            if attempt == len(RETRY_WAITS):
+                raise
+            err = e
+        wait = RETRY_WAITS[attempt]
+        warn(f"http_get {url}: {type(err).__name__}: {err}; retry {attempt + 1} of {len(RETRY_WAITS)} in {wait:g} s")
+        sleep(wait)
 
 
 def _host_arg(value: str) -> str:

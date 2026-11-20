@@ -1,6 +1,29 @@
 # Changelog
 
-## 0.4.4 (unreleased)
+## 0.4.5 (unreleased)
+
+For CONTRACT-build2-part6-pages (G1 to G6; QUESTIONS-build2 D25, D26, D31): month pages for relayed series, the year pages of monthly ones, their index and sitemap. Additive: `RateLimits` gains `series_per_ip` (a public field), and the public API otherwise does not change. Requires the same crates as 0.4.4.
+
+- **The series file (G2).** `DATUMESH_SERIES_FILE` names a JSON array, one entry per series: `function`, `granularity` (`month` for a daily series, `year` for a monthly or event one), `date_arg`, `column_arg` (optional: the keyed argument whose dictionary values become columns), `fixed` (optional: arguments held fixed, as strings), `unit`, `kind` (`relayed` or `computed`), and `source` (optional: the name a computed series' page gives, else read from the function's description after ` from `). Without it there are no pages, and a function it does not list has none.
+- **The pages (G1, G3).** `/series/<function>/<YYYY-MM>` and `<YYYY>`, each with a `.csv` twin, and `/series/<function>/` as the index. A page is one `<table>` with one header row (`date`, then one column per dictionary value of the column argument, in the dictionary's order, each headed `value (unit)`; an unkeyed series has one `value (unit)` column), ISO dates, the stored decimal strings, empty cells where there is none. It carries the source line (relayed: `datumesh.com`'s relay of the source, with the link to `/takeover/<domain>`; computed: "Computed by <host> from <source>; not <owner>'s own values."), the licence of its cells, its as-of (the latest `tx` among its cells), a block for agents (JSON, CSV and Arrow slice addresses and the MCP `get` request), the verify link, previous and next links to the nearest periods with data, the index and the function page, and one schema.org `Dataset` JSON-LD script with no `<` in it.
+- **Redirect (G1).** A browser (`Accept` led by `text/html`) on `/slice/<call>` of a listed series gets `303` to the month or year page of a single date, or to the index for `date=*`, with `Cache-Control: no-store`. A JSON client gets JSON as before. `?format=csv` (RFC 4180, `text/csv`, the same cache as JSON) and `?format=arrow` are addresses of their own; an Arrow answer chosen by `Accept` is `no-store`.
+- **Rendering from stored cells (G5).** Pages, CSV, index and sitemap read the store only: the binding as of now, the descriptor, slice reads by a date range (`slice_values`), the receipts of the members (`receipts_many`, for licences) and the catalogue (`catalog_summary`, `text_find`). No evaluation, no fetch from another mesh; a page with no stored cell, a malformed period or an unlisted function is `404` (cacheable 600 s). The index and the sitemap, and the neighbours of a page, come from an overview of the series' cells kept for five minutes.
+- **Caching (G5).** `Cache-Control: public, max-age=300, s-maxage=86400` for a past period, `public, max-age=300, s-maxage=600` for the current one, the index, the sitemap and a 404. `ETag` is a hash of the page's receipt hashes, its neighbours and its form; `304` on `If-None-Match`.
+- **Sitemap (G4).** `/series/sitemap.xml` lists every index and page with `lastmod` the as-of; past 50,000 URLs it is a sitemap index of `/series/sitemap-<n>.xml` files of 50,000.
+- **Rate limit (G5).** `/series/*` takes one token of the per-IP limit and one of `DATUMESH_RATE_SERIES_PER_IP` (default 30 a minute, its own bucket).
+- **Documented.** OpenAPI paths for `/series/{page}` and `/series/sitemap.xml`; README rows for the routes and the two variables.
+
+Build 2 Part 3, the `calc` addition (CONTRACT-build2-part3-calc C1, C3; QUESTIONS-build2 D27, D30). Additive: `Config` gains `rate.calc_per_ip`, the mesh document gains `endpoints.x_calc`, and the OpenAPI document gains `/x/calc`. Requires the same crates as 0.4.4.
+
+- **`POST /x/calc` (D27: an extension, not in the spec).** The body is `{"formula": "<body>", "asof"?: <instant>}`. The formula is evaluated in a scope, as `whatif` evaluates: nothing is written, no receipt is signed, no name is bound. The answer is `kind: "calculation"` with `value`, `type` (and `unit`), `formula` as given, `canonical` (the printed canonical AST), `asof`, and `lineage`: each cell read, with its `call`, the `receipt` hash that answers it (`null` for a computed cell this mesh has not stored), its `publisher` (the host of its namespace) and its `trust` (as the envelope labels it). A computed cell is evaluated in the scope and never stored. Calls, slice aggregates and constant formulas are answered.
+- **Limits.** A formula of more than 4096 bytes is `413` `E_TOO_LARGE`. The mesh's evaluation budget (`DATUMESH_BUDGET_MS`) gives `E_EVAL_BUDGET` at once, with no pending job. `DATUMESH_RATE_CALC_PER_IP` (default 30 a minute) is a bucket of its own, taken after the per-IP limit.
+- **Errors.** A formula's codes are carried as written (`E_FORMULA_SYNTAX`, `E_FORMULA_TYPE`, ...): `bad_request` (400) for a formula that does not define, `not_covered` (404) with `fault` for an evaluation fault (`E_FORMULA_DIV_ZERO`, `E_FORMULA_ABSENT`, `E_FORMULA_EMPTY`, ...), and `error` with `cycle` (the 5.5 envelope, `E_EVAL_UNAVAILABLE`) for a cycle of computed cells. The core's error vocabulary has none of the formula's or the budget's codes; they are written as strings in this crate's envelopes.
+- **Access.** A licence or payment rule on a function the calculation reads answers as it does for `whatif`: `unlicensed`, or `payment_required` with its quote.
+- **Not done.** Class dispatch in a body, a range over a stored slice, and the versions of a computed function are refused (`E_EVAL_UNAVAILABLE`); `calc` on a foreign (relayed) function is not read from its source.
+
+- **Feed jobs (deploy only, not in the crate).** `series.py` writes the series file of the month pages from `names.toml` (`run_feed.sh series`); `http_get` retries transient network failures (4 times, after 5, 15, 45 and 120 s), while 404 and 429/503 keep their own paths.
+
+## 0.4.4 (2026-11-20)
 
 Fixes the tests of stored functions that share a signature (QUESTIONS-build2 D23) and serves the takeover page (D24). No API change: `testrun` is private, and no public item changes. Requires the same crates as 0.4.3.
 
@@ -9,7 +32,7 @@ Fixes the tests of stored functions that share a signature (QUESTIONS-build2 D23
 - **Unchanged.** Foreign `<host>/test_case(function_hash, case)` cells stay per hash (spec 7.3 gives them no function name), so for stored functions of one signature a foreign counterexample applies to each; this is for a later spec round (D23). Test cells (`DATUMESH_TEST_CELLS=1`) are unaffected: the case id covers the call, so it differs per function.
 - **The takeover page (D24).** `GET /takeover/<domain>`, the URL that relayed receipts and `describe` give as `source.takeover`, answered 404 up to 0.4.3. HTML (no script, everything escaped) or, by `Accept: application/json` or `?format=json`, `{domain, host, functions: [{name, page, fn_hash}], steps}`; cached like the function page. It lists the functions bound on this mesh whose relay source name is the domain (the detection `describe` uses for `source`), each linked to its `/fn` page, and says this mesh relays these values from the domain unchanged and that the domain remains their source. The steps: serve a key document at `https://<domain>/.well-known/datumesh.json` (spec 9); publish the same functions under `<domain>/...`, on its own mesh or hosted on this mesh. Hosting here says `POST /bundles` is open to the domain when `DATUMESH_PUBLISH_DOMAINS` admits it, else that the operator of the mesh must allow it (D11). It names no contact address and does not say the relay is withdrawn. A domain that is not a DNS name is `E_CANON_NAME` (400); a domain with no relayed function here is `not_covered` (404). The mesh document gains no member (the function page has none); the OpenAPI document gains the path. The functions are those with a catalogue entry (the page reads `catalog_summary`).
 
-## 0.4.3 (unreleased)
+## 0.4.3 (2026-11-20)
 
 For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions; QUESTIONS-build2 D16, D20, D21). Additive: no signature of the public API changes. Requires datumesh-core 0.3.10, datumesh-formula 0.5.1 and datumesh-store 0.5.1, as 0.4.2 does.
 
@@ -22,7 +45,7 @@ For CONTRACT-build2-part5-feeds F2 (source-conformance tests of stored functions
 - **Test cells (`DATUMESH_TEST_CELLS=1`).** Each stored-function test is also the boolean cell `<host>/test_case(function_hash, case)`, trust `primary`, with `true` for a pass and `false` for a fail or error.
 - **Feed jobs (deploy only, not in the crate), from the mesh-test rehearsal:** source-conformance tests on every run from an independent second copy, with a test window read from the first copy when needed (QUESTIONS-build2 D21); Treasury history from 1990, one year per call, 2 s between requests; a Treasury day without tenor values is a day without data; CHIRPS reads the LZW GeoTIFF (`imagecodecs` pinned), takes -9999 as nodata when the file has no tag, spaces rasters 120 s apart and backs off on 429 and 503; one stderr line per run with the cells and tests written.
 
-## 0.4.2 (unreleased)
+## 0.4.2 (2026-11-20)
 
 For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datumesh-core 0.3.10 (`FunctionAnswer::with_publisher`, `Described::publisher`) and datumesh-formula 0.5.1. Additive: no signature of the public API changes.
 
@@ -34,7 +57,7 @@ For spec-0.6.1 (CONTRACT-build2-spec-0.6.1 S1 to S3, S5 item 4). Requires datume
 - **URI error code (spec 5.4).** A cell URI whose function name core refuses (a segment over 64 characters, a non-canonical name) is answered with core's canonical code (`E_CANON_LIMIT`, `E_CANON_NAME`), not `not_covered`.
 - **Feed jobs under the final names (deploy only, not in the crate).** `deploy/prod/feeds/`: every name is spelled with the host, which must be given as `mesh-test.datumesh.com` or `datumesh.com` (no default). Relays at `<host>/relay/<domain>/<function>` (ecb.europa.eu, treasury.gov, bankofengland.co.uk); the licence register as the class `<host>/register/dataset(source, code)` with eight entries, verbatim licence clauses (`licences.toml`); rainfall as `<host>/earth/monthly_rainfall(dataset, region, month)` for 22 wheat regions from Natural Earth 10m admin-1, cells without `source` (QUESTIONS-build2 D17). State and output are kept per host.
 
-## 0.4.1 (unreleased)
+## 0.4.1 (2026-11-19)
 
 For CONTRACT-build2-part4-publish (datumesh-http part: P1, P2) and CONTRACT-build2-part5-feeds (F5, the http needs). Additive: `Config` gains `publish_domains` and `log_dir`, `PublishDomains` is new, `Client::key_document_live` is new, and the mesh document gains `endpoints.x_bundles`. A function's describe answer names its page in a `Link: <https://<host>/fn/<name>>; rel="describedby"` header, not in the answer: the answer is the spec's (16.8) and core checks it strictly.
 
@@ -71,7 +94,7 @@ For CONTRACT-build2-part2-read (datumesh-http part: R2, R3, R5). `GET /find` cha
 - **Catalogue in bundle 1 (R5).** An optional `catalog` member (entries sorted by name, in JCS), covered by the manifest signature: a changed entry fails import with `E_SIGNATURE`. `bundle::build_with_catalog` makes one; `build` makes a bundle without the member, as before.
 - **The operator's catalogue file** (`DATUMESH_CATALOG_FILE`) is stored as `source=operator` entries at start. It never replaces a publisher's entry.
 
-## 0.3.3 (unreleased)
+## 0.3.3 (2026-11-19)
 
 Loading is batched; no change to receipts. `publish-stored` makes its reads in chunks of up to 1,000 cell lines (one `latest_many` and one `receipts_many` per chunk, the store's binding, descriptor and namespace answers kept for the run) and writes consecutive cells with `put_cells` in calls of up to 1,000 (datumesh-store 0.4.3). The receipts, versions, counts and errors are those of 0.3.2: the golden files of `tests/perf_load.rs` were recorded with 0.3.2 and still match byte for byte. Signing runs on up to `available_parallelism()` threads. The earliest failing line still wins, with its line number and text.
 

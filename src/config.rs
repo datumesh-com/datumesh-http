@@ -44,9 +44,15 @@ pub struct RateLimits {
     pub per_key: u32,
     /// `POST /verify` per minute per IP, with or without a key (default 60; burst the same).
     pub verify_per_ip: u32,
+    /// `POST /x/calc` per minute per IP, with or without a key (default 30; burst the same). Its
+    /// own bucket, taken after the per-IP limit (Build 2 Part 3, `calc`).
+    pub calc_per_ip: u32,
     /// Cells per request token in a `POST /cells` batch (default 50: a batch of 1,000 cells
     /// counts as 20 requests).
     pub batch_cells_per_token: u32,
+    /// `/series` pages per minute per IP, besides the per-IP limit (`DATUMESH_RATE_SERIES_PER_IP`,
+    /// default 30; burst the same), so that a crawler that misses the cache cannot load the mesh.
+    pub series_per_ip: u32,
 }
 
 impl Default for RateLimits {
@@ -57,7 +63,9 @@ impl Default for RateLimits {
             ip_burst: 120,
             per_key: 600,
             verify_per_ip: 60,
+            calc_per_ip: 30,
             batch_cells_per_token: 50,
+            series_per_ip: 30,
         }
     }
 }
@@ -243,6 +251,8 @@ pub struct Config {
     /// Where the operator's log of `POST /bundles` goes (`DATUMESH_LOG_DIR`, the file
     /// `bundles.log` in it); default none, no log.
     pub log_dir: Option<std::path::PathBuf>,
+    /// The series with month or year pages (`DATUMESH_SERIES_FILE`, Build 2 Part 6); none: no pages.
+    pub(crate) series: Vec<crate::series::SeriesPage>,
 }
 
 /// Which hosts may publish with `POST /bundles` (`DATUMESH_PUBLISH_DOMAINS`): the mesh's own
@@ -319,6 +329,7 @@ impl Config {
             api_keys: ApiKeys::default(),
             publish_domains: PublishDomains::Own,
             log_dir: None,
+            series: Vec::new(),
         }
     }
 
@@ -387,6 +398,8 @@ impl Config {
         c.rate.ip_burst = num("DATUMESH_RATE_IP_BURST", c.rate.ip_burst as usize)? as u32;
         c.rate.per_key = num("DATUMESH_RATE_PER_KEY", c.rate.per_key as usize)? as u32;
         c.rate.verify_per_ip = num("DATUMESH_RATE_VERIFY_PER_IP", c.rate.verify_per_ip as usize)? as u32;
+        c.rate.series_per_ip = num("DATUMESH_RATE_SERIES_PER_IP", c.rate.series_per_ip as usize)? as u32;
+        c.rate.calc_per_ip = num("DATUMESH_RATE_CALC_PER_IP", c.rate.calc_per_ip as usize)? as u32;
         c.ttl.key_doc = secs("DATUMESH_TTL_KEY_DOC", c.ttl.key_doc)?;
         c.ttl.mesh_doc = secs("DATUMESH_TTL_MESH_DOC", c.ttl.mesh_doc)?;
         c.ttl.binding = secs("DATUMESH_TTL_BINDING", c.ttl.binding)?;
@@ -420,6 +433,9 @@ impl Config {
             c.api_keys = ApiKeys::parse(&read_secret_file(Path::new(&p))?)?;
         }
         c.publish_domains = PublishDomains::parse(&get("DATUMESH_PUBLISH_DOMAINS").unwrap_or_default())?;
+        if let Some(p) = get("DATUMESH_SERIES_FILE").filter(|p| !p.trim().is_empty()) {
+            c.series = crate::series::parse(&read_file(&p)?)?;
+        }
         if let Some(d) = get("DATUMESH_LOG_DIR").filter(|d| !d.trim().is_empty()) {
             c.log_dir = Some(std::path::PathBuf::from(d));
         }

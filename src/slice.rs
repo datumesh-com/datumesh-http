@@ -33,6 +33,8 @@ use crate::mesh::Inner;
 
 /// The media type of Arrow IPC streams.
 pub const ARROW: &str = "application/vnd.apache.arrow.stream";
+/// The media type of the CSV form of a slice (RFC 4180, UTF-8).
+const CSV: &str = "text/csv; charset=utf-8";
 
 /// The open arguments of a target, ascending.
 fn open_args(t: &Target) -> Vec<String> {
@@ -69,12 +71,58 @@ fn parse_cursor(s: &str) -> Option<Vec<Scalar>> {
     items.iter().map(|i| Scalar::from_json(&i.to_jcs()).ok()).collect()
 }
 
+/// The form of a slice answer: JSON pages (the default), an Arrow stream or CSV (Build 2 Part 6, G1: each
+/// its own address, `?format=arrow` and `?format=csv`, or chosen by `Accept` for Arrow).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Form {
+    #[default]
+    Json,
+    Arrow,
+    Csv,
+}
+
 /// What a slice request asks besides the slice.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SliceQuery {
     pub(crate) limit: Option<usize>,
     pub(crate) after: Option<String>,
-    pub(crate) arrow: bool,
+    pub(crate) form: Form,
+}
+
+/// Splits `?format=` off a slice request's query: the form it names (`None` when there is none), and
+/// the rest of the request. An unknown format is `E_PARSE_URI`.
+pub(crate) fn split_format(rest: &str) -> Result<(String, Option<Form>), ErrorCode> {
+    let Some((path, query)) = rest.split_once('?') else {
+        return Ok((rest.to_string(), None));
+    };
+    let mut form = None;
+    let mut kept = Vec::new();
+    for p in query.split('&') {
+        if let Some(v) = p.strip_prefix("format=") {
+            form = Some(match v {
+                "json" => Form::Json,
+                "arrow" => Form::Arrow,
+                "csv" => Form::Csv,
+                _ => return Err(ErrorCode::ParseUri),
+            });
+        } else {
+            kept.push(p);
+        }
+    }
+    if kept.is_empty() {
+        Ok((path.to_string(), form))
+    } else {
+        Ok((format!("{path}?{}", kept.join("&")), form))
+    }
+}
+
+/// A CSV field: quoted when it holds a comma, a quote or a line break (RFC 4180).
+pub(crate) fn csv_field(t: &str) -> String {
+    if t.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", t.replace('"', "\"\""))
+    } else {
+        t.to_string()
+    }
 }
 
 /// Splits `?limit=` and `?after=` off a slice request's query; the rest is the slice's.
@@ -148,13 +196,13 @@ impl Inner {
         Ok((m, a.to_string()))
     }
 
-    /// Answers a slice request (blocking).
-    pub(crate) fn slice(&self, rest: &str, now: &str, arrow: bool) -> Reply {
+    /// Answers a slice request (blocking) in the form asked.
+    pub(crate) fn slice(&self, rest: &str, now: &str, form: Form) -> Reply {
         let (rest, mut q) = match split_query(rest) {
             Ok(x) => x,
             Err(c) => return envelope::bad_request_reply(c),
         };
-        q.arrow = arrow;
+        q.form = form;
         let target = match crate::call::resolve(&rest, now, &self.config.aliases, self, true) {
             Ok(t) => t,
             Err(r) => return self.rejection(r, None),
@@ -198,7 +246,36 @@ impl Inner {
                 None => return envelope::bad_request_reply(ErrorCode::ParseUri),
             },
         };
-        if q.arrow {
+        if q.form == Form::Csv {
+            // One row a member, in key order: its key arguments, its value and its tx. Not paginated: the
+            // whole slice up to the bound is one file.
+            let mut out = String::new();
+            let mut head: Vec<String> = open.clone();
+            head.extend(["value".to_string(), "tx".to_string()]);
+            out.push_str(&head.iter().map(|h| csv_field(h)).collect::<Vec<_>>().join(","));
+            out.push_str("\r\n");
+            for m in &members[..total] {
+                let mut cells: Vec<String> = open
+                    .iter()
+                    .map(|k| {
+                        m.cell.args.get(k).and_then(Arg::scalar).map(|x| x.lexical().to_string()).unwrap_or_default()
+                    })
+                    .collect();
+                cells.push(m.value.lexical().to_string());
+                cells.push(m.version.tx.clone());
+                out.push_str(&cells.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(","));
+                out.push_str("\r\n");
+            }
+            return Reply {
+                status: 200,
+                body: out.into_bytes().into(),
+                content_type: CSV,
+                cache,
+                canonical: None,
+                retry_after: None,
+            };
+        }
+        if q.form == Form::Arrow {
             let end = match q.limit {
                 Some(l) => (start + l).min(total),
                 None => total,

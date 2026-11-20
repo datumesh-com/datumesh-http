@@ -166,7 +166,7 @@ impl Overlay {
 }
 
 /// The value arguments of a core argument map.
-fn plain_args(args: &CoreArgs) -> Args {
+pub(crate) fn plain_args(args: &CoreArgs) -> Args {
     args.iter()
         .filter_map(|(k, a)| match a {
             Arg::Value(s) => Some((k.clone(), s.clone())),
@@ -185,7 +185,7 @@ fn split(name: &str) -> (&str, &str) {
 }
 
 /// The cell id of `name` with `hash` and `args`.
-fn cell_id(name: &str, hash: &str, args: &Args) -> String {
+pub(crate) fn cell_id(name: &str, hash: &str, args: &Args) -> String {
     let (ns, f) = split(name);
     Cell { ns: ns.into(), fn_name: f.into(), fn_hash: hash.into(), args: core_args(args) }.id()
 }
