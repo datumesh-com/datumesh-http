@@ -1338,8 +1338,8 @@ fn the_html_readers_read_a_sample_page() {
 //
 // * a browser on `/slice/<fn>(<args>)` (percent-encoded or not) is sent to the page like the query form;
 // * `GET /x/interval/<function>?<key>=<value|*>...&from=YYYY-MM-DD&to=YYYY-MM-DD[&format=csv|arrow]`: the stored
-//   cells of a listed series in `[from, to]`, each with its receipt, JSON by default; CSV (the page's columns
-//   and a final `receipt` column holding the hashes of the row's receipts in column order, space-separated) and
+//   cells of a listed series in `[from, to]`, each with its receipt, JSON by default; CSV (long form, D33: one
+//   row a cell, the open keys, then `date`, `value`, `receipt`; the page CSV has no receipt column) and
 //   Arrow are addresses of their own. At most 10 years for a month series (`400` `E_RANGE_TOO_LARGE`),
 //   `from <= to`, an unlisted function `404`; cached as the pages are (a past range `s-maxage=86400`, one
 //   touching the current period 600); the series' rate-limit bucket.
@@ -1451,17 +1451,35 @@ async fn the_interval_call_in_csv_and_arrow() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(r.header("content-type").unwrap_or_default().starts_with("text/csv"));
     let lines = csv_lines(&r.text());
-    assert_eq!(lines[0], "date,value (percent),receipt");
+    assert_eq!(lines[0], "date,value,receipt", "long form: no key, so date, value, receipt");
     assert_eq!(lines.len(), 4, "{lines:?}");
     let hash = |l: &str| l.rsplit(',').next().unwrap().to_string();
     assert!(lines[1].starts_with("2026-03-19,4.5,") && hash(&lines[1]).len() == 64, "{}", lines[1]);
     assert!(lines[3].starts_with("2026-05-07,4.25,"), "{}", lines[3]);
-    // a keyed series: the page's columns, then the receipts of the row's cells in column order
+    // a keyed series: one row a cell, the open keys first, by date then key in dictionary order (USD, JPY, GBP)
     let r = fetch(&m, &interval(FXR, "currency=*&from=2026-03-01&to=2026-03-31&format=csv"), &[]).await;
     let lines = csv_lines(&r.text());
-    assert_eq!(lines[0], "date,USD (units per EUR),JPY (units per EUR),GBP (units per EUR),receipt");
-    assert!(lines[1].starts_with("2026-03-02,1.0832,160.25,0.8301,"), "{}", lines[1]);
-    assert_eq!(hash(&lines[1]).split(' ').filter(|h| h.len() == 64).count(), 3, "{}", lines[1]);
+    assert_eq!(lines[0], "currency,date,value,receipt");
+    assert_eq!(lines.len(), 7, "{lines:?}");
+    let heads: Vec<String> = lines[1..].iter().map(|l| l.split(',').take(3).collect::<Vec<_>>().join(",")).collect();
+    assert_eq!(
+        heads,
+        strs(&[
+            "USD,2026-03-02,1.0832",
+            "JPY,2026-03-02,160.25",
+            "GBP,2026-03-02,0.8301",
+            "USD,2026-03-03,1.0791",
+            "JPY,2026-03-03,150",
+            "GBP,2026-03-03,0.829"
+        ])
+    );
+    assert!(lines[1..].iter().all(|l| hash(l).len() == 64), "{lines:?}");
+    // a bound key is still a column; a fixed argument of the series file is not
+    let r = fetch(&m, &interval(FXR, "currency=USD&from=2026-03-01&to=2026-03-31&format=csv"), &[]).await;
+    assert_eq!(csv_lines(&r.text()).len(), 3);
+    let r = fetch(&m, &interval(RAIN, "region=*&from=2024-11-01&to=2024-12-31&format=csv"), &[]).await;
+    let lines = csv_lines(&r.text());
+    assert_eq!(lines[0], "region,date,value,receipt", "{lines:?}");
     // the same cache as the JSON, and an address of its own
     assert_eq!(edge(&r), (true, Some(86400)));
     let r = fetch(&m, &interval(BANK, "from=2026-03-01&to=2026-05-31&format=arrow"), &[]).await;
