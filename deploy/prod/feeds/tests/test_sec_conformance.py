@@ -5,6 +5,7 @@ import copy
 import pytest
 
 import sec
+from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from common import ConformanceError
 from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FRAMES_ASSETS, NOW, facts_file, frames_json, sec_fixture,
                          synth_company)

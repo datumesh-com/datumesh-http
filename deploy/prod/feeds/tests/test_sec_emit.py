@@ -6,6 +6,7 @@ import json
 import pytest
 
 import sec
+from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from helpers import (HEX64, check_order, check_source_object, check_summary, host_of, sha256, split_lines)
 from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, IN_SCOPE, NOW, cf_url, facts_file, item, source_of)
 
@@ -111,7 +112,7 @@ def test_every_cell_carries_licence_source_and_summary(names, first):
         assert c["licence"] == s["licence"] == "https://www.sec.gov/about/privacy-information"
         src = c["source"]
         check_source_object(src, host_of(s["namespace"]), name="sec.gov", url=src["url"], sha=src["sha256"],
-                            takeover="https://mesh-test.datumesh.com/takeover/sec.gov")
+                            retrieved=NOW, takeover="https://mesh-test.datumesh.com/takeover/sec.gov")
         assert src["url"] in url_sha and src["sha256"] == url_sha[src["url"]] and HEX64.match(src["sha256"])
         assert src["retrieved"] == NOW
         check_summary(c["summary"])

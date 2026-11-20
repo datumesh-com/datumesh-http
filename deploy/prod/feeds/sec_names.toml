@@ -1,0 +1,70 @@
+# The SEC company-facts names (Build 2 Part 7, K7): rehearsal only. This file is not part of names.toml, so common.names
+# (both host tables) has no SEC section. sec.py reads it through sec.sec_table(host), which lists only the rehearsal host
+# below and refuses datumesh.com by name. Names are spelled with {host}, as in names.toml.
+# The names are permanent once published, so they are reviewed before any production table has them.
+
+[hosts."mesh-test.datumesh.com"]
+status = "rehearsal"
+
+[sec]
+namespace = "{host}/relay/sec.gov"
+function = "company_fact"
+filing_function = "filing"
+filing_for_function = "filing_for"
+source_name = "sec.gov"
+register_source = "sec.gov"
+register_code = "company_facts"
+licence = "https://www.sec.gov/about/privacy-information"
+takeover = "https://{host}/takeover/sec.gov"
+# one company's companyfacts file (10 digits with leading zeros)
+companyfacts_url = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+# the NYSE and Nasdaq tickers (the scope rule's company list, K3)
+tickers_url = "https://www.sec.gov/files/company_tickers_exchange.json"
+# one frame: the latest value of a concept per company for a calendar period (CY2023Q4I is an instant, CY2023 a year)
+frames_url = "https://data.sec.gov/api/xbrl/frames/{taxonomy}/{concept}/{unit}/{ccp}.json"
+
+# The licence register's entry for the dataset (sec.gov / company_facts), as the licence check wrote it
+# (build2-licences/register.json, 2026-11-20). register.py emits the cells from it.
+[sec_register_entry]
+source_domain = "sec.gov/company_facts"
+licence_url = "https://www.sec.gov/about/privacy-information"
+retrieved = "2026-11-20T13:28:09.276628Z"
+sha256 = "edd4ec41f3aec2594d25ead8e0a08681cb3bfe42414f6805fc538a6dc06a3723"
+verdict = "RELAY"
+spdx_or_url = "https://www.sec.gov/about/privacy-information"
+attribution = "Source: U.S. Securities and Exchange Commission, EDGAR (data.sec.gov), relayed as filed"
+conditions = [
+  "Information on sec.gov is public and may be copied or further distributed without the SEC's permission; the SEC asks for citation of the SEC as the source",
+  "Do not use the SEC seal, logos or artwork; do not use SEC or EDGAR marks in a trade name or to imply affiliation",
+  "Stay within the SEC's limit of 10 requests per second in total (Datumesh keeps to 5 per second, sequential)",
+  "Declare a User-Agent (Datumesh: Datumesh mesh-test relay (https://datumesh.com), no email address); stop on a 403 undeclared-tool refusal and never retry harder",
+  "The page is generic website policy, not a data licence for the XBRL figures, which are the companies' public filings",
+]
+
+# The register's dataset and its licence facts. The clauses are quoted exactly from LICENCES.md section 9 (the SEC
+# section of the licence check); register.py joins them with " | " for licence_clauses.
+[sec_register]
+[sec_register.source_labels]
+"sec.gov" = "U.S. Securities and Exchange Commission (EDGAR)"
+
+[[sec_register.datasets]]
+source = "sec.gov"
+code = "company_facts"
+name = "EDGAR company facts (XBRL, as filed)"
+status = "relayed"
+input = "sec.gov/company_facts"
+
+[sec_register_licence]
+source = "sec.gov"
+code = "company_facts"
+page = "https://www.sec.gov/about/privacy-information"
+quotes = [
+  'Information presented on sec.gov is considered public information and may be copied or further distributed by users of the web site without the SEC’s permission. Please consider appropriate citation to the SEC as the source.',
+  'Please do not use the SEC seal or any of the other logos or artwork from this site.',
+  'We reserve the right to block IP addresses that submit excessive requests. Current guidelines limit users to a total of no more than 10 requests per second, regardless of the number of machines used to submit requests.',
+  'The SEC does not allow "unclassified" bots or automated tools to crawl the site.',
+  'Anyone can access and download this information for free or query it through a variety of EDGAR public searches.',
+  'Current max request rate: 10 requests/second.',
+  'Please declare your user agent in request headers:',
+  'These APIs do not require any authentication or API keys to access.',
+]

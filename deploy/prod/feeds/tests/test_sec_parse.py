@@ -232,7 +232,8 @@ def test_filings_of_the_fixtures():
     assert f == {"cik": CIK_GE, "form": "10-K", "filed": "2024-02-02", "fy": "2023", "fp": "FY",
                  "period_end": "2023-12-31"}
     assert set(p["filings"]) == {r["accession"] for r in p["rows"]}, "one filing per accession with cells"
-    assert p["filings"]["0000019617-24-000225"]["period_end"] == "2023-12-31", (
+    pj = sec.parse_companyfacts(facts_file(CIK_JPM))
+    assert pj["filings"]["0000019617-24-000225"]["period_end"] == "2023-12-31", (
         "the cover-page share count is dated Jan 2024; period_end is the latest period of the statements, not the cover")
 
 

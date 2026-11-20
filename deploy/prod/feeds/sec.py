@@ -27,6 +27,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import common
+import register as licence_register
 import relay
 from common import ConformanceError, NotPublished, RateLimited, ShapeError
 
@@ -40,6 +41,7 @@ FIRST_FY, LAST_FY = 2019, 2024
 BUDGET = 300_000
 STEP = 25
 PRODUCTION = "datumesh.com"
+SEC_NAMES = common.FEEDS / "sec_names.toml"
 
 RANKING_FRAME = ("us-gaap", "Assets", "USD", "CY2023Q4I")
 CONFORMANCE_FRAMES = (
@@ -370,6 +372,32 @@ def http_get(url: str, *, sleep=time.sleep) -> bytes:
         sleep(waits[attempt])
 
 
+def sec_table(host) -> dict:
+    """The SEC section of sec_names.toml for one host (K7). Production is refused by name; any host the file does not
+    list is common.UnknownHost. Names come with {host} spelled for the host."""
+    if host == PRODUCTION:
+        raise NotForProduction(f"the SEC names are rehearsal-only (Part 7, K7): {PRODUCTION} is refused")
+    with open(SEC_NAMES, "rb") as f:
+        raw = tomllib.load(f)
+    if not isinstance(host, str) or host not in raw["hosts"]:
+        raise common.UnknownHost(f"host {host!r} is not in sec_names.toml, which lists {sorted(raw['hosts'])}")
+    body = {k: v for k, v in raw.items() if k != "hosts"}
+    return common._with_host(body, host)
+
+
+def names(host) -> dict:
+    """common.names(host) plus the SEC tables: `sec` (the relay), `sec_register` (the register table of names.toml with
+    the one SEC dataset), `sec_register_entry` and `sec_register_licence` (the licence facts)."""
+    raw = sec_table(host)
+    table = dict(common.names(host))
+    reg = dict(table["register"])
+    reg["datasets"] = raw["sec_register"]["datasets"]
+    reg["source_labels"] = {**reg["source_labels"], **raw["sec_register"]["source_labels"]}
+    table.update({"sec": raw["sec"], "sec_register": reg, "sec_register_entry": raw["sec_register_entry"],
+                  "sec_register_licence": raw["sec_register_licence"]})
+    return table
+
+
 def _frame_url(s, frame) -> str:
     taxonomy, concept, unit, ccp = frame
     return s["frames_url"].format(taxonomy=taxonomy, concept=concept, unit=unit, ccp=ccp)
@@ -682,6 +710,16 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
                       "source": {"url": url, "retrieved": now, "sha256": common.sha256_hex(data)}})
 
     lines, st = emit(items, state, names)
+    # the register's six cells of sec.gov / company_facts, on the first run (register.py's emit: a later run emits
+    # nothing unless the licence text changed); the class lines and descriptors are register.py's
+    reg_blobs = {}
+    reg_lines, reg_state = licence_register.emit(
+        [names["sec_register_entry"]], {"class": True, **state.get("register", {})},
+        {"register": names["sec_register"]}, licences=[names["sec_register_licence"]], blobs=reg_blobs)
+    if reg_lines:
+        st = dict(st)
+        st["register"] = reg_state
+    lines = lines + reg_lines
     rows = [r for it in items for r in it["parsed"]["rows"]]
     tests = conformance(rows, frames, names)
     tested = set(st.get("tested", []))
@@ -700,6 +738,11 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
     report_path = out_dir / f"sec-scope-{stamp}.json"
     report = scope_report(ranking, choice, no_facts=no_facts, budget=budget, step=step)
     common.write_jsonl(path, lines)
+    for rel, data in reg_blobs.items():  # content-addressed, as register.py writes them
+        target = out_dir / rel
+        target.parent.mkdir(exist_ok=True)
+        if not target.exists():
+            target.write_bytes(data)
     try:
         with open(report_path, "x", encoding="utf-8", newline="\n") as f:
             json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -727,9 +770,9 @@ def main(argv=None):
     if a.host == PRODUCTION:
         common.warn(f"sec.py: {PRODUCTION} is refused: the SEC relay is rehearsal-only (Part 7, K7); use mesh-test.{PRODUCTION}")
         raise SystemExit(2)
-    names = common.names(a.host)
+    table = names(a.host)
     try:
-        path = run(names, fetch=http_get, now=common.now_instant(), state_dir=a.state_dir, out_dir=a.out_dir)
+        path = run(table, fetch=http_get, now=common.now_instant(), state_dir=a.state_dir, out_dir=a.out_dir)
     except SecRefused as e:
         common.warn(f"sec: stopped: {e}")
         return 1

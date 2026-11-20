@@ -8,6 +8,8 @@ import pytest
 
 import common
 import sec
+from conftest import PRODUCTION, REHEARSAL
+from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from sec_helpers import FakeClock, max_in_any_second
 
 UA = "Datumesh mesh-test relay (https://datumesh.com)"
@@ -199,8 +201,26 @@ def test_run_refuses_the_production_names(tmp_path):
     assert issubclass(sec.NotForProduction, ValueError)
 
 
-def test_production_host_table_has_no_part_7_names(names):
-    prod = common.names("datumesh.com")
-    assert "sec" not in prod, "K7: nothing for Part 7 in the datumesh.com table; the section is rehearsal-only"
-    assert prod["meta"]["status"] == "production"
-    assert names["sec"]["namespace"] == "mesh-test.datumesh.com/relay/sec.gov"
+def test_production_host_table_has_no_part_7_names():
+    """K7: the SEC section is in neither host table of names.toml (common.names) and its own file lists only the
+    rehearsal host, which the loader reads and production never does."""
+    for host in (REHEARSAL, PRODUCTION):
+        assert "sec" not in common.names(host), "K7: nothing for Part 7 in common.names, for either host"
+        assert "sec_register" not in common.names(host)
+    assert common.names(PRODUCTION)["meta"]["status"] == "production"
+    with pytest.raises(sec.NotForProduction):
+        sec.sec_table(PRODUCTION)
+    with pytest.raises(common.UnknownHost):
+        sec.sec_table("example.org")
+    assert sec.names(REHEARSAL)["sec"]["namespace"] == "mesh-test.datumesh.com/relay/sec.gov"
+
+
+def test_sec_names_file_lists_only_the_rehearsal_host():
+    import tomllib
+    from conftest import FEEDS
+    with open(FEEDS / "sec_names.toml", "rb") as f:
+        t = tomllib.load(f)
+    assert list(t["hosts"]) == [REHEARSAL] and t["hosts"][REHEARSAL]["status"] == "rehearsal"
+    text = (FEEDS / "sec_names.toml").read_text(encoding="utf-8")
+    for path in ("datumesh.com/relay", "datumesh.com/takeover", "datumesh.com/register", "mesh-test.datumesh.com/"):
+        assert path not in text, path  # every name is spelled with {host}; the host is only in [hosts]

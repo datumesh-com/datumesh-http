@@ -26,7 +26,9 @@ The interface these tests pin for sec.py (CONTRACT-build2-part7-sec.md K1 to K3;
 """
 import json
 
-from conftest import fixture
+import pytest
+
+from conftest import REHEARSAL, fixture
 
 CIK_CAT, CIK_JPM, CIK_GE = "0000018230", "0000019617", "0000040545"
 CIKS = (CIK_CAT, CIK_JPM, CIK_GE)
@@ -152,3 +154,11 @@ def item(names, cik, data=None, parse=None):
     import sec
     data = data if data is not None else facts_file(cik)
     return {"parsed": (parse or sec.parse_companyfacts)(data), "source": source_of(cf_url(names, cik), data)}
+
+
+@pytest.fixture(scope="session")
+def names():
+    """The SEC names: the rehearsal table with the SEC section from sec_names.toml (sec.names). The SEC modules of the
+    tests import this fixture, so no test reads the sec section from common.names (which has none, K7)."""
+    import sec
+    return sec.names(REHEARSAL)

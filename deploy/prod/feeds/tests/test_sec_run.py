@@ -9,8 +9,9 @@ import pytest
 import common
 import relay
 import sec
+from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from common import ConformanceError, ShapeError
-from helpers import check_order, split_lines
+from helpers import check_order, check_summary, split_lines
 from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FRAMES_ASSETS, IN_SCOPE, NOW, SYNTH_CELLS, TICKERS, FakeClock,
                          dirs, facts_file, max_in_any_second, read_lines, sec_fixture, synth_company)
 
@@ -267,3 +268,32 @@ def test_the_default_budget_and_step_are_the_contracts(names):
     import inspect
     p = inspect.signature(sec.run).parameters
     assert p["budget"].default == 300_000 and p["step"].default == 25
+
+
+REG_CLASS = "mesh-test.datumesh.com/register/dataset"
+REG_METHODS = ["name", "status", "licence_page", "licence_hash", "licence_clauses", "retrieved"]
+
+
+def test_first_run_writes_the_register_cells_of_sec_gov_company_facts(first):
+    """The licence register's six cells for the dataset (register.py's methods and texts). The class lines and the
+    method descriptors belong to register.py, so this file carries cells only."""
+    lines = first["lines"]
+    cells = [l for l in lines if "cell" in l and l["cell"]["fn"].startswith(REG_CLASS + "/")]
+    assert sorted(c["cell"]["fn"].rsplit("/", 1)[1] for c in cells) == sorted(REG_METHODS)
+    for c in cells:
+        assert c["cell"]["args"] == {"source": {"type": "string", "value": "sec.gov"},
+                                     "code": {"type": "string", "value": "company_facts"}}
+        assert c["licence"] == "CC0-1.0"
+        check_summary(c["summary"])
+    by = {c["cell"]["fn"].rsplit("/", 1)[1]: c["value"] for c in cells}
+    assert by["status"] == {"type": "string", "value": "relayed"}
+    assert by["licence_page"] == {"type": "string", "value": "https://www.sec.gov/about/privacy-information"}
+    assert by["licence_hash"] == {"type": "string",
+                                  "value": "edd4ec41f3aec2594d25ead8e0a08681cb3bfe42414f6805fc538a6dc06a3723"}
+    assert by["retrieved"] == {"type": "instant", "value": "2026-11-20T13:28:09.276628Z"}
+    blob = by["licence_clauses"]
+    assert blob["media_type"] == "text/plain" and blob["blob"].startswith("blobs/")
+    text = (first["o"] / blob["blob"]).read_text(encoding="utf-8")
+    assert "Please declare your user agent in request headers:" in text and " | " in text
+    assert not [l for l in lines if "descriptor" in l or "class" in l or ("catalog" in l and REG_CLASS in l["catalog"])]
+    check_order(lines)
