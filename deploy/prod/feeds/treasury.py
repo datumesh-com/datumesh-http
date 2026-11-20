@@ -62,8 +62,9 @@ def parse(data: bytes) -> list:
                 continue
             shape(DECIMAL.match(v), f"Treasury XML: bad value {v!r} for {name}")
             vals[XML_TENORS[name]] = v
-        # a day has the tenors Treasury quoted then: 9 in 1990, 14 since 2022; an unknown element is refused above
-        shape(date and seen, f"Treasury XML: entry for {date} has no tenors")
+        # a day has the tenors Treasury quoted then: 9 in 1990, 14 since 2022; an unknown element is refused above.
+        # An entry with no tenor (a holiday, 2010-10-11) is a day without data: no rows.
+        shape(date, "Treasury XML: an entry has no date")
         for t in TENORS:
             if t in vals:
                 rows.append({"date": date, "value": vals[t], "tenor": t})

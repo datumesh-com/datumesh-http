@@ -19,7 +19,11 @@ from common import EmptyRegion, NotPublished, ShapeError, decimal_text, shape
 
 KEY = "chirps"
 FIRST_MONTH = "1981-01-01"
-THROTTLE_SECONDS = 60.0  # CHC answers 429 to quick repeats: at most one raster file a minute
+THROTTLE_SECONDS = 120.0  # CHC answers 429 to quick repeats: at most one raster file every two minutes
+RETRIES = 5  # of a rate-limited request, then the run stops with the months it has
+BACKOFF_BASE = 120.0
+BACKOFF_CAP = 1800.0  # thirty minutes
+RETRY_AFTER_CAP = 3600.0
 RING_RE = re.compile(r"\(([^()]*)\)")
 
 
@@ -292,6 +296,18 @@ def pending_months(last, now: str) -> list:
     return out
 
 
+def backoff_seconds(attempt: int) -> float:
+    """2, 4, 8, 16, 30, 30 ... minutes."""
+    return min(BACKOFF_BASE * 2 ** attempt, BACKOFF_CAP)
+
+
+def retry_delay(err, attempt: int) -> float:
+    """The server's Retry-After (at most an hour), else the exponential backoff."""
+    if err.retry_after is not None:
+        return min(max(0.0, err.retry_after), RETRY_AFTER_CAP)
+    return backoff_seconds(attempt)
+
+
 def seconds_to_wait(last_fetch, now_epoch: float) -> float:
     if last_fetch is None:
         return 0.0
@@ -299,7 +315,7 @@ def seconds_to_wait(last_fetch, now_epoch: float) -> float:
 
 
 def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.time,
-        max_months=None, decode=None):
+        max_months=None, decode=None, retries=RETRIES):
     sec = names[KEY]
     state_path = Path(state_dir) / f"{KEY}.json"
     state = common.load_state(state_path)
@@ -318,10 +334,22 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         wait = seconds_to_wait(state.get("last_fetch"), clock())
         if wait > 0:
             sleep(wait)
-        try:
-            data = fetch(url)
-        except NotPublished:
-            break  # not published yet: keep what was read, the next run starts here
+        data, attempt = None, 0
+        while data is None:
+            try:
+                data = fetch(url)
+            except NotPublished:
+                break  # not published yet: keep what was read, the next run starts here
+            except common.RateLimited as e:
+                if attempt >= retries:
+                    common.warn(f"chirps: rate limited ({e}) after {attempt} retries: stopping with the months read")
+                    break
+                delay = retry_delay(e, attempt)
+                common.warn(f"chirps: rate limited ({e}): waiting {delay:g} s, retry {attempt + 1} of {retries}")
+                sleep(delay)
+                attempt += 1
+        if data is None:
+            break
         state["last_fetch"] = clock()
         sha = common.sha256_hex(data)
         src = {"url": url, "retrieved": now, "sha256": sha}

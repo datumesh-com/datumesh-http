@@ -166,9 +166,9 @@ def setup(names, tmp_path, last="2024-05-01"):
     return names, s, o
 
 
-def run(names, s, o, fetch, max_months, clock_sleep, **kw):
+def run(names, s, o, fetch, max_months, clock_sleep, now=NOW, **kw):
     clock, sleep, _ = clock_sleep
-    return chirps.run(names, fetch=fetch, now=NOW, state_dir=s, out_dir=o, sleep=sleep, clock=clock,
+    return chirps.run(names, fetch=fetch, now=now, state_dir=s, out_dir=o, sleep=sleep, clock=clock,
                       max_months=max_months, decode=lambda data: grid(), **kw)
 
 
@@ -213,7 +213,7 @@ def test_after_the_retries_the_run_stops_and_keeps_the_months_read(names, tmp_pa
     assert "rate limited" in capsys.readouterr().err
     # the next run starts at the month that was refused
     f2 = Flaky({})
-    run(names, s, o, f2, 1, _fake_clock())
+    run(names, s, o, f2, 1, _fake_clock(), now="2026-11-19T13:00:00.000000Z")
     assert f2.calls[0].endswith("2024.07.tif")
 
 
