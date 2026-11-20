@@ -62,7 +62,11 @@ image="python:3.13-slim@sha256:$PYTHON_DIGEST"
   modeargs=""
   if [ "$module" = ecb_fx ] || [ "$module" = treasury ]; then modeargs="--mode $mode"; fi
   deps=""
-  if [ "$module" = chirps ]; then deps="pip install -q --no-cache-dir numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && "; fi
+  if [ "$module" = chirps ]; then
+    deps="pip install -q --no-cache-dir numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && "
+    # 12 months a file (about 25 minutes at 120 s a raster), published one after another
+    modeargs="--max-months ${CHIRPS_MAX_MONTHS:-12}"
+  fi
 
   while :; do
     # fetch and check: prints the one file it wrote (nothing when there is nothing new)
@@ -81,13 +85,16 @@ image="python:3.13-slim@sha256:$PYTHON_DIGEST"
     [ -s "$file" ] || fail "no file $file"
     echo "wrote $file ($(wc -l <"$file") lines)"
 
+    # The file (and its blobs/) mounted read-only at the same path, so the mesh container can read it.
     docker compose -f "$root/compose.yml" run --rm \
+        -v "$out:$out:ro" \
         -e DATUMESH_PUBLISH_LANES="${DATUMESH_PUBLISH_LANES:-2}" \
         datumesh-mesh publish-stored "$file" || fail "publish-stored failed; the state is unchanged"
 
     cp "$work/state/$module.json" "$state/$module.json" || fail "could not keep the state"
     echo "published $file"
-    # a history run writes one year a file: go on until there is nothing new; any other run is one file
-    if [ "$mode" != history ]; then break; fi
+    # a history run writes one year a file, CHIRPS 12 months a file: go on until there is nothing
+    # new; any other run is one file
+    if [ "$mode" != history ] && [ "$module" != chirps ]; then break; fi
   done
 } >>"$log" 2>&1

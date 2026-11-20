@@ -177,13 +177,13 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
 
     // The tests: counts, the derived cases, each test's call and expectation, the last run.
     let (count, branches, covered, counterexamples) =
-        testrun::counts(store, &inner.config.host, &fn_hash, &now).unwrap_or((0, 0, 0, 0));
-    let open: Vec<Value> = testrun::counterexamples(store, &inner.config.host, &fn_hash, &now)
+        testrun::counts(store, &inner.config.host, name, &fn_hash, &now).unwrap_or((0, 0, 0, 0));
+    let open: Vec<Value> = testrun::counterexamples(store, &inner.config.host, name, &fn_hash, &now)
         .unwrap_or_default()
         .into_iter()
         .map(|c| obj(vec![("signer", s(&c.signer)), ("case", s(&c.case))]))
         .collect();
-    let held = testrun::held_tests(store, &fn_hash).unwrap_or_default();
+    let held = testrun::held_tests_of(store, &fn_hash, name, &now).unwrap_or_default();
     let overlay = Overlay::default();
     let ran: Vec<Ran> = held.iter().map(|(_, spec)| testrun::run_test(store, &overlay, &now, spec)).collect();
     let refs: Vec<&Ran> = ran.iter().collect();
@@ -208,7 +208,7 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
             obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)])
         })
         .collect();
-    let rows = store.function_tests(&fn_hash).unwrap_or_default();
+    let rows: Vec<&datumesh_store::FunctionTest> = held.iter().map(|(r, _)| r).collect();
     let results: Vec<Option<&str>> = rows.iter().map(|r| r.last_result.as_deref()).collect();
     // The worst result first, whatever the store's order: error, then fail (QUESTIONS-build2 D22).
     let worst = ["error", "fail"].into_iter().find(|w| results.iter().flatten().any(|r| r == w));

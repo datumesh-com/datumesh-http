@@ -288,3 +288,147 @@ async fn a_bundle_carries_the_tests_of_a_stored_function() {
     assert_eq!(page["tests"]["count"], 2, "{page}");
     assert_eq!(page["tests"]["last_run"]["result"], "fail", "{page}");
 }
+
+// ---- 8: two functions with one descriptor (QUESTIONS-build2 D23, http 0.4.4) ----------------------------------
+
+const FY: &str = "mesh-test.datumesh.com/scratch_b5/relay/fy";
+
+fn y_cell(currency: &str, date: &str, value: &str) -> String {
+    fx_cell(currency, date, value).replace(FX, FY)
+}
+
+fn y_call(currency: &str, date: &str) -> String {
+    format!("{FY}(currency: \"{currency}\", date: {date})")
+}
+
+fn yt(currency: &str, date: &str, want: &str) -> String {
+    test_line(FY, &y_call(currency, date), None, None, num(want))
+}
+
+/// FX and FY: the same signature (so the same function hash), each with its own cells; FX has two
+/// good tests, FY one good and one failing.
+fn twins() -> Vec<String> {
+    let mut v = data();
+    v.push(function_line(FY, &fx_sig(), None));
+    v.push(y_cell("USD", "2024-03-15", "2"));
+    v.push(y_cell("GBP", "2024-03-15", "3"));
+    v.extend(good_tests());
+    v.push(yt("USD", "2024-03-15", "2"));
+    v.push(yt("GBP", "2024-03-15", "3.5"));
+    v
+}
+
+async fn tests_named(m: &Served, name: &str) -> Value {
+    m.get(&describe_path(name)).await["tests"].clone()
+}
+
+async fn page_of(m: &Served, name: &str) -> Value {
+    let r = publish4::get(m, &format!("/fn/{name}"), &[("accept", "application/json")]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    r.json()
+}
+
+fn calls_of(page: &Value) -> Vec<String> {
+    let mut v: Vec<String> = page["tests"]["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .map(|c| c["call"].as_str().unwrap().to_string())
+        .collect();
+    v.sort();
+    v
+}
+
+async fn check_twins(m: &Served, fx: (u64, u64, &str), fy: (u64, u64, &str)) {
+    assert_eq!(fn_hash(m, FX), fn_hash(m, FY), "the two share one descriptor");
+    assert_eq!(tests_named(m, FX).await, counts(fx.0, fx.1));
+    assert_eq!(tests_named(m, FY).await, counts(fy.0, fy.1));
+    let (px, py) = (page_of(m, FX).await, page_of(m, FY).await);
+    assert_eq!((px["tests"]["count"].as_u64(), py["tests"]["count"].as_u64()), (Some(fx.0), Some(fy.0)));
+    assert_eq!(px["tests"]["counterexamples"].as_u64(), Some(fx.1));
+    assert_eq!(py["tests"]["counterexamples"].as_u64(), Some(fy.1));
+    assert_eq!(px["tests"]["open_counterexamples"].as_array().unwrap().len() as u64, fx.1, "{px}");
+    assert_eq!(py["tests"]["open_counterexamples"].as_array().unwrap().len() as u64, fy.1, "{py}");
+    assert!(calls_of(&px).iter().all(|c| c.starts_with(FX)), "{px}");
+    assert!(calls_of(&py).iter().all(|c| c.starts_with(FY)), "{py}");
+    assert_eq!(px["tests"]["last_run"]["result"], fx.2, "{px}");
+    assert_eq!(py["tests"]["last_run"]["result"], fy.2, "{py}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_stored_functions_with_one_descriptor_keep_their_own_tests() {
+    let lite = published_checked("sc-twins", &twins());
+    let m = build_served(lite, None, |_| {}).await;
+    check_twins(&m, (2, 0, "pass"), (2, 1, "fail")).await;
+    let py = page_of(&m, FY).await;
+    let results: Vec<(String, String)> = py["tests"]["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["call"].as_str().unwrap().to_string(), c["result"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(results.contains(&(y_call("GBP", "2024-03-15"), "fail".to_string())), "{results:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_version_reruns_only_the_tests_naming_that_function() {
+    // FY's failing cell is corrected: FY passes, FX is as it was.
+    let m =
+        serve_runs("sc-twins-rerun-y", &[(NOW, twins()), (T1, vec![y_cell("GBP", "2024-03-15", "3.5")])], None).await;
+    check_twins(&m, (2, 0, "pass"), (2, 0, "pass")).await;
+    // FX's cell changes: FX fails, FY keeps its own result.
+    let m =
+        serve_runs("sc-twins-rerun-x", &[(NOW, twins()), (T1, vec![fx_cell("USD", "2024-03-15", "1.5")])], None).await;
+    check_twins(&m, (2, 1, "fail"), (2, 1, "fail")).await;
+    // both change in one run, in opposite directions
+    let m = serve_runs(
+        "sc-twins-rerun-both",
+        &[(NOW, twins()), (T1, vec![fx_cell("USD", "2024-03-15", "1.5"), y_cell("GBP", "2024-03-15", "3.5")])],
+        None,
+    )
+    .await;
+    check_twins(&m, (2, 1, "fail"), (2, 0, "pass")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_cells_of_twins_are_unaffected() {
+    let m = serve_lite("sc-twins-cells", &twins(), Some(test_cells_config()), |_| {}).await;
+    let hash = fn_hash(&m, FX);
+    let wrong = yt("GBP", "2024-03-15", "3.5");
+    let all = [
+        (good_tests()[0].clone(), true),
+        (good_tests()[1].clone(), true),
+        (yt("USD", "2024-03-15", "2"), true),
+        (wrong, false),
+    ];
+    for (line, want) in &all {
+        let v = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(line))))).await;
+        assert_eq!(v["outcome"], "ok", "{line}: {v}");
+        assert_eq!(v["receipt"]["value"], json!(want), "{line}: {v}");
+    }
+    check_twins(&m, (2, 0, "pass"), (2, 1, "fail")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_computed_functions_with_one_body_keep_their_own_tests() {
+    let c = calc();
+    let mut c2 = c.clone();
+    c2.per_unit = format!("{PFX}/per_unit_twin");
+    let mut lines = data_lines(&c);
+    lines.push(per_unit_line(&c, None));
+    lines.push(per_unit_line(&c2, None));
+    lines.extend(per_unit_tests(&c));
+    lines.extend(per_unit_tests(&c2));
+    let (lite, r) = checked("sc-computed-twins", &lines);
+    r.unwrap_or_else(|e| panic!("{e}"));
+    let m = build_served(lite, None, |_| {}).await;
+    assert_eq!(fn_hash(&m, &c.per_unit), fn_hash(&m, &c2.per_unit), "one body, one hash");
+    for f in [&c.per_unit, &c2.per_unit] {
+        let t = tests_named(&m, f).await;
+        assert_eq!(t, json!({"count": 6, "branches": 2, "covered": 2, "counterexamples": 0}), "{f}: {t}");
+        let p = page_of(&m, f).await;
+        assert_eq!(p["tests"]["count"], 6, "{p}");
+        assert!(calls_of(&p).iter().all(|x| x.starts_with(f.as_str())), "{p}");
+        assert_eq!(p["tests"]["last_run"]["result"], "pass", "{p}");
+    }
+}

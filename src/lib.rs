@@ -165,6 +165,7 @@ mod pool;
 pub mod publish;
 mod scenario;
 pub mod slice;
+mod takeover;
 mod testrun;
 pub mod vectors;
 
