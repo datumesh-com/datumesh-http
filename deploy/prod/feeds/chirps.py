@@ -15,9 +15,10 @@ from pathlib import Path
 
 import common
 import relay
-from common import EmptyRegion, NotPublished, ShapeError, decimal_text, shape
+from common import ConformanceError, EmptyRegion, NotPublished, ShapeError, decimal_text, shape
 
 KEY = "chirps"
+TESTS_PER_FILE = 20  # at most this many test lines a file; every region-month gets one while there are no more than this
 FIRST_MONTH = "1981-01-01"
 THROTTLE_SECONDS = 120.0  # CHC answers 429 to quick repeats: at most one raster file every two minutes
 RETRIES = 5  # of a rate-limited request, then the run stops with the months it has
@@ -167,6 +168,21 @@ def region_row(region: str, month: str, grid: dict, rings) -> dict:
     return {"region": region, "month": month, "value": decimal_text(format(q, "f"))}
 
 
+def sampled_cells(n: int) -> set:
+    """Indices (in the order the run plans them, month by month, region by region) of the n planned cells that get a
+    test line: all of them when there are at most TESTS_PER_FILE, else TESTS_PER_FILE spread evenly over the file."""
+    if n <= TESTS_PER_FILE:
+        return set(range(n))
+    return {i * n // TESTS_PER_FILE for i in range(TESTS_PER_FILE)}
+
+
+def test_line(fq: str, region: str, month: str, value: str) -> dict:
+    """A test of one cell of this file: its call, and as `expect` the value a second computation gives."""
+    return {"test": fq, "call": relay.call_text(fq, ["dataset", "region", "month"],
+                                                {"dataset": "chirps", "region": region, "month": month}),
+            "expect": {"type": "number", "value": value}}
+
+
 def read_geotiff(data: bytes) -> dict:
     """Decode a CHIRPS GeoTIFF (tifffile, numpy, and imagecodecs for LZW: imported here only). Returns a grid like synthetic_raster.json,
     its values a numpy array."""
@@ -314,6 +330,15 @@ def seconds_to_wait(last_fetch, now_epoch: float) -> float:
     return max(0.0, THROTTLE_SECONDS - (now_epoch - last_fetch))
 
 
+def _free_name(directory: Path, stem: str) -> Path:
+    """`<stem>.jsonl`, or `<stem>-2.jsonl`, ... when that name is taken: a run never overwrites a file it did not write."""
+    out, n = directory / f"{stem}.jsonl", 1
+    while out.exists():
+        n += 1
+        out = directory / f"{stem}-{n}.jsonl"
+    return out
+
+
 def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.time,
         max_months=None, decode=None, retries=RETRIES):
     sec = names[KEY]
@@ -329,6 +354,11 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
     for region, spec in sec["regions"].items():
         regions[region] = parse_wkt_multi((common.FEEDS / spec["file"]).read_text(encoding="utf-8"))
     lines = []
+    fq = relay.fq_of(sec)
+    planned = len(months) * len(regions)
+    sampled = sampled_cells(planned)
+    index = 0
+    tests = []
     for month in months:
         url = sec["raster_url"].format(year=month[:4], month=month[5:7])
         wait = seconds_to_wait(state.get("last_fetch"), clock())
@@ -356,16 +386,25 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         grid = decode(data)
         rows = []
         for region, rings in regions.items():
+            i, index = index, index + 1
             try:
-                rows.append(region_row(region, month, grid, rings))
+                row = region_row(region, month, grid, rings)
             except EmptyRegion:
                 continue
+            rows.append(row)
+            if i in sampled:
+                # a second computation of the same mean, from the same grid: it must give the cell's value
+                again = region_row(region, month, grid, rings)
+                if again["value"] != row["value"]:
+                    raise ConformanceError(f"{fq} {region} {month}: {row['value']} against {again['value']} recomputed")
+                tests.append(test_line(fq, region, month, decimal_text(again["value"])))
         more, state = emit(rows, state, names, src)
         lines += more
         state["last_date"] = month
+    lines += tests  # the tests come after the cells of the file
     if not lines:
         return None
-    out = Path(out_dir) / f"{KEY}-{now.replace(':', '').replace('-', '')}.jsonl"
+    out = _free_name(Path(out_dir), f"{KEY}-{now.replace(':', '').replace('-', '')}")
     common.write_jsonl(out, lines)
     if publish is not None:
         try:

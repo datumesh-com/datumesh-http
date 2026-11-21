@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import common
+import relay
 from common import INSTANT, SHA256, ShapeError, shape, write_jsonl
 
 KEY = "register"
@@ -102,6 +103,23 @@ def _class_lines(sec, cls):
     return lines
 
 
+def _expected(value, blobs):
+    """The typed scalar a test expects for a cell value: the value itself, or for a blob file reference the blob scalar
+    `<sha256>:<length>:<media type>` (spec 3.7), the length in bytes of the file."""
+    if "blob" in value:
+        sha = value["blob"].rsplit("/", 1)[1]
+        return {"type": "blob", "value": f"{sha}:{len(blobs[value['blob']])}:{value['media_type']}"}
+    return value
+
+
+def _test_line(cell, blobs):
+    """One test per cell: the method's name, its call (source and code), and the value the cell emitted."""
+    fn = cell["cell"]["fn"]
+    a = cell["cell"]["args"]
+    call = relay.call_text(fn, ["source", "code"], {k: a[k]["value"] for k in ("source", "code")})
+    return {"test": fn, "call": call, "expect": _expected(cell["value"], blobs)}
+
+
 def _cell_lines(sec, cls, d, e, lic, blobs):
     args = {"source": {"type": "string", "value": d["source"]}, "code": {"type": "string", "value": d["code"]}}
     fields = {"source": d["source"], "code": d["code"], "name": d["name"], "status": d["status"],
@@ -138,13 +156,15 @@ def emit(entries, state, names, licences=None, blobs=None):
     if not todo:
         return [], state
     lines = [] if state.get("class") else _class_lines(sec, cls)
+    cells = []
     for d, e, lic in todo:
-        lines += _cell_lines(sec, cls, d, e, lic, blobs)
+        cells += _cell_lines(sec, cls, d, e, lic, blobs)
         done[f"{d['source']}|{d['code']}"] = e["sha256"]
+    tests = [_test_line(c, blobs) for c in cells]
     new_state = dict(state)
     new_state["class"] = True
     new_state["done"] = dict(sorted(done.items()))
-    return lines, new_state
+    return lines + cells + tests, new_state
 
 
 def run(names, *, path, now, state_dir, out_dir, publish=None):

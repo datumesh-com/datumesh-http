@@ -37,14 +37,14 @@ def kinds(lines):
         if "class" in l:
             out.append("class")
         else:
-            (k,) = [k for k in ("descriptor", "catalog", "cell") if k in l]
+            (k,) = [k for k in ("descriptor", "catalog", "cell", "test") if k in l]
             out.append(k)
     return out
 
 
 def split(lines):
     ks = kinds(lines)
-    rank = {"descriptor": 0, "class": 1, "catalog": 2, "cell": 3}
+    rank = {"descriptor": 0, "class": 1, "catalog": 2, "cell": 3, "test": 4}
     assert [rank[k] for k in ks] == sorted(rank[k] for k in ks), ks
     return {k: [l for l, kk in zip(lines, ks) if kk == k] for k in rank}
 
@@ -194,7 +194,7 @@ def test_a_changed_text_emits_new_versions_of_that_entry_only(names):
     e["sha256"] = "ab" * 32
     e["retrieved"] = "2026-12-01T05:00:00.000000Z"
     lines, state2 = reg.emit(changed, state, names)
-    assert kinds(lines) == ["cell"] * 6, "no descriptors, class or catalogue again"
+    assert kinds(lines) == ["cell"] * 6 + ["test"] * 6, "no descriptors, class or catalogue again"
     cells = cells_of(lines)
     assert {c["cell"]["fn"] for c in cells} == {f"{cls}/{m}" for m in METHODS}
     assert all(c["cell"]["args"] == {"source": {"type": "string", "value": "ecb.europa.eu"},
@@ -225,7 +225,7 @@ def test_run_writes_one_file_then_nothing(names, tmp_path):
     path.write_bytes(fixture("register.json"))
     out = reg.run(names, path=path, now=NOW, state_dir=state_dir, out_dir=out_dir)
     lines = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
-    assert len(lines) == 6 + 1 + 7 + 48
+    assert len(lines) == 6 + 1 + 7 + 48 + 48  # and one test per cell (F2)
     # the blob files are next to the lines file, named by their SHA-256, with the quotes as UTF-8
     files = sorted(p.name for p in (out_dir / "blobs").iterdir())
     assert 1 <= len(files) <= 8 and all(hashlib.sha256((out_dir / "blobs" / n).read_bytes()).hexdigest() == n for n in files)
