@@ -2,14 +2,15 @@
 rule, relay as filed, source-conformance against second copies, and the run.
 
 The relay (N1 to N3), rehearsal hosts only (scratch.invalid, mesh-test.datumesh.com):
-  * `<host>/relay/sec.gov/company_fact(cik, concept, unit, accession, period_start, period_end) -> number`: one cell per
-    reported figure per filing and period. The concept keeps its prefix (us-gaap:Assets); the unit is the unit as filed
-    (a currency code, shares, <CCY>/shares or pure), and the value's unit is {arg: unit}. Units that units.md cannot say
-    are not relayed and are counted in the left-out report. Nothing is normalised under the relay name.
+  * `<host>/relay/sec.gov/company`, a class keyed by cik, with one stored method `fact(cik, concept, unit, accession,
+    period_start, period_end) -> number`: one cell per reported figure per filing and period. The concept keeps its
+    prefix (us-gaap:Assets); the unit is the unit as filed (a currency code, shares, <CCY>/shares or pure), and the
+    value's unit is {arg: unit}. Units that units.md cannot say are not relayed and are counted in the left-out report.
+    Nothing is normalised under the relay name.
   * `<host>/relay/sec.gov/filing`, a class keyed by accession, with six stored methods (cik, form, filed, fiscal_year,
-    fiscal_period, period_end), each relaying the submissions record as filed.
-  * `<host>/sec/annual_report(cik, fiscal_year) -> string`: our selection (the latest-filed 10-K or 10-K/A of the fiscal
-    year), stored and signed by the operator with no source.
+    fiscal_period, period_end). period_end is the submissions record's reportDate; the others are the companyfacts file's.
+  * `<host>/sec/company` (sec_company-<stamp>.jsonl, CONTRACT-sec-classes C3): our subclass of the relay's company class,
+    with annual_report (our selection, stored and signed by the operator with no source), loaded and from_label.
 
 The scope (K3, D35): 10-K and 10-K/A, fiscal years 2019 to 2024, the listed concepts of sec_concepts.toml, and the
 NYSE or Nasdaq companies ranked by us-gaap:Assets (USD) in the frames API for CY2023Q4I, the top N, where N is the
@@ -20,15 +21,16 @@ User-Agent and nothing else about us, and a 403 stops the run. Standard library 
 """
 import argparse
 import decimal
+import re
 import hashlib
 import http.client
 import json
 import time
 import tomllib
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
@@ -62,9 +64,10 @@ FILING_RETURNS = {"cik": "string", "form": "string", "filed": "date", "fiscal_ye
 FILING_VALUE_TYPES = {"cik": "string", "form": "string", "filed": "date", "fiscal_year": "number",
                       "fiscal_period": "string", "period_end": "date"}
 FACT_ORDER = ("cik", "concept", "unit", "accession", "period_start", "period_end")
-ONE_YEAR_DAYS = (350, 380)
 CONFORMANCE_MINIMUM = 20
 FILING_CONFORMANCE_MINIMUM = 20
+CF_FIELDS = tuple(m for m in FILING_METHODS if m != "period_end")  # the methods whose cells come from companyfacts (C2)
+SUBMISSIONS_PAGES = "https://data.sec.gov/submissions/"  # the older pages of a submissions file, by their file names (C2)
 
 # The currency codes of units.md 2.1 (ISO 4217 List One of 2026-09-17 without XXX, and the withdrawn codes kept for
 # history): a filed unit is money only if it is one of these, byte for byte.
@@ -81,7 +84,7 @@ CURRENCIES = frozenset("""
 
 
 def relayed_unit(unit) -> bool:
-    """True for a filed unit that units.md can say: a currency code of CURRENCIES (company_fact's unit argument),
+    """True for a filed unit that units.md can say: a currency code of CURRENCIES (the fact method's unit argument),
     `shares`, `<CCY>/shares` for a currency in CURRENCIES, and `pure`. Anything else is left out and counted."""
     if not isinstance(unit, str):
         return False
@@ -168,10 +171,6 @@ def _record(r):
         common.shape(_iso(r["start"]), "fact record start is not a date")
 
 
-def _days(start, end) -> int:
-    return (date.fromisoformat(end) - date.fromisoformat(start)).days
-
-
 def _cik10(cik) -> str:
     """A CIK as the SEC writes it (a number, or a zero-padded string for some companies) -> 10 digits."""
     if isinstance(cik, str) and 1 <= len(cik) <= 10 and cik.isascii() and cik.isdigit():
@@ -216,7 +215,7 @@ def parse_companyfacts(data: bytes) -> dict:
                     _record(r)
                     if r["form"] not in FORMS or not FIRST_FY <= r["fy"] <= LAST_FY:
                         continue
-                    _note_filing(meta, cik10, tax, r)
+                    _note_filing(meta, cik10, r)
                     if not is_listed:
                         continue
                     start = r.get("start", r["end"])
@@ -242,9 +241,7 @@ def parse_companyfacts(data: bytes) -> dict:
     filings = {}
     for accn in sorted({r["accession"] for r in rows}):
         m = meta[accn]
-        ends = m["one_year"] or m["ends"] or m["other_ends"]
-        filings[accn] = {"cik": cik10, "form": m["form"], "filed": m["filed"], "fy": m["fy"], "fp": m["fp"],
-                         "period_end": max(ends)}
+        filings[accn] = {"cik": cik10, "form": m["form"], "filed": m["filed"], "fy": m["fy"], "fp": m["fp"]}
 
     by_fy = {}
     for accn, f in filings.items():
@@ -255,15 +252,10 @@ def parse_companyfacts(data: bytes) -> dict:
             "filings": filings, "filing_for": filing_for, "left_out_units": left_out_units}
 
 
-def _note_filing(meta, cik10, tax, r):
-    m = meta.setdefault(r["accn"], {"cik": cik10, "form": r["form"], "filed": r["filed"], "fy": str(r["fy"]),
-                                    "fp": r["fp"], "one_year": set(), "ends": set(), "other_ends": set()})
-    if tax != "us-gaap":
-        m["other_ends"].add(r["end"])  # used only for a filing with no us-gaap facts (cover-page dates)
-    elif "start" in r and ONE_YEAR_DAYS[0] <= _days(r["start"], r["end"]) <= ONE_YEAR_DAYS[1]:
-        m["one_year"].add(r["end"])  # the statements' annual periods end on the period end
-    else:
-        m["ends"].add(r["end"])
+def _note_filing(meta, cik10, r):
+    """The filing's metadata, from its first in-scope record. period_end is not derived here: it is the submissions'
+    reportDate (CONTRACT-sec-classes C2); the periods of the facts were wrong on Athene's 10-K/A."""
+    meta.setdefault(r["accn"], {"cik": cik10, "form": r["form"], "filed": r["filed"], "fy": str(r["fy"]), "fp": r["fp"]})
 
 
 def count_cells(data: bytes) -> int:
@@ -272,16 +264,10 @@ def count_cells(data: bytes) -> int:
 
 # ---------- submissions (the second copy of the filing class) ----------
 
-def parse_submissions(data: bytes) -> dict:
-    """One submissions file -> {"cik", "filings": {accession: {"form", "filed", "period_end"}}}, the `filings.recent`
-    block as parallel arrays. An empty reportDate is period_end None (an 8-K has none)."""
-    raw = _load(data)
-    common.shape(isinstance(raw, dict), "submissions is not an object")
-    cik10 = _cik10(raw.get("cik"))
-    filings = raw.get("filings")
-    common.shape(isinstance(filings, dict) and isinstance(filings.get("recent"), dict),
-                 "submissions filings.recent is missing")
-    recent = filings["recent"]
+def _rows(recent) -> dict:
+    """The parallel arrays of a `filings.recent` block, or of a page of `filings.files` (the same arrays, at the top of the
+    file) -> {accession: {"form", "filed", "period_end"}}. An empty reportDate is period_end None (an 8-K has none)."""
+    common.shape(isinstance(recent, dict), "submissions filings block is not an object")
     cols = ("accessionNumber", "filingDate", "reportDate", "form")
     for k in cols:
         common.shape(isinstance(recent.get(k), list), f"submissions recent.{k} is missing")
@@ -294,7 +280,30 @@ def parse_submissions(data: bytes) -> dict:
         common.shape(rep == "" or _iso(rep), f"submissions report date of {accn} is not a date")
         common.shape(accn not in out, f"submissions lists {accn} twice")
         out[accn] = {"form": form, "filed": filed, "period_end": rep or None}
-    return {"cik": cik10, "filings": out}
+    return out
+
+
+def parse_submissions(data: bytes) -> dict:
+    """One submissions file -> {"cik", "filings": {accession: {"form", "filed", "period_end"}}, "pages": [file names]}: the
+    `filings.recent` block, and the pages of `filings.files` in the order the file lists them (fetched only when an
+    in-scope accession is not in recent: CONTRACT-sec-classes C2)."""
+    raw = _load(data)
+    common.shape(isinstance(raw, dict), "submissions is not an object")
+    cik10 = _cik10(raw.get("cik"))
+    filings = raw.get("filings")
+    common.shape(isinstance(filings, dict) and isinstance(filings.get("recent"), dict),
+                 "submissions filings.recent is missing")
+    files = filings.get("files", [])
+    common.shape(isinstance(files, list) and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files),
+                 "submissions filings.files is not a list of pages")
+    return {"cik": cik10, "filings": _rows(filings["recent"]), "pages": [f["name"] for f in files]}
+
+
+def parse_submissions_page(data: bytes) -> dict:
+    """One page of `filings.files` -> {accession: {"form", "filed", "period_end"}}, as parse_submissions reads recent."""
+    raw = _load(data)
+    common.shape(isinstance(raw, dict), "submissions page is not an object")
+    return _rows(raw)
 
 
 # ---------- frames ----------
@@ -392,7 +401,7 @@ def scope_report(ranking, choice, *, no_facts=(), unsupported_units=None, budget
             "quarterly_facts": "10-Q and other quarterly facts, and every form other than 10-K and 10-K/A",
             "years_outside_2019_2024": "facts of reports whose fy is before 2019 or after 2024",
             "units_not_in_units_md": {
-                "rule": ("D38: only currency codes (company_fact's unit), shares, <currency>/shares and pure are relayed; "
+                "rule": ("D38: only currency codes (the fact method's unit), shares, <currency>/shares and pure are relayed; "
                          "a cell in any other unit is left out. Cells by unit, for the chosen companies"),
                 "cells": dict(sorted((unsupported_units or {}).items())),
             },
@@ -518,14 +527,25 @@ FACT_RETURNS = {"type": "number", "unit": {"arg": "unit"}}
 FILING_STEWARD = "https://{host}/classes/change"  # the mesh's change process for a class (as register/dataset's)
 
 
-def _fq(s):
-    return f"{s['namespace']}/{s['function']}", f"{s['annual_report_namespace']}/{s['annual_report_function']}", \
-        f"{s['namespace']}/{s['filing_class']}"
-
-
 def _call(fq, order, vals, bare=()) -> str:
     """`fq(a: "x", b: 2023-01-01)`: strings are quoted, the arguments named in `bare` (dates, numbers) are not."""
     return f"{fq}({', '.join(f'{a}: {vals[a]}' if a in bare else f'{a}: {chr(34)}{vals[a]}{chr(34)}' for a in order)})"
+
+
+def _names(s):
+    """The four names the relay and its subclass are spelled with: the relay's company class, its stored method fact, the
+    filing class, and our subclass of the company class (CONTRACT-sec-classes C1, C3)."""
+    company = f"{s['namespace']}/{s['company_class']}"
+    return company, f"{company}/fact", f"{s['namespace']}/{s['filing_class']}", f"{_host_of(s)}/sec/company"
+
+
+def _fact_descriptor():
+    """The stored method fact of the relay class company (C1): the declarations of the old company_fact, in its order, and its returns.
+    The cik argument has no key_normalisation: it matches the class key."""
+    return {"code": {"body": "", "lang": "stored"}, "inputs": [],
+            "signature": {"args": {"cik": dict(S_ARG), "concept": dict(S_ARG), "unit": dict(S_ARG),
+                                   "accession": dict(S_ARG), "period_start": dict(D_ARG), "period_end": dict(D_ARG)},
+                          "order": list(FACT_ORDER), "returns": dict(FACT_RETURNS)}}
 
 
 def _source(s, src) -> dict:
@@ -547,7 +567,7 @@ def _fact_cell(s, entity, cik, r, src):
                f"{r['unit']} as filed in accession {r['accession']}{relay.tail(s)}")
     args = {"cik": cik, "concept": r["concept"], "unit": r["unit"], "accession": r["accession"],
             "period_start": r["period_start"], "period_end": r["period_end"]}
-    return {"cell": {"fn": f"{s['namespace']}/{s['function']}",
+    return {"cell": {"fn": _names(s)[1],
                      "args": {k: {"type": "date" if k.startswith("period") else "string", "value": args[k]}
                               for k in FACT_ORDER}},
             "value": {"type": "number", "value": value}, "licence": s["licence"],
@@ -571,27 +591,14 @@ def _filing_cell(s, cls, entity, accn, f, field, src):
             "summary": common.nfc(summary), "source": _source(s, src)}
 
 
-def _annual_cell(s, entity, cik, fy, accn, src):
+def _annual_cell(s, entity, cik, fy, accn):
     summary = (f"the latest-filed annual report (10-K or 10-K/A) of fiscal year {fy} of {entity} (cik {cik}) is accession "
                f"{accn}: Datumesh's selection over the SEC's filings, not a figure the company reported")
-    return {"cell": {"fn": f"{s['annual_report_namespace']}/{s['annual_report_function']}",
+    return {"cell": {"fn": f"{_names(s)[3]}/annual_report",
                      "args": {"cik": {"type": "string", "value": cik},
                               "fiscal_year": {"type": "number", "value": fy}}},
             "value": {"type": "string", "value": accn}, "licence": s["licence"],
             "summary": common.nfc(summary)}
-
-
-def _functions(s):
-    fq, ann, _ = _fq(s)
-    return [
-        {"function": fq, "signature": {
-            "args": {"cik": dict(S_ARG), "concept": dict(S_ARG), "unit": dict(S_ARG), "accession": dict(S_ARG),
-                     "period_start": dict(D_ARG), "period_end": dict(D_ARG)},
-            "order": list(FACT_ORDER), "returns": dict(FACT_RETURNS)}},
-        {"function": ann, "signature": {
-            "args": {"cik": dict(S_ARG), "fiscal_year": dict(N_ARG)}, "order": ["cik", "fiscal_year"],
-            "returns": "string"}},
-    ]
 
 
 def _method_descriptor(m):
@@ -606,16 +613,23 @@ def _host_of(s):
 
 
 def _class_lines(s):
-    """The six method descriptors, then the class line (its keys, steward and the methods' hashes)."""
-    cls = f"{s['namespace']}/{s['filing_class']}"
-    lines, hashes = [], {}
+    """The stored descriptors, then the class lines that name their hashes (a method's descriptor comes before the class
+    line that names its hash): the company class with its one method fact (C1), then the filing class with its six."""
+    company, _, cls, _ = _names(s)
+    steward = {"namespace": s["namespace"], "process": FILING_STEWARD.replace("{host}", _host_of(s))}
+    fact = _fact_descriptor()
+    lines = [{"descriptor": fact}]
+    hashes = {}
     for m in FILING_METHODS:
         d = _method_descriptor(m)
         lines.append({"descriptor": d})
         hashes[m] = hashlib.sha256(licence_register.jcs(d)).hexdigest()
+    lines.append({"class": company, "descriptor": {
+        "keys": {"cik": {"type": "string", "key_normalisation": "none"}}, "order": ["cik"],
+        "methods": {"fact": hashlib.sha256(licence_register.jcs(fact)).hexdigest()}, "steward": dict(steward)}})
     lines.append({"class": cls, "descriptor": {
         "keys": {"accession": {"type": "string", "key_normalisation": "none"}}, "order": ["accession"],
-        "methods": hashes, "steward": {"namespace": s["namespace"], "process": FILING_STEWARD.replace("{host}", _host_of(s))}}})
+        "methods": hashes, "steward": dict(steward)}})
     return lines
 
 
@@ -654,10 +668,17 @@ def _currency_label(c):
     return CURRENCY_LABELS.get(c, f"{c} (ISO 4217 currency code)")
 
 
-def _catalogs(s, cells, rows, labels, entities):
-    fq, ann, cls = _fq(s)
+def _relay_catalogs(s, cells, rows, labels, entities):
+    """The relay's catalogue (C1, C2): the company class, its method fact, the filing class and its six methods."""
+    company, fq, cls, _ = _names(s)
     src = s["source_name"]
-    out = []
+    out = [{"catalog": company, "kind": "class", "label": "SEC company (one figure per cik, as filed)",
+            "description": (f"Relayed by datumesh.com from {src}: one company, keyed by its cik (10 digits). Its stored method "
+                            "fact relays one figure as filed, of one annual report (accession) and period; the cells of the "
+                            "class are the figures of the companies in scope."),
+            "args": {"cik": "the company's CIK, 10 digits with leading zeros"},
+            "open_keys": ["cik"], "examples": [],
+            "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}}]
     fact_cells = cells["fact"]
     mine = rows
     used = sorted({r["concept"] for r in mine})
@@ -717,31 +738,170 @@ def _catalogs(s, cells, rows, labels, entities):
                                   "expected": c["value"]} for c in mc[:2]],
                     "dictionary": {}})
 
-    ann_cells = cells["annual"]
-    out.append({"catalog": ann, "kind": "function", "label": "Latest annual report of a fiscal year (our selection)",
+    return out
+
+
+def _key(s, cik) -> str:
+    """The key encoding of our subclass's object for one company: <host>/sec/company(cik:"0000320193")."""
+    return f'{_names(s)[3]}(cik:"{cik}")'
+
+
+def _loaded_cell(s, entity, cik):
+    """loaded(cik) is true for each company of this run's scope: primary, so no source, under the SEC's licence."""
+    summary = (f"{entity} (cik {cik}) is loaded: its figures are in the scope of this run, the top N of the ranking by "
+               "us-gaap:Assets in the frames API for CY2023Q4I (see the left-out report)")
+    return {"cell": {"fn": f"{_names(s)[3]}/loaded", "args": {"cik": {"type": "string", "value": cik}}},
+            "value": {"type": "boolean", "value": True}, "licence": s["licence"], "summary": common.nfc(summary)}
+
+
+LABEL_KINDS = {"title": "the title as listed", "ticker": "a ticker as listed",
+               "short name": "the short name (the title without its legal-form words)"}
+
+
+def _label_cell(s, entity, cik, label, kind):
+    """from_label(label) is the key of the company, for one label as the tickers file lists it (C3)."""
+    summary = (f'{LABEL_KINDS[kind]} of {entity} (cik {cik}): "{label}", from company_tickers_exchange.json; a label is '
+               "exact and case-sensitive, and names this company only")
+    return {"cell": {"fn": f"{_names(s)[3]}/from_label", "args": {"label": {"type": "string", "value": label}}},
+            "value": {"type": "string", "value": _key(s, cik)}, "licence": s["licence"], "summary": common.nfc(summary)}
+
+
+def _company_functions(s):
+    """The stored functions of our subclass that are not formulas (C3): annual_report (a plain accession string, not a
+    class key: the fact's accession is a string, and chaining on a returned key fails at define), loaded (the extent's
+    keys) and from_label (the lookup, returning the key of the company)."""
+    sub = _names(s)[3]
+    return [
+        {"function": f"{sub}/annual_report", "signature": {
+            "args": {"cik": dict(S_ARG), "fiscal_year": dict(N_ARG)}, "order": ["cik", "fiscal_year"], "returns": "string"}},
+        {"function": f"{sub}/loaded", "signature": {"args": {"cik": dict(S_ARG)}, "order": ["cik"], "returns": "boolean"}},
+        {"function": f"{sub}/from_label", "signature": {
+            "args": {"label": {"type": "string", "valid": False}}, "order": ["label"],
+            "returns": {"type": "string", "classes": [sub]}}},
+    ]
+
+
+def _company_catalogs(s, cells, entities):
+    """The catalogue of sec/company's functions (C3): annual_report (our selection), loaded and from_label, with their
+    examples taken from this run's cells."""
+    sub = _names(s)[3]
+    ann_cells, loaded_cells, label_cells = cells["annual"], cells["loaded"], cells["label"]
+    out = []
+    out.append({"catalog": f"{sub}/annual_report", "kind": "function", "label": "Latest annual report of a fiscal year (our selection)",
                 "description": ("Datumesh's selection over the SEC's filings, not relayed: the accession of the latest-filed "
                                 "annual report (10-K or 10-K/A) of a company's fiscal year (fy as filed, not the period's "
                                 "year). A later amendment wins; a tie on the filing date goes to the higher accession. A "
                                 "fact about the filings, not a figure; stored by the operator with no source."),
                 "args": {"cik": "the company's CIK, 10 digits with leading zeros",
                          "fiscal_year": "the fiscal year as filed, a number such as 2023 (unit 1)"},
-                "examples": [{"call": _call(ann, ["cik", "fiscal_year"],
+                "examples": [{"call": _call(f"{sub}/annual_report", ["cik", "fiscal_year"],
                                             {k: v["value"] for k, v in c["cell"]["args"].items()}, bare=("fiscal_year",)),
                               "expected": c["value"]} for c in ann_cells[:2]],
                 "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}})
+    out.append({"catalog": f"{sub}/loaded", "kind": "function", "label": "Company loaded in this run (its figures are in scope)",
+                "description": ("Datumesh's list of the companies whose figures are in the scope of this run: true for each of "
+                                "them, and for no other company. It is the extent of the class sec/company (the companies it "
+                                "lists). A fact about the scope, primary, with no source."),
+                "args": {"cik": "the company's CIK, 10 digits with leading zeros"},
+                "examples": [{"call": f'{sub}/loaded(cik: "{c["cell"]["args"]["cik"]["value"]}")',
+                              "expected": c["value"]} for c in loaded_cells[:2]],
+                "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}})
+    out.append({"catalog": f"{sub}/from_label", "kind": "function", "label": "Company by its name or ticker (exact)",
+                "description": ("Datumesh's lookup of a company by a label as the SEC lists it in company_tickers_exchange.json: "
+                                "the company's name, each of its tickers, and a short name (the name without its legal-form "
+                                "words). Labels are exact and case-sensitive: no folding and no other spelling. A label that "
+                                "names more than one company is not in the lookup. The value is the key of that company in "
+                                "sec/company."),
+                "args": {"label": "a name or a ticker exactly as the SEC lists it, case-sensitive"},
+                "examples": [{"call": f'{sub}/from_label(label: "{c["cell"]["args"]["label"]["value"]}")',
+                              "expected": c["value"]} for c in label_cells[:2]]})
     return out
 
 
+KIND_OF_LABEL = {"title": "title", "ticker": "ticker", "short name": "short name"}
+LEGAL_WORDS = ("Inc", "Inc.", "Incorporated", "Corp", "Corp.", "Corporation", "Co", "Co.", "Company", "Ltd", "Ltd.",
+               "Limited", "plc", "PLC", "N.V.", "NV", "S.A.", "SA", "AG", "SE", "LP", "L.P.", "LLC", "& Co", "& Co.")
+
+
+def short_name(title: str) -> str:
+    """The short name of a title (C3 (c)): trailing legal-form words removed, repeatedly, with a trailing /XX/ state suffix;
+    then trailing spaces, commas and periods trimmed. The words are whole words, case-insensitive, the longest first (so
+    `& Co` goes before `Co`). Empty when the title is only legal-form words."""
+    t = title
+    words = sorted(LEGAL_WORDS, key=len, reverse=True)
+    while True:
+        before = t
+        t = t.rstrip()
+        m = re.search(r"\s*/[A-Z]{2}/$", t)
+        if m:
+            t = t[:m.start()]
+        for w in words:
+            m = re.search(r"(?i)(?:^|\s)" + re.escape(w) + r"$", t)
+            if m:
+                t = t[:m.start()]
+                break
+        if t == before:
+            break
+    return t.rstrip(" ,.")
+
+
+def company_labels(tickers: bytes, ciks):
+    """The labels that find a company, from the tickers file the scope rule already fetched (no request): the title as
+    listed, each ticker as listed, and the short name (C3). NFC; case-sensitive; no folding. -> (pairs, ambiguous): pairs is
+    the sorted [(label, cik, kind)] of the labels that name one company of `ciks`, and ambiguous is {label: [ciks]}, the
+    labels that name more than one (none of those is emitted)."""
+    t = _load(tickers)
+    common.shape(isinstance(t, dict) and isinstance(t.get("fields"), list) and isinstance(t.get("data"), list),
+                 "tickers file: fields and data are missing")
+    fields = t["fields"]
+    for k in ("cik", "ticker", "name"):
+        common.shape(k in fields, f"tickers file has no {k}")
+    ci, ti, ni = fields.index("cik"), fields.index("ticker"), fields.index("name")
+    want = set(ciks)
+    titles, tickers_of = {}, {}
+    for row in t["data"]:
+        common.shape(isinstance(row, list) and len(row) == len(fields), "tickers row does not match its fields")
+        if not _int(row[ci]):
+            continue
+        cik = f"{row[ci]:010d}"
+        if cik not in want:
+            continue
+        common.shape(isinstance(row[ni], str) and isinstance(row[ti], str), f"tickers row of {cik} has no name or ticker text")
+        titles.setdefault(cik, unicodedata.normalize("NFC", row[ni]))
+        lst = tickers_of.setdefault(cik, [])
+        tk = unicodedata.normalize("NFC", row[ti])
+        if tk not in lst:
+            lst.append(tk)
+    by_label = {}
+    for cik in sorted(titles):
+        title = titles[cik]
+        named = [(title, "title")] + [(x, "ticker") for x in tickers_of[cik]]
+        short = short_name(title)
+        if short and short != title:
+            named.append((short, "short name"))
+        for label, kind in named:
+            by_label.setdefault(label, {}).setdefault(cik, kind)
+    ambiguous = {label: sorted(c) for label, c in by_label.items() if len(c) > 1}
+    pairs = sorted((label, cik, kind) for label, c in by_label.items() if len(c) == 1 for cik, kind in c.items())
+    return pairs, ambiguous
+
+
+def _has_period_end(item, accn) -> bool:
+    sub = item.get("submissions")
+    return sub is not None and accn in sub["filings"] and sub["filings"][accn]["period_end"] is not None
+
+
 def emit(items, state, names):
-    """The lines of the new cells and, on the first run, the functions, the filing class (its descriptors and class
-    line) and the catalogue, and the new state. Nothing is emitted for a fact, filing or annual report already in the
-    state; with nothing new the state is returned as it was."""
+    """The relay's lines for what is new in `items` (CONTRACT-sec-classes C1, C2): on the first run, the stored descriptors
+    of the company class (its method fact) and of the filing class (six methods), their two class lines and the relay's
+    catalogue; then the cells: each figure (company/fact), each filing's five companyfacts methods, and its period_end from
+    the submissions when an item carries them (`item["submissions"]`, attached by run). Nothing is emitted for a fact or a
+    filing already in the state; with nothing new the state is returned as it was."""
     s = names["sec"]
+    cls = _names(s)[2]
     seen_facts = set(state.get("facts", []))
     seen_filings = set(state.get("filings", []))
-    filing_for_state = dict(state.get("filing_for", {}))
-    cls = f"{s['namespace']}/{s['filing_class']}"
-    cells = {"fact": [], "filing": [], "annual": []}
+    cells = {"fact": [], "filing": []}
     all_rows, labels, entities = [], {}, {}
     for it in items:
         p = it["parsed"]
@@ -756,30 +916,118 @@ def emit(items, state, names):
                 continue
             seen_facts.add(k)
             cells["fact"].append(_fact_cell(s, p["entity"], cik, r, src))
+        sub = it.get("submissions")
         for accn, f in p["filings"].items():
             if accn in seen_filings:
                 continue
             seen_filings.add(accn)
-            for field in FILING_METHODS:
+            for field in CF_FIELDS:
                 cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, f, field, src))
+            if _has_period_end(it, accn):
+                cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, dict(f, period_end=sub["filings"][accn]["period_end"]),
+                                                    "period_end", sub["sources"][accn]))
+    if not any(cells.values()):
+        return [], state
+    lines = []
+    if not state.get("announced"):
+        lines += _class_lines(s) + _relay_catalogs(s, cells, all_rows, labels, entities)
+    for kind in ("fact", "filing"):
+        lines += cells[kind]
+    new = dict(state)
+    new.update({"announced": True, "facts": sorted(seen_facts), "filings": sorted(seen_filings)})
+    return lines, new
+
+
+def company_emit(items, labels, state, names):
+    """The lines of sec_company-<stamp>.jsonl (C3) for this run's companies. On the first run: the three stored functions
+    and their catalogue. Then the cells: loaded (true for each company of the scope), annual_report (our selection of each
+    fiscal year) and from_label (each label of `labels`, the (label, cik, kind) triples of company_labels). Nothing is
+    emitted for a company, year or label already in the state; with nothing new the state is returned as it was."""
+    s = names["sec"]
+    seen_loaded = set(state.get("loaded", []))
+    seen_labels = {tuple(x) for x in state.get("labels", [])}
+    filing_for_state = dict(state.get("filing_for", {}))
+    cells = {"loaded": [], "annual": [], "label": []}
+    entities = {}
+    for it in items:
+        p = it["parsed"]
+        cik = p["cik"]
+        entities[cik] = p["entity"]
+        if cik not in seen_loaded:
+            seen_loaded.add(cik)
+            cells["loaded"].append(_loaded_cell(s, p["entity"], cik))
         for fy, accn in p["filing_for"].items():
             key = f"{cik}|{fy}"
             if filing_for_state.get(key) == accn:
                 continue
             filing_for_state[key] = accn
-            cells["annual"].append(_annual_cell(s, p["entity"], cik, fy, accn, src))
-
+            cells["annual"].append(_annual_cell(s, p["entity"], cik, fy, accn))
+    for label, cik, kind in labels:
+        if cik in entities and (label, cik) not in seen_labels:
+            seen_labels.add((label, cik))
+            cells["label"].append(_label_cell(s, entities[cik], cik, label, kind))
     if not any(cells.values()):
         return [], state
     lines = []
     if not state.get("announced"):
-        lines += _functions(s) + _class_lines(s) + _catalogs(s, cells, all_rows, labels, entities)
-    for kind in ("fact", "filing", "annual"):
+        lines += _company_functions(s) + _company_catalogs(s, cells, entities)
+    for kind in ("loaded", "annual", "label"):
         lines += cells[kind]
     new = dict(state)
-    new.update({"announced": True, "facts": sorted(seen_facts), "filings": sorted(seen_filings),
+    new.update({"announced": True, "loaded": sorted(seen_loaded), "labels": sorted([list(x) for x in seen_labels]),
                 "filing_for": filing_for_state})
     return lines, new
+
+
+def _submissions(get, s, cik, accns, now):
+    """One company's submissions (the second copy of the filing class, C2): filings.recent first, then the pages of
+    filings.files in order, one request each, only while an in-scope accession (`accns`) is still missing. -> {"cik",
+    "filings", "sources"} for the in-scope filings found, each with the source it was read from; None when the company has
+    no submissions file (its filings then have no period_end and no second copy)."""
+    url = _sub_url(s, cik)
+    try:
+        data = get(url)
+    except NotPublished:
+        common.warn(f"sec: no submissions for {cik}; its period ends and filing tests are not written this run")
+        return None
+    main = parse_submissions(data)
+    found, sources = {}, {}
+
+    def take(filings, source):
+        for accn in accns:
+            if accn in filings and accn not in found:
+                found[accn] = filings[accn]
+                sources[accn] = source
+
+    take(main["filings"], {"url": url, "retrieved": now, "sha256": common.sha256_hex(data)})
+    for name in main["pages"]:
+        if all(accn in found for accn in accns):
+            break
+        purl = SUBMISSIONS_PAGES + name
+        try:
+            pdata = get(purl)
+        except NotPublished:
+            common.warn(f"sec: submissions page {purl} is not published; it is not read")
+            continue
+        take(parse_submissions_page(pdata), {"url": purl, "retrieved": now, "sha256": common.sha256_hex(pdata)})
+    return {"cik": main["cik"], "filings": found, "sources": sources}
+
+
+def company_tests(items, labels, names):
+    """The pins of sec_company (C3): annual_report of each company's earliest and latest fiscal year; loaded and from_label
+    of the first three companies of the scope (rank order): loaded is true, and each kind of label of each resolves to it."""
+    s = names["sec"]
+    sub = _names(s)[3]
+    first = [it["parsed"]["cik"] for it in items[:3]]
+    tests = annual_report_tests(items, names)
+    for cik in first:
+        tests.append({"test": f"{sub}/loaded", "call": f'{sub}/loaded(cik: "{cik}")',
+                      "expect": {"type": "boolean", "value": True}})
+    for label, cik, kind in labels:
+        if cik in first:
+            tests.append({"test": f"{sub}/from_label", "call": f'{sub}/from_label(label: "{label}")',
+                          "expect": {"type": "string", "value": _key(s, cik)}})
+    return tests
 
 
 # ---------- conformance ----------
@@ -790,12 +1038,12 @@ def _fact_test_call(fq, cik, concept, unit, accession, start, end):
 
 
 def conformance(rows, frames_list, names, minimum=CONFORMANCE_MINIMUM):
-    """Tests of company_fact from the frames API (a second channel for the same concept, period and CIK), by the frame's
+    """Tests of the relay method company/fact from the frames API (a second channel for the same concept, period and CIK), by the frame's
     own accession: a frame fact of an in-scope report must be in the rows with the same value; a frame entry whose
-    report is out of scope is skipped, and so is a frame in a unit that is not relayed. Every test calls company_fact
+    report is out of scope is skipped, and so is a frame in a unit that is not relayed. Every test calls company/fact
     with the frame's unit. At least `minimum` tests, else ConformanceError."""
     s = names["sec"]
-    fq = f"{s['namespace']}/{s['function']}"
+    fq = _names(s)[1]
     by_key = {(r["cik"], r["concept"], r["unit"], r["accession"], r["period_start"], r["period_end"]): r for r in rows}
     accessions = {}
     for r in rows:
@@ -830,10 +1078,12 @@ def conformance(rows, frames_list, names, minimum=CONFORMANCE_MINIMUM):
 def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANCE_MINIMUM):
     """Tests of the six filing methods against the submissions API (the second copy of the filing class), one per
     method per annual report that both files have. A report the submissions do not list is skipped, not failed. The
-    expected values are the submissions' own: cik, form, filed and period_end, and a disagreement with the companyfacts
-    file is ConformanceError (the run stops). The submissions API has no fiscal year or fiscal period, so those two have
-    no second copy: their tests pin the companyfacts file's own value, and no derived guess is compared (a year derived
-    from the filing date was wrong on real filings, e.g. a fiscal year ending in early 2024 filed in 2024)."""
+    expected values are the submissions' own. cik, form and filed are compared with the companyfacts file, and a
+    disagreement is ConformanceError (the run stops). period_end is the submissions' reportDate, relayed as filed, with no
+    second copy to compare (C2): its test pins that value, and no test is written for a report with no reportDate. The
+    submissions API has no fiscal year or fiscal period, so those two have no second copy either: their tests pin the
+    companyfacts file's own value, and no derived guess is compared (a year derived from the filing date was wrong on real
+    filings, e.g. a fiscal year ending in early 2024 filed in 2024)."""
     s = names["sec"]
     cls = f"{s['namespace']}/{s['filing_class']}"
     mine = {}
@@ -850,21 +1100,25 @@ def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANC
                 raise ConformanceError(
                     f"{cls} {accn}: the submissions say cik {sub['cik']} and the companyfacts file says cik "
                     f"{f['cik']}; nothing is published")
-            theirs = {
-                "cik": sub["cik"], "form": sf["form"], "filed": sf["filed"],
-                "period_end": sf["period_end"],
-            }
+            theirs = {"cik": sub["cik"], "form": sf["form"], "filed": sf["filed"]}
             for m in FILING_METHODS:
-                mine_v = _filing_value(f, m)
-                if m not in theirs:
+                if m == "period_end":
+                    # No second copy (C2): the relayed value is the submissions' own reportDate; none is no cell and no test.
+                    if sf["period_end"] is None:
+                        continue
+                    value = sf["period_end"]
+                elif m in theirs:
+                    mine_v = _filing_value(f, m)
+                    if str(mine_v) != str(theirs[m]):
+                        raise ConformanceError(
+                            f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
+                            f"{theirs[m]}; nothing is published")
+                    value = theirs[m]
+                else:
                     # No second copy of fiscal_year and fiscal_period: the test pins the relayed value.
-                    theirs[m] = mine_v
-                elif str(mine_v) != str(theirs[m]):
-                    raise ConformanceError(
-                        f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
-                        f"{theirs[m]}; nothing is published")
+                    value = _filing_value(f, m)
                 tests.append({"test": f"{cls}/{m}", "call": f'{cls}/{m}(accession: "{accn}")',
-                              "expect": {"type": FILING_VALUE_TYPES[m], "value": str(theirs[m])}})
+                              "expect": {"type": FILING_VALUE_TYPES[m], "value": str(value)}})
     if len(tests) < minimum:
         raise ConformanceError(f"{cls}: {len(tests)} filing tests against the submissions, at least {minimum} are "
                                "needed; nothing is published")
@@ -874,7 +1128,7 @@ def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANC
 def annual_report_tests(items, names):
     """Pins of sec/annual_report: the earliest and the latest fiscal year of each company, the accession our selection
     gives (the filing_for of its companyfacts file)."""
-    fn = f"{names['sec']['annual_report_namespace']}/{names['sec']['annual_report_function']}"
+    fn = f"{_names(names['sec'])[3]}/annual_report"
     tests = []
     for it in items:
         fy = it["parsed"]["filing_for"]
@@ -917,8 +1171,12 @@ class _Counts(Mapping):
 def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.monotonic,
         budget=BUDGET, step=STEP):
     """Fetch the ranking, count the cells in rank order up to the budget, emit the chosen companies' cells, test them
-    against the frames and the submissions, and write one publish-stored file and the left-out report. Nothing is
-    written when a request is refused, a shape changes or a test disagrees. The state is saved after publish returns."""
+    against the frames and the submissions, and write the files: the relay (sec-<stamp>.jsonl: the relay classes, their
+    cells and tests, the register's cells), the subclass's functions (sec_company-<stamp>.jsonl: annual_report, loaded and
+    from_label, written only when it has lines) and the left-out report. Nothing is written when a request is refused, a
+    shape changes or a test disagrees. The files are published relay first, then the company file; on a failure both are
+    removed and no state is kept. The state is saved after publish returns. Returns the relay path (the company file's
+    when the relay has no lines), or None when nothing is new."""
     meta = names.get("meta", {})
     if meta.get("host") == PRODUCTION or meta.get("status") == "production" or "sec" not in names:
         raise NotForProduction(f"the SEC relay is rehearsal-only (K7); host {meta.get('host')!r} is refused")
@@ -964,15 +1222,16 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         items.append({"parsed": parse_companyfacts(data),
                       "source": {"url": url, "retrieved": now, "sha256": common.sha256_hex(data)}})
 
-    submissions = []
     for it in items:
-        cik = it["parsed"]["cik"]
-        try:
-            submissions.append(parse_submissions(get(_sub_url(s, cik))))
-        except NotPublished:
-            common.warn(f"sec: no submissions for {cik}; its filing tests are not written this run")
+        it["submissions"] = _submissions(get, s, it["parsed"]["cik"], sorted(it["parsed"]["filings"]), now)
+    submissions = [it["submissions"] for it in items if it["submissions"] is not None]
 
     lines, st = emit(items, state, names)
+    pairs, ambiguous = company_labels(tickers, [it["parsed"]["cik"] for it in items])
+    clines, cst = company_emit(items, pairs, state.get("company", {}), names)
+    if clines:
+        st = dict(st)
+        st["company"] = cst
     # the register's cells of sec.gov / company_facts, on the first run (register.py's emit: a later run emits
     # nothing unless the licence text changed); the register's class lines are register.py's, not this file's
     reg_blobs = {}
@@ -984,21 +1243,24 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         st["register"] = reg_state
     lines = lines + reg_lines
     rows = [r for it in items for r in it["parsed"]["rows"]]
-    tests = (conformance(rows, frames, names) + filing_conformance(items, submissions, names)
-             + annual_report_tests(items, names))
+    tests = conformance(rows, frames, names) + filing_conformance(items, submissions, names)
+    ctests = company_tests(items, pairs, names)
     tested = set(st.get("tested", []))
     new_tests = [t for t in tests if t["call"] not in tested]
-    if new_tests:
+    new_ctests = [t for t in ctests if t["call"] not in tested]
+    if new_tests or new_ctests:
         st = dict(st)
-        st["tested"] = sorted(tested | {t["call"] for t in new_tests})
+        st["tested"] = sorted(tested | {t["call"] for t in new_tests + new_ctests})
         lines += new_tests
-    cells = sum(1 for l in lines if "cell" in l)
-    common.warn(f"sec: {cells} cells, {len(new_tests)} tests written; {len(tests)} tests from the second copies")
-    if not lines:
+        clines += new_ctests
+    cells = sum(1 for l in lines + clines if "cell" in l)
+    common.warn(f"sec: {cells} cells, {len(new_tests) + len(new_ctests)} tests written; {len(tests)} tests from the second copies")
+    if not lines and not clines:
         return None
 
     stamp = relay._stamp(now)
     path = out_dir / f"sec-{stamp}.jsonl"
+    company_path = out_dir / f"sec_company-{stamp}.jsonl"
     report_path = out_dir / f"sec-scope-{stamp}.json"
     left_out_units = {}
     for it in items:
@@ -1008,7 +1270,16 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         common.warn(f"sec: units not relayed (D38), cells left out: {dict(sorted(left_out_units.items()))}")
     report = scope_report(ranking, choice, no_facts=no_facts, unsupported_units=left_out_units, budget=budget,
                           step=step)
-    common.write_jsonl(path, lines)
+    missing = sorted(accn for it in items for accn in it["parsed"]["filings"] if not _has_period_end(it, accn))
+    report["left_out"]["left_out_period_end"] = {"count": len(missing), "accessions": missing}
+    report["left_out"]["ambiguous_labels"] = ambiguous
+    written = []
+    if lines:
+        common.write_jsonl(path, lines)
+        written.append(path)
+    if clines:
+        common.write_jsonl(company_path, clines)
+        written.append(company_path)
     for rel, data in reg_blobs.items():  # content-addressed, as register.py writes them
         target = out_dir / rel
         target.parent.mkdir(exist_ok=True)
@@ -1019,18 +1290,20 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
             json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True)
             f.write("\n")
     except BaseException:
-        path.unlink(missing_ok=True)
+        for p in written:
+            p.unlink(missing_ok=True)
         raise
     common.warn(f"sec: left-out report written to {report_path}")
     if publish is not None:
         try:
-            publish(path)
+            for p in written:
+                publish(p)
         except BaseException:
-            path.unlink(missing_ok=True)
-            report_path.unlink(missing_ok=True)
+            for p in written + [report_path]:
+                p.unlink(missing_ok=True)
             raise
     common.save_state(state_path, st)
-    return path
+    return written[0]
 
 
 # ---------- the CLI ----------

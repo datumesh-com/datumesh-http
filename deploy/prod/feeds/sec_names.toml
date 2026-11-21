@@ -12,11 +12,14 @@ status = "rehearsal"
 
 [sec]
 namespace = "{host}/relay/sec.gov"
-function = "company_fact"
-filing_class = "filing"
-filing_methods = ["cik", "form", "filed", "fiscal_year", "fiscal_period", "period_end"]
+company_class = "company"
+company_methods = ["fact"]
+# annual_report is a function of sec/company (C3); the next two names are kept as they were, for test_sec_fetch, and sec.py
+# does not read them
 annual_report_namespace = "{host}/sec"
 annual_report_function = "annual_report"
+filing_class = "filing"
+filing_methods = ["cik", "form", "filed", "fiscal_year", "fiscal_period", "period_end"]
 source_name = "sec.gov"
 register_source = "sec.gov"
 register_code = "company_facts"
