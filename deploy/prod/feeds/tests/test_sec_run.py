@@ -1,5 +1,6 @@
-"""sec.run on fixtures and synthetic companies, no network: scope, the first pass, the rate, 403, conformance,
-the second run (K1 to K3, K7)."""
+"""sec.run on fixtures and synthetic companies, no network: scope, the first pass, the rate, 403, conformance (the frames
+API for company_fact, the submissions API for the filing class, pinned samples of sec/annual_report), the second run
+(K1 to K3, K7, N1 to N3)."""
 import json
 import pathlib
 import re
@@ -11,9 +12,10 @@ import relay
 import sec
 from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from common import ConformanceError, ShapeError
-from helpers import check_order, check_summary, split_lines
-from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FRAMES_ASSETS, IN_SCOPE, NOW, SYNTH_CELLS, TICKERS, FakeClock,
-                         dirs, facts_file, max_in_any_second, read_lines, sec_fixture, synth_company)
+from helpers import check_summary
+from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FILING_METHODS, FRAMES_ASSETS, IN_SCOPE, NOW, SYNTH_CELLS, TICKERS,
+                         FakeClock, annual_fn, check_order_all, dirs, fact_fn, facts_file, filing_cls, kinds,
+                         max_in_any_second, read_lines, sec_fixture, submissions_file, synth_company, synth_submissions)
 
 BUDGET = 2300  # with the three real companies (rank 0, 57, 108) and synthetic ones of 6 cells: N = 125, 2220 cells
 STAMP = relay._stamp(NOW)
@@ -50,6 +52,15 @@ class SecFetcher:
                 return self.override[cik]
             data = facts_file(cik) if cik in CIKS else self._synth(cik)
             return self.mutate[cik](data) if cik in self.mutate else data
+        m = re.fullmatch(re.escape(s["submissions_url"]).replace(r"\{cik\}", r"(\d{10})"), url)
+        if m:
+            cik = m.group(1)
+            if cik in self.missing:
+                raise common.NotPublished(url)
+            if cik in CIKS:
+                return submissions_file(cik)
+            d = FRAME_BY_CIK[cik]
+            return synth_submissions(d["cik"], d["accn"])
         if "/frames/" in url:
             raise common.NotPublished(url)
         raise AssertionError(f"unexpected url {url}")
@@ -86,11 +97,11 @@ def first(names, tmp_path_factory):
 def test_run_writes_one_file_named_by_the_stamp(first):
     assert first["path"] == first["o"] / f"sec-{STAMP}.jsonl" and first["path"].exists()
     assert jsonl(first["o"]) == [first["path"]]
-    check_order(first["lines"])
+    check_order_all(first["lines"])
 
 
 def test_scope_chooses_n_125_and_the_cells_are_those_of_the_top_125(names, first):
-    cells = [l for l in first["lines"] if "cell" in l and l["cell"]["fn"] in sec.fact_functions(names["sec"]).values()]
+    cells = [l for l in first["lines"] if "cell" in l and l["cell"]["fn"] == fact_fn(names)]
     assert len(cells) == 2220 == sum(IN_SCOPE.values()) + 122 * SYNTH_CELLS
     by_cik = {}
     for c in cells:
@@ -120,10 +131,27 @@ def test_the_left_out_report_is_written_next_to_the_cells(first):
     assert rep["left_out"]["listed_without_assets"] == 1854 and rep["left_out"]["not_listed_on_nyse_or_nasdaq"] == 2260
 
 
-def test_tests_are_at_least_20_and_come_from_the_frames(names, first):
-    _, _, _, tests = split_lines(first["lines"])
-    assert len(tests) == 124, "122 synthetic + Caterpillar and GE; JPMorgan's frame report is out of scope"
-    assert len(tests) >= 20
+def test_the_run_writes_one_filing_class_and_the_one_relay_function(names, first):
+    k = kinds(first["lines"])
+    assert [l["class"] for l in k["class"]] == [filing_cls(names)], "register.py's class lines are not in this file"
+    assert len(k["descriptor"]) == 6
+    assert {l["function"] for l in k["function"]} == {fact_fn(names), annual_fn(names)}
+    assert not [l for l in first["lines"] if "catalog" in l and "register/dataset" in l["catalog"]]
+
+
+def test_tests_are_at_least_20_and_come_from_the_frames_the_submissions_and_the_selection(names, first):
+    tests = kinds(first["lines"])["test"]
+    by = {}
+    for t in tests:
+        by.setdefault(t["test"], []).append(t)
+    cf = by[fact_fn(names)]
+    assert len(cf) == 124, "122 synthetic + Caterpillar and GE; JPMorgan's frame report is out of scope"
+    assert len(cf) >= 20
+    methods = [f"{filing_cls(names)}/{m}" for m in FILING_METHODS]
+    assert all(len(by[m]) == 18 + 122 * 2 for m in methods), "every filing, from the submissions of the chosen companies"
+    assert len(by[annual_fn(names)]) == 6 + 122 * 2, "the earliest and the latest fiscal year of each company"
+    assert set(by) == {fact_fn(names), annual_fn(names), *methods} | {t for t in by if "register/dataset" in t}
+    assert len({t["call"] for t in tests}) == len(tests), "no test is written twice"
 
 
 def test_run_calls_only_sec_urls_each_company_at_most_twice(names, first):
@@ -131,10 +159,13 @@ def test_run_calls_only_sec_urls_each_company_at_most_twice(names, first):
     s = names["sec"]
     ok = (s["tickers_url"], s["frames_url"].format(taxonomy="us-gaap", concept="Assets", unit="USD", ccp="CY2023Q4I"))
     for u in f.urls:
-        assert u in ok or u.startswith("https://data.sec.gov/api/xbrl/") and u.endswith(".json"), u
+        assert (u in ok or u.startswith("https://data.sec.gov/api/xbrl/") and u.endswith(".json")
+                or re.fullmatch(r"https://data\.sec\.gov/submissions/CIK\d{10}\.json", u)), u
     cu = f.company_urls()
     assert 125 <= len(set(cu)) <= 150
     assert max(cu.count(u) for u in set(cu)) <= 2, "the counting pass and the emitting pass"
+    su = [u for u in f.urls if "/submissions/" in u]
+    assert len(su) == len(set(su)) == 125, "the second copy of the filing class: one request for each chosen company"
     assert f.urls[0] in ok, "the ranking files come first"
 
 
@@ -177,16 +208,17 @@ def test_a_new_report_in_a_later_run_emits_only_its_cells(names, first, tmp_path
     later = "2026-11-21T12:00:00.000000Z"
     path = sec.run(names, fetch=f, now=later, state_dir=s, out_dir=o, sleep=fc.sleep, clock=fc.clock, budget=BUDGET)
     assert path is not None and path.name == f"sec-{relay._stamp(later)}.jsonl"
-    funcs, cats, cells, tests = split_lines(read_lines(path))
-    assert funcs == [] and cats == []
-    fns = sorted((c["cell"]["fn"].rsplit("/", 1)[1], len(c["cell"]["args"])) for c in cells)
-    assert fns == sorted([("company_fact", 6)] + [("filing", 2)] * 6 + [("filing_for", 2)])
+    k = kinds(read_lines(path))
+    assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog")] == [0, 0, 0, 0]
+    fns = sorted((c["cell"]["fn"], len(c["cell"]["args"])) for c in k["cell"])
+    assert fns == sorted([(fact_fn(names), 6)] + [(f"{filing_cls(names)}/{m}", 1) for m in FILING_METHODS]
+                         + [(annual_fn(names), 2)])
 
 
 def test_a_company_without_companyfacts_is_left_out_and_reported(names, tmp_path):
     wells = "0000072971"
     path, f, s, o = go(names, tmp_path, fetcher=SecFetcher(names, None, missing=[wells]))
-    cells = [l for l in read_lines(path) if "cell" in l and l["cell"]["fn"] in sec.fact_functions(names["sec"]).values()]
+    cells = [l for l in read_lines(path) if "cell" in l and l["cell"]["fn"] == fact_fn(names)]
     assert len(cells) == 2220 - SYNTH_CELLS
     rep = json.loads((o / f"sec-scope-{STAMP}.json").read_text(encoding="utf-8"))
     assert rep["left_out"]["no_companyfacts"] == [wells] and rep["n"] == 125 and rep["estimated_cells"] == 2214
@@ -281,7 +313,7 @@ def test_first_run_writes_the_register_cells_of_sec_gov_company_facts(first):
     for c in cells:
         assert c["cell"]["args"] == {"source": {"type": "string", "value": "sec.gov"},
                                      "code": {"type": "string", "value": "company_facts"}}
-        assert c["licence"] == "CC0-1.0"
+        assert c["licence"] == "CC0-1.0", "the register's own cells keep their licence"
         check_summary(c["summary"])
     by = {c["cell"]["fn"].rsplit("/", 1)[1]: c["value"] for c in cells}
     assert by["status"] == {"type": "string", "value": "relayed"}
@@ -293,5 +325,6 @@ def test_first_run_writes_the_register_cells_of_sec_gov_company_facts(first):
     assert blob["media_type"] == "text/plain" and blob["blob"].startswith("blobs/")
     text = (first["o"] / blob["blob"]).read_text(encoding="utf-8")
     assert "Please declare your user agent in request headers:" in text and " | " in text
-    assert not [l for l in lines if "descriptor" in l or "class" in l or ("catalog" in l and REG_CLASS in l["catalog"])]
-    check_order(lines)
+    assert not [l for l in lines if "class" in l and REG_CLASS in l["class"]]
+    assert not [l for l in lines if "catalog" in l and REG_CLASS in l["catalog"]]
+    check_order_all(lines)

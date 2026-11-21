@@ -20,8 +20,8 @@ def test_parse_frames_of_the_real_file():
     assert (f["taxonomy"], f["concept"], f["unit"], f["ccp"]) == RANKING_FRAME
     assert len(f["rows"]) == 6430
     r = next(r for r in f["rows"] if r["cik"] == "0000018230")
-    assert r == {"cik": "0000018230", "accession": "0000018230-25-000008", "period": "2023-12-31",
-                 "value": "87476000000"}
+    assert r == {"cik": "0000018230", "accession": "0000018230-25-000008", "period_start": "2023-12-31",
+                 "period_end": "2023-12-31", "value": "87476000000"}, "an instant has the same date in both"
 
 
 def test_parse_frames_duration_and_per_share_unit():
@@ -31,8 +31,8 @@ def test_parse_frames_duration_and_per_share_unit():
                                  "start": "2023-01-01", "end": "2023-12-31", "val": 1.25}]}).encode()
     f = sec.parse_frames(data)
     assert f["unit"] == "USD/shares", "the frames API spells the unit USD-per-shares; companyfacts says USD/shares"
-    assert f["rows"] == [{"cik": "0000001234", "accession": "0000001234-24-000001", "period": "2023-01-01/2023-12-31",
-                          "value": "1.25"}]
+    assert f["rows"] == [{"cik": "0000001234", "accession": "0000001234-24-000001", "period_start": "2023-01-01",
+                          "period_end": "2023-12-31", "value": "1.25"}]
 
 
 @pytest.mark.parametrize("data", [b"", b"[]", b'{"data":[]}', b'{"taxonomy":"us-gaap","tag":"Assets","ccp":"CY2023Q4I","uom":"USD"}'])

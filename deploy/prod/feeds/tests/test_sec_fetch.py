@@ -1,6 +1,7 @@
 """Fair access (K1, D34): the declared User-Agent and nothing else about us, a token bucket at 5 requests a second,
 a stop on 403, and no production host."""
 import io
+import json
 import urllib.error
 import urllib.request
 
@@ -215,12 +216,56 @@ def test_production_host_table_has_no_part_7_names():
     assert sec.names(REHEARSAL)["sec"]["namespace"] == "mesh-test.datumesh.com/relay/sec.gov"
 
 
-def test_sec_names_file_lists_only_the_rehearsal_host():
+SCRATCH = "scratch.invalid"
+
+
+def test_sec_names_file_lists_only_the_rehearsal_hosts():
+    """The rebuild runs on the private scratch mesh (host scratch.invalid) as well as mesh-test (which is frozen);
+    datumesh.com is in neither list."""
     import tomllib
     from conftest import FEEDS
     with open(FEEDS / "sec_names.toml", "rb") as f:
         t = tomllib.load(f)
-    assert list(t["hosts"]) == [REHEARSAL] and t["hosts"][REHEARSAL]["status"] == "rehearsal"
+    assert sorted(t["hosts"]) == sorted([REHEARSAL, SCRATCH])
+    assert all(t["hosts"][h]["status"] == "rehearsal" for h in t["hosts"])
     text = (FEEDS / "sec_names.toml").read_text(encoding="utf-8")
-    for path in ("datumesh.com/relay", "datumesh.com/takeover", "datumesh.com/register", "mesh-test.datumesh.com/"):
+    for path in ("datumesh.com/relay", "datumesh.com/takeover", "datumesh.com/register", "mesh-test.datumesh.com/",
+                 "scratch.invalid/"):
         assert path not in text, path  # every name is spelled with {host}; the host is only in [hosts]
+
+
+def test_the_scratch_host_has_the_whole_sec_table_with_its_own_host_in_every_name():
+    t = sec.sec_table(SCRATCH)
+    assert t["sec"]["namespace"] == "scratch.invalid/relay/sec.gov"
+    assert t["sec"]["annual_report_namespace"] == "scratch.invalid/sec"
+    assert t["sec"]["takeover"] == "https://scratch.invalid/takeover/sec.gov"
+    n = sec.names(SCRATCH)
+    assert n["meta"]["host"] == SCRATCH and n["meta"]["status"] == "rehearsal"
+    assert n["sec"]["namespace"] == "scratch.invalid/relay/sec.gov" and n["register"]["namespace"] == "scratch.invalid/register"
+    assert REHEARSAL not in json.dumps(n), "no name of the other rehearsal host leaks into the scratch table"
+    same = lambda d: {k: v for k, v in d["sec"].items() if isinstance(v, str)}
+    a, b = same(sec.names(REHEARSAL)), same(n)
+    assert {k: v.replace(REHEARSAL, "HOST") for k, v in a.items()} == {k: v.replace(SCRATCH, "HOST") for k, v in b.items()}
+
+
+def test_the_scratch_host_emits_every_name_under_itself(names):
+    from sec_helpers import CIK_CAT, item
+    n = sec.names(SCRATCH)
+    lines, _ = sec.emit([item(n, CIK_CAT)], {}, n)
+    named = [l.get("function") or l.get("class") or l.get("catalog") or l["cell"]["fn"] for l in lines
+             if any(k in l for k in ("function", "class", "catalog", "cell"))]
+    assert named and all(x.startswith("scratch.invalid/") for x in named)
+    assert not any(REHEARSAL in json.dumps(l) for l in lines)
+
+
+def test_run_accepts_the_scratch_names_and_still_refuses_production(tmp_path):
+    n = sec.names(SCRATCH)
+
+    def fetch(url):
+        raise common.NotPublished(url)  # stops at the first request: the names were accepted, nothing is published
+    s, o = tmp_path / "s", tmp_path / "o"
+    s.mkdir(), o.mkdir()
+    with pytest.raises(common.NotPublished):
+        sec.run(n, fetch=fetch, now="2026-11-20T12:00:00.000000Z", state_dir=s, out_dir=o)
+    with pytest.raises(sec.NotForProduction):
+        sec.sec_table(PRODUCTION)

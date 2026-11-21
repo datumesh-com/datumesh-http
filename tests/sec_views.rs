@@ -1,9 +1,10 @@
-//! Build 2 Part 7 (CONTRACT-build2-part7-sec K4, K5, K6): the normalised views and the ratio library of
-//! `deploy/prod/feeds/sec_views.jsonl`, published as `publish-stored` does on mesh-test, with the public
+//! Build 2 Part 7 (CONTRACT-build2-part7-sec K4, K5, K6) as changed by CONTRACT-sec-rebuild.md N4: the normalised views and
+//! the ratio library of `deploy/prod/feeds/sec_views.jsonl`, published as `publish-stored` does on mesh-test, with the public
 //! test rule ON (`publish_stored_checked`, the call the binary makes on datumesh-http), over stub relay
-//! cells for two companies (`deploy/prod/feeds/fixtures/sec_views_stub_relay.jsonl`: Caterpillar and
-//! JPMorgan Chase, the SEC's companyfacts as filed, fiscal years 2019 to 2024), generated from `sec.emit` by
-//! `fixtures/make_sec_stub.py` (D38), so the relay the views read is the relay the fetcher writes.
+//! cells for two companies and a synthetic restated one (`deploy/prod/feeds/fixtures/sec_views_stub_relay.jsonl`: Caterpillar
+//! and JPMorgan Chase, the SEC's companyfacts as filed, fiscal years 2019 to 2024; and cik 0000000777, whose fiscal 2020
+//! figures four filings report with four values), generated from `sec.emit` by `fixtures/make_sec_stub.py`, so the relay
+//! the views read is the relay the fetcher writes. Needs the unreleased core 0.3.11 and formula 0.5.2 (`last_by`, `public:`).
 //!
 //! The mesh is on PostgreSQL (`DATABASE_URL`). Checked here:
 //!
@@ -12,7 +13,11 @@
 //! * every stored test row is a pass, and there is one row for every `test` line;
 //! * the catalogue's examples, and the chains that fall back from tag to tag, give the same answers
 //!   when the live mesh evaluates them (the harness of the rule is not the engine);
-//! * the rule is really on: without the tests, or without one of them, the file is refused.
+//! * the rule is really on: without the tests, or without one of them, the file is refused;
+//! * the views inherit the SEC's `public:` licence and need NO declaration: the key document has none, and every view of
+//!   `sec/` answers ok with the licence `public:https://www.sec.gov/about/privacy-information`;
+//! * `sec/latest` is exact (`last_by` over the period's members by the filing class's `filed()`): on the restated company
+//!   it gives the figure of the latest filing three fiscal years on, and it agrees with a direct reading of the cells.
 
 mod common;
 
@@ -26,7 +31,7 @@ use datumesh_http::publish::{publish_stored_checked, PublishErrorKind};
 use datumesh_store::Store;
 use serde_json::Value;
 
-const SEC_LICENCE: &str = "https://www.sec.gov/about/privacy-information";
+const SEC_LICENCE: &str = "public:https://www.sec.gov/about/privacy-information";
 
 fn feeds() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/prod/feeds")
@@ -76,7 +81,7 @@ fn path_of(call: &str) -> String {
     let mut q = Vec::new();
     for a in args.split(", ") {
         let (k, v) = a.split_once(": ").unwrap();
-        q.push(format!("{k}={}", v.trim_matches('"')));
+        q.push(format!("{k}={}", v.trim_matches('"').replace('/', "%2F")));
     }
     q.sort();
     format!("/cell/{name}?{}", q.join("&"))
@@ -118,15 +123,18 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     let dir = tmp("pg");
     let p = common::bl(|| publish_all(&*store, &key, &dir, &lines)).unwrap_or_else(|e| panic!("{e}"));
     let formula_names = formulas(&lines);
-    // the five stored relay functions of the stub (D38: company_fact, company_fact_shares, company_fact_per_share,
-    // filing, filing_for) and the formulas
-    assert_eq!(p.functions, 5 + formula_names.len(), "{p:?}");
+    // the two stored functions of the stub (company_fact, sec/annual_report), the filing class (one class, its six stored
+    // methods) and the formulas
+    assert_eq!(p.functions, 2 + formula_names.len(), "{p:?}");
+    assert_eq!(p.classes, 1, "{p:?}");
+    assert!(formula_names.contains(&format!("{HOST}/calendar/age_at")) && formula_names.contains(&format!("{HOST}/calendar/days_between")));
+    assert!(!formula_names.contains(&format!("{HOST}/ratio/age_at")) && !formula_names.contains(&format!("{HOST}/ratio/days_between")));
     assert!(formula_names.len() >= 28, "the K4 views and the K5 ratios: {}", formula_names.len());
     assert!(p.cells > 300 && stub_lines > 300, "{p:?}");
 
     // a second run changes nothing
     let again = common::bl(|| publish_all(&*store, &key, &dir, &lines)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!((again.functions, again.versions), (0, 0), "{again:?}");
+    assert_eq!((again.functions, again.classes, again.versions), (0, 0, 0), "{again:?}");
 
     // one stored row for each test line, each a pass
     let tests: Vec<Value> = views().iter().map(|l| json(l)).filter(|v| v.get("test").is_some()).collect();
@@ -149,24 +157,26 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
 
     // the live mesh
     let node = Node::start_with(Setup { db: Some(db.clone()), ..Setup::new(HOST) }, |_| {}, |b| b).await;
-    // The relay cells carry the SEC's licence, an https URL, which licence inheritance (SPEC 8.5) ranks as restricted: a
-    // view over them is `unlicensed` unless the steward declares it for that licence (9.2). The stub used to say
-    // CC0-1.0, which hid this; the real relay does not, so every view that reads a cell is declared here, as
-    // mesh-test's key document must declare them (reported in D38's follow-up).
-    for f in &formula_names {
-        if f.starts_with(&format!("{HOST}/sec/")) {
-            node.declare(f, SEC_LICENCE, "2026-01-01T00:00:00.000000Z");
-        }
-    }
-    // the examples of the catalogue lines
+    // No declaration (spec-0.6.2 P4): the relay cells carry `public:<the SEC's terms page>`, an open licence, so a view over
+    // them inherits it without the steward declaring anything. The key document of the host has no `declarations`.
+    let keydoc = common::bl(|| store.namespace(HOST).unwrap().unwrap().keydoc);
+    let kd: Value = serde_json::from_slice(&keydoc).unwrap();
+    assert!(kd.get("declarations").is_none(), "the views need no declaration: {kd}");
+    // the examples of the catalogue lines; a view of sec/ answers with the public licence
     let mut examples = 0;
     for l in views() {
         let v = json(&l);
         if v.get("catalog").is_none() {
             continue;
         }
+        let name = v["catalog"].as_str().unwrap().to_string();
         for e in v["examples"].as_array().unwrap() {
-            expect_value(&node, e["call"].as_str().unwrap(), e["expected"]["value"].as_str().unwrap()).await;
+            let call = e["call"].as_str().unwrap();
+            expect_value(&node, call, e["expected"]["value"].as_str().unwrap()).await;
+            if name.starts_with(&format!("{HOST}/sec/")) {
+                let a = answer(&node, call).await;
+                assert_eq!(a["receipt"]["licence"], SEC_LICENCE, "{call}: {a}");
+            }
             examples += 1;
         }
     }
@@ -179,7 +189,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     expect_value(
         &node,
         &format!(
-            "{}(cik: \"{jpm}\", concept: \"Revenues\", unit: \"USD\", fiscal_year: 2019, period_kind: \"annual\")",
+            "{}(cik: \"{jpm}\", concept: \"us-gaap:Revenues\", unit: \"USD\", fiscal_year: 2019, period_kind: \"annual\")",
             s("reported")
         ),
         "115627000000",
@@ -188,7 +198,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     expect_value(
         &node,
         &format!(
-            "{}(cik: \"{jpm}\", concept: \"Revenues\", unit: \"USD\", fiscal_year: 2019, period_kind: \"annual\")",
+            "{}(cik: \"{jpm}\", concept: \"us-gaap:Revenues\", unit: \"USD\", fiscal_year: 2019, period_kind: \"annual\")",
             s("latest")
         ),
         "115720000000",
@@ -197,7 +207,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     expect_value(
         &node,
         &format!(
-            "{}(cik: \"{jpm}\", concept: \"Assets\", unit: \"USD\", fiscal_year: 2019, period_kind: \"instant\")",
+            "{}(cik: \"{jpm}\", concept: \"us-gaap:Assets\", unit: \"USD\", fiscal_year: 2019, period_kind: \"instant\")",
             s("latest")
         ),
         "2686477000000",
@@ -205,6 +215,18 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     .await;
     // a tag chain falling back through a real read that has no value (Caterpillar tags no NetIncomeLoss)
     expect_value(&node, &format!("{}(cik: \"{cat}\", fiscal_year: 2023)", s("net_income")), "10332000000").await;
+    // the same figures through the filing class and the selection, read directly
+    let jpm_fy2019 = "0000019617-20-000257";
+    let filing = |m: &str, a: &str| format!("{HOST}/relay/sec.gov/filing/{m}(accession: \"{a}\")");
+    expect_value(&node, &format!("{}(cik: \"{jpm}\", fiscal_year: 2019)", s("annual_report")), jpm_fy2019).await;
+    expect_value(&node, &filing("period_end", jpm_fy2019), "2019-12-31").await;
+    expect_value(&node, &filing("form", jpm_fy2019), "10-K").await;
+    expect_value(&node, &filing("fiscal_year", jpm_fy2019), "2019").await;
+    expect_value(&node, &filing("fiscal_period", jpm_fy2019), "FY").await;
+    expect_value(&node, &filing("cik", jpm_fy2019), jpm).await;
+    let a = answer(&node, &format!("{}(cik: \"{jpm}\", fiscal_year: 2019)", s("annual_report"))).await;
+    assert_eq!((a["trust"].as_str(), a["receipt"]["licence"].as_str()), (Some("primary"), Some(SEC_LICENCE)), "{a}");
+    assert!(a["receipt"].get("source").map_or(true, Value::is_null), "no source: {a}");
     // a bank has no inventory: no value, and its fault is a fault of the cell
     expect_not_covered(&node, &format!("{}(cik: \"{jpm}\", fiscal_year: 2023)", s("inventory")), None).await;
     // the first fiscal year in scope has no opening balance
@@ -248,4 +270,68 @@ fn the_public_rule_refuses_the_views_without_their_tests() {
     let e = publish_stored_checked(&*lite.store, &lite.key, HOST, &[HOST.to_string()], &f, &opts(NOW))
         .expect_err("refused");
     assert!(matches!(e.kind, PublishErrorKind::TestsMissing(_)) && e.detail.contains("zero(whole)"), "{e}");
+}
+
+/// N4: `sec/latest` is exact. The restated company (cik 0000000777, `sec_helpers.restated_company`) files fiscal 2020
+/// assets as 100 (A, 10-K), 110 (E, the 10-K/A of fiscal 2020), 120 (B, fiscal 2021) and 130 (D, fiscal 2023, three fiscal
+/// years on); C (fiscal 2022) reports nothing of them. The latest filing that reports the period is D, so the latest figure is
+/// 130, and `sec/reported` stays the figure of the fiscal year's own (latest filed) report, E's 110.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sec_latest_is_exact_over_the_restated_company() {
+    let db = Arc::new(TestDb::migrated());
+    let key = key_for(HOST);
+    let store = Arc::new(common::bl(|| db.store(8)));
+    common::bl(|| store.put_namespace(HOST, &key_doc(HOST, &key), BIND_TX).unwrap());
+    let mut lines = stub();
+    lines.extend(views());
+    let dir = tmp("exact");
+    common::bl(|| publish_all(&*store, &key, &dir, &lines)).unwrap_or_else(|e| panic!("{e}"));
+    let node = Node::start_with(Setup { db: Some(db.clone()), ..Setup::new(HOST) }, |_| {}, |b| b).await;
+    let s = |f: &str| format!("{HOST}/sec/{f}");
+    let r = "0000000777";
+    let call = |f: &str, concept: &str, fy: u32, kind: &str| {
+        format!("{}(cik: \"{r}\", concept: \"us-gaap:{concept}\", unit: \"USD\", fiscal_year: {fy}, period_kind: \"{kind}\")", s(f))
+    };
+    // the selection: the latest filed of fiscal 2020 is the 10-K/A, whose accession is lower than B's
+    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2020)", s("annual_report")), "0000000777-21-000005").await;
+    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2023)", s("annual_report")), "0000000777-24-000004").await;
+    expect_value(&node, &call("reported", "Assets", 2020, "instant"), "110").await;
+    expect_value(&node, &call("latest", "Assets", 2020, "instant"), "130").await;
+    expect_value(&node, &call("reported", "Revenues", 2020, "annual"), "55").await;
+    expect_value(&node, &call("latest", "Revenues", 2020, "annual"), "70").await;
+    expect_value(&node, &call("latest", "Assets", 2021, "instant"), "150").await;
+    expect_value(&node, &call("latest", "Assets", 2022, "instant"), "200").await;
+    expect_value(&node, &call("latest", "Revenues", 2023, "annual"), "80").await;
+
+    // a direct reading of the filings: every accession's value for the period, ordered by the filed date of the filing
+    let mut best: Option<(String, String, String)> = None; // (filed, accession, value)
+    for accn in ["0000000777-21-000001", "0000000777-21-000005", "0000000777-22-000002", "0000000777-23-000003", "0000000777-24-000004"] {
+        let v = answer(
+            &node,
+            &format!(
+                "{HOST}/relay/sec.gov/company_fact(cik: \"{r}\", concept: \"us-gaap:Assets\", unit: \"USD\", accession: \"{accn}\", period_start: 2020-12-31, period_end: 2020-12-31)"
+            ),
+        )
+        .await;
+        if v["outcome"] != "ok" {
+            assert_eq!(accn, "0000000777-23-000003", "only C reports nothing of 2020: {v}");
+            continue;
+        }
+        let f = answer(&node, &format!("{HOST}/relay/sec.gov/filing/filed(accession: \"{accn}\")")).await;
+        let filed = f["receipt"]["value"].as_str().unwrap().to_string();
+        let cand = (filed, accn.to_string(), value_of(&v));
+        if best.as_ref().map_or(true, |b| (&cand.0, &cand.1) > (&b.0, &b.1)) {
+            best = Some(cand);
+        }
+    }
+    let (filed, accn, value) = best.unwrap();
+    assert_eq!((filed.as_str(), accn.as_str(), value.as_str()), ("2024-02-23", "0000000777-24-000004", "130"));
+    expect_value(&node, &call("latest", "Assets", 2020, "instant"), &value).await;
+    // and the real restatement: JPMorgan's 2019 assets, latest = the FY2021 report's figure
+    expect_value(
+        &node,
+        &format!("{}(cik: \"0000019617\", concept: \"us-gaap:Assets\", unit: \"USD\", fiscal_year: 2019, period_kind: \"instant\")", s("latest")),
+        "2686477000000",
+    )
+    .await;
 }

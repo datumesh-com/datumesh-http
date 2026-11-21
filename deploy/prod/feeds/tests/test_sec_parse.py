@@ -1,14 +1,16 @@
-"""sec.parse_companyfacts: companyfacts file -> rows, by the scope rule (K3) and the key rule (K2).
-One row per (cik, taxonomy, concept, unit, accession, period); 10-K and 10-K/A only, fy 2019 to 2024, listed concepts."""
+"""sec.parse_companyfacts: companyfacts file -> rows, by the scope rule (K3) and the key rule (N1).
+One row per (cik, concept, unit, accession, period_start, period_end); the concept keeps its prefix ("us-gaap:Assets"),
+the period is two dates (an instant has the same date in both); 10-K and 10-K/A only, fy 2019 to 2024, listed concepts.
+Also sec.parse_submissions (the second copy of the filing class) and sec.relayed_unit."""
 import json
 
 import pytest
 
 import common
 import sec
-from sec_helpers import CIK_CAT, CIK_GE, CIK_JPM, CIKS, IN_SCOPE, facts_file, facts_json, rec
+from sec_helpers import CIK_CAT, CIK_GE, CIK_JPM, CIKS, IN_SCOPE, facts_file, facts_json, rec, submissions_file
 
-KEY = ("cik", "taxonomy", "concept", "unit", "accession", "period")
+KEY = ("cik", "concept", "unit", "accession", "period_start", "period_end")
 
 
 def key(r):
@@ -57,11 +59,14 @@ def test_fixture_rows_by_the_scope_rule(cik):
     assert p["cik"] == cik and len(p["rows"]) == IN_SCOPE[cik] == sec.count_cells(facts_file(cik))
     concepts = sec.load_concepts()
     for r in p["rows"]:
-        assert r["cik"] == cik and (r["taxonomy"], r["concept"]) in concepts
+        tax, _, name = r["concept"].partition(":")
+        assert r["cik"] == cik and (tax, name) in concepts and ":" in r["concept"]
+        assert "taxonomy" not in r and "period" not in r
         assert r["form"] in ("10-K", "10-K/A") and 2019 <= int(r["fy"]) <= 2024
     assert len({key(r) for r in p["rows"]}) == len(p["rows"]), "one row per key"
     assert p["conflicts"] == []
-    assert not any(r["concept"] in ("DebtAndEquitySecuritiesGainLoss", "DeferredTaxAssetsGross") for r in p["rows"])
+    assert not any(r["concept"].split(":")[1] in ("DebtAndEquitySecuritiesGainLoss", "DeferredTaxAssetsGross")
+                   for r in p["rows"])
 
 
 def test_entity_names_and_ciks():
@@ -80,8 +85,11 @@ def test_no_quarterly_form_no_other_year_no_later_report():
 
 
 def row(cik, concept, unit, accession, period, taxonomy="us-gaap"):
-    hit = [r for r in rows_of(cik) if (r["taxonomy"], r["concept"], r["unit"], r["accession"], r["period"]) ==
-           (taxonomy, concept, unit, accession, period)]
+    """The one row of a concept (given without its prefix), as "end" for an instant or "start/end" for a duration."""
+    ps, _, pe = period.partition("/")
+    ps, pe = (ps, pe) if pe else (ps, ps)
+    hit = [r for r in rows_of(cik) if (r["concept"], r["unit"], r["accession"], r["period_start"], r["period_end"]) ==
+           (f"{taxonomy}:{concept}", unit, accession, ps, pe)]
     assert len(hit) == 1, hit
     return hit[0]
 
@@ -114,15 +122,18 @@ def test_jpm_assets_restated_in_the_fy2021_report():
                    "0000019617-22-000272": "2686477000000"}
 
 
-def test_period_formats_instant_and_duration_and_dei():
+def test_period_is_two_dates_an_instant_has_the_same_date_in_both_and_dei_keeps_its_prefix():
     inst = row(CIK_CAT, "Assets", "USD", "0000018230-24-000009", "2023-12-31")
-    assert inst["period"] == "2023-12-31"
-    durs = [r for r in rows_of(CIK_CAT) if r["concept"] == "Revenues" and "/" in r["period"]]
-    assert durs and all(len(r["period"]) == 21 and r["period"][10] == "/" for r in durs)
-    assert any(r["period"] == "2023-01-01/2023-12-31" for r in durs)
-    dei = [r for r in rows_of(CIK_CAT) if r["taxonomy"] == "dei"]
-    assert dei and all(r["concept"] == "EntityCommonStockSharesOutstanding" and r["unit"] == "shares"
-                       and "/" not in r["period"] for r in dei)
+    assert (inst["period_start"], inst["period_end"]) == ("2023-12-31", "2023-12-31")
+    durs = [r for r in rows_of(CIK_CAT) if r["concept"] == "us-gaap:Revenues" and r["period_start"] != r["period_end"]]
+    assert durs and all(common.ISO_DATE.match(r["period_start"]) and common.ISO_DATE.match(r["period_end"]) for r in durs)
+    assert any((r["period_start"], r["period_end"]) == ("2023-01-01", "2023-12-31") for r in durs)
+    assert all(r["period_start"] < r["period_end"] for r in durs)
+    dei = [r for r in rows_of(CIK_CAT) if r["concept"].startswith("dei:")]
+    assert dei and all(r["concept"] == "dei:EntityCommonStockSharesOutstanding" and r["unit"] == "shares"
+                       and r["period_start"] == r["period_end"] for r in dei)
+    assert not any(r["concept"].startswith("dei:") and ":" in r["concept"].split(":", 1)[1] for r in rows_of(CIK_GE))
+    assert all(r["concept"].startswith(("us-gaap:", "dei:")) for cik in CIKS for r in rows_of(cik))
 
 
 def test_units_as_filed():
@@ -187,9 +198,9 @@ def test_forms_fiscal_years_and_concepts_filter():
         ("us-gaap", "SomeOtherConcept", "USD", "Other", [rec("2023-12-31", "12", A + "1", 2023)]),
         ("custom", "Assets", "USD", "Custom assets", [rec("2023-12-31", "13", A + "1", 2023)]),
     ])
-    got = sorted((r["taxonomy"], r["concept"], r["value"]) for r in p["rows"])
-    assert got == [("us-gaap", "Assets", "1"), ("us-gaap", "Assets", "2"), ("us-gaap", "Assets", "8"),
-                   ("us-gaap", "Assets", "9"), ("us-gaap", "Goodwill", "11")]
+    got = sorted((r["concept"], r["value"]) for r in p["rows"])
+    assert got == [("us-gaap:Assets", "1"), ("us-gaap:Assets", "2"), ("us-gaap:Assets", "8"),
+                   ("us-gaap:Assets", "9"), ("us-gaap:Goodwill", "11")]
 
 
 def test_in_filing_duplicates_equal_values_are_one_cell():
@@ -197,7 +208,8 @@ def test_in_filing_duplicates_equal_values_are_one_cell():
     p = parsed_one([("us-gaap", "Assets", "USD", "Assets", [
         rec("2023-12-31", "100", A, 2023), rec("2023-12-31", "100.0", A, 2023, fp="FY"),
         rec("2022-12-31", "90", A, 2023)])])
-    assert sorted((r["period"], r["value"]) for r in p["rows"]) == [("2022-12-31", "90"), ("2023-12-31", "100")]
+    assert sorted((r["period_start"], r["period_end"], r["value"]) for r in p["rows"]) == [
+        ("2022-12-31", "2022-12-31", "90"), ("2023-12-31", "2023-12-31", "100")]
     assert p["conflicts"] == []
 
 
@@ -206,12 +218,12 @@ def test_in_filing_duplicates_with_conflicting_values_are_reported_and_skipped()
     p = parsed_one([("us-gaap", "Assets", "USD", "Assets", [
         rec("2023-12-31", "100", A, 2023), rec("2023-12-31", "101", A, 2023),
         rec("2023-12-31", "100", B, 2023), rec("2022-12-31", "90", A, 2023)])])
-    assert sorted((r["accession"], r["period"], r["value"]) for r in p["rows"]) == [
+    assert sorted((r["accession"], r["period_end"], r["value"]) for r in p["rows"]) == [
         (A, "2022-12-31", "90"), (B, "2023-12-31", "100")]
     assert len(p["conflicts"]) == 1
     c = p["conflicts"][0]
-    assert (c["cik"], c["taxonomy"], c["concept"], c["unit"], c["accession"], c["period"]) == (
-        "0000001234", "us-gaap", "Assets", "USD", A, "2023-12-31")
+    assert (c["cik"], c["concept"], c["unit"], c["accession"], c["period_start"], c["period_end"]) == (
+        "0000001234", "us-gaap:Assets", "USD", A, "2023-12-31", "2023-12-31")
     assert sorted(c["values"]) == ["100", "101"]
 
 
@@ -296,3 +308,60 @@ def test_a_cik_written_as_a_zero_padded_string_is_read():
         raw["cik"] = bad
         with pytest.raises(common.ShapeError):
             sec.parse_companyfacts(json.dumps(raw).encode())
+
+
+# ---------- the relayed units (N1) ----------
+
+def test_relayed_unit_of_a_filed_unit():
+    f = sec.relayed_unit
+    for ok in ("USD", "EUR", "USN", "JPY", "TRL", "shares", "pure", "USD/shares", "EUR/shares", "JPY/shares"):
+        assert f(ok) is True, ok
+    for odd in ("", "usd", "XXX", "ABC", "USD/USD", "shares/USD", "CAD/EUR", "USD/share", "XXX/shares", "acre",
+                "USD-per-shares", "Pure", "Shares", "shares/shares", "USD/pure", None, 1):
+        assert f(odd) is False, odd
+    assert "XXX" not in sec.CURRENCIES and len(sec.CURRENCIES) == 189 and {"USD", "EUR", "USN", "TRL"} <= sec.CURRENCIES
+    for gone in ("unit_form", "FACT_FORMS", "fact_functions"):
+        assert not hasattr(sec, gone), f"{gone}: the relay is not split by unit form any more"
+
+
+def test_every_filed_unit_of_the_fixtures_is_relayed_as_filed():
+    from sec_helpers import mixed_company
+    p = sec.parse_companyfacts(mixed_company())
+    assert sorted(r["unit"] for r in p["rows"]) == sorted(["USD", "EUR", "USN", "EUR/shares", "USD/shares", "shares", "pure"])
+    assert p["left_out_units"] == {"CAD/EUR": 1, "acre": 1, "USD-per-gal": 1}
+    assert sec.count_cells(mixed_company()) == 7
+
+
+# ---------- the submissions API, the second copy of the filing class (N2) ----------
+
+def test_parse_submissions_of_the_stubs():
+    p = sec.parse_submissions(submissions_file(CIK_GE))
+    assert p["cik"] == CIK_GE
+    f = p["filings"]["0000040545-24-000027"]
+    assert f == {"form": "10-K", "filed": "2024-02-02", "period_end": "2023-12-31"}
+    assert p["filings"]["0000040545-24-900001"] == {"form": "8-K", "filed": "2024-03-01", "period_end": None}, (
+        "an empty reportDate is None")
+    assert p["filings"]["0000040545-24-900002"]["form"] == "10-Q"
+    cf = sec.parse_companyfacts(facts_file(CIK_GE))["filings"]
+    assert {a: {"form": v["form"], "filed": v["filed"], "period_end": v["period_end"]} for a, v in cf.items()} == {
+        a: v for a, v in p["filings"].items() if a in cf}, "the stub agrees with companyfacts on every in-scope filing"
+
+
+def test_parse_submissions_accepts_a_numeric_cik_and_refuses_changed_shapes():
+    import json
+    raw = json.loads(submissions_file(CIK_JPM))
+    raw["cik"] = 19617
+    assert sec.parse_submissions(json.dumps(raw).encode())["cik"] == CIK_JPM
+    good = json.loads(submissions_file(CIK_JPM))
+    for mutate in (lambda d: d.pop("filings"), lambda d: d["filings"].pop("recent"),
+                   lambda d: d["filings"]["recent"].pop("accessionNumber"),
+                   lambda d: d["filings"]["recent"].__setitem__("form", d["filings"]["recent"]["form"][:-1]),
+                   lambda d: d["filings"]["recent"]["filingDate"].__setitem__(0, "02/03/2025"),
+                   lambda d: d.__setitem__("cik", "x")):
+        d = json.loads(json.dumps(good))
+        mutate(d)
+        with pytest.raises(common.ShapeError):
+            sec.parse_submissions(json.dumps(d).encode())
+    for data in (b"", b"[]", b"not json"):
+        with pytest.raises(common.ShapeError):
+            sec.parse_submissions(data)

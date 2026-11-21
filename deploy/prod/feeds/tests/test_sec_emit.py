@@ -1,16 +1,24 @@
-"""sec.emit: the cells, filing cells, filing_for cells, source, summaries, catalogue and dictionaries (K2, K6, D36).
-The cell value is the figure as filed; nothing is normalised under the relay name."""
+"""sec.emit under the SEC rebuild (CONTRACT-sec-rebuild.md N1 to N3): the one relay function company_fact, the filing class
+with six stored methods, and sec/annual_report (stored, signed by the operator, no source); their cells, receipts' source and
+licence, summaries, catalogue and dictionaries. The cell value is the figure as filed; nothing is normalised under the
+relay name."""
 import copy
+import hashlib
 import json
 
 import pytest
 
+import register
 import sec
 from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
-from helpers import (HEX64, check_order, check_source_object, check_summary, host_of, sha256, split_lines)
-from sec_helpers import (mixed_company, CIK_CAT, CIK_GE, CIK_JPM, CIKS, IN_SCOPE, NOW, cf_url, facts_file, item, source_of)
+from helpers import HEX64, check_source_object, check_summary, host_of, sha256
+from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FACT_ORDER, FILING_METHODS, FILING_RETURNS, IN_SCOPE, NOW,
+                         annual_fn, args_of, cf_url, check_order_all, fact_fn, facts_file, filing_cls, item, kinds,
+                         mixed_company, source_of)
 
-FILING_FIELDS = ["cik", "form", "filed", "fy", "fp", "period_end"]
+PUBLIC = "public:https://www.sec.gov/about/privacy-information"
+S = {"type": "string", "valid": False}
+D = {"type": "date", "valid": False}
 
 
 def items(names):
@@ -24,38 +32,22 @@ def first(names):
     return its, lines, state
 
 
-def fqs(names):
-    s = names["sec"]
-    ns = s["namespace"]
-    return f"{ns}/{s['function']}", f"{ns}/{s['filing_function']}", f"{ns}/{s['filing_for_function']}"
+def cells_of(lines, fn):
+    return [l for l in lines if "cell" in l and l["cell"]["fn"] == fn]
 
 
-FACT_KINDS = {"money": "function", "shares": "shares_function", "per_share": "per_share_function",
-              "ratio": "ratio_function"}
+def cat(lines, name):
+    (c,) = [l for l in lines if l.get("catalog") == name]
+    return c
 
 
-def kind_fqs(names):
-    """The relay function of each unit form (D38): money, shares, per_share and ratio."""
-    s = names["sec"]
-    return {k: f"{s['namespace']}/{s[v]}" for k, v in FACT_KINDS.items()}
+def dcall(fn, order, vals, bare=()):
+    """A call as the catalogue writes it: strings quoted, the arguments named in `bare` (dates, numbers) not."""
+    return f"{fn}({', '.join(f'{a}: {vals[a]}' if a in bare else f'{a}: {chr(34)}{vals[a]}{chr(34)}' for a in order)})"
 
 
-def fact_cells(names, lines):
-    """{unit form: [fact cell lines]}."""
-    by_fn = {v: k for k, v in kind_fqs(names).items()}
-    out = {}
-    for l in lines:
-        if "cell" in l and l["cell"]["fn"] in by_fn:
-            out.setdefault(by_fn[l["cell"]["fn"]], []).append(l)
-    return out
-
-
-def args_of(cell):
-    return {k: v["value"] for k, v in cell["cell"]["args"].items()}
-
-
-def call(fq, argnames, vals):
-    return f"{fq}({', '.join(f'{a}: {chr(34)}{vals[a]}{chr(34)}' for a in argnames)})"
+def fact_call(fn, vals):
+    return dcall(fn, FACT_ORDER, vals, bare=("period_start", "period_end"))
 
 
 # ---------- the names ----------
@@ -63,14 +55,20 @@ def call(fq, argnames, vals):
 def test_names_are_the_contract_on_the_rehearsal_host(names):
     s = names["sec"]
     assert s["namespace"] == "mesh-test.datumesh.com/relay/sec.gov"
-    assert (s["function"], s["filing_function"], s["filing_for_function"]) == ("company_fact", "filing", "filing_for")
-    assert (s["shares_function"], s["per_share_function"], s["ratio_function"]) == (
-        "company_fact_shares", "company_fact_per_share", "company_fact_ratio")
+    assert s["function"] == "company_fact"
+    assert s["filing_class"] == "filing" and s["filing_methods"] == FILING_METHODS
+    assert (s["annual_report_namespace"], s["annual_report_function"]) == ("mesh-test.datumesh.com/sec", "annual_report")
     assert s["source_name"] == "sec.gov" and s["takeover"] == "https://mesh-test.datumesh.com/takeover/sec.gov"
-    assert s["licence"] == "https://www.sec.gov/about/privacy-information"
+    assert s["licence"] == PUBLIC
     assert s["companyfacts_url"] == "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+    assert s["submissions_url"] == "https://data.sec.gov/submissions/CIK{cik}.json"
     assert s["tickers_url"] == "https://www.sec.gov/files/company_tickers_exchange.json"
     assert s["frames_url"] == "https://data.sec.gov/api/xbrl/frames/{taxonomy}/{concept}/{unit}/{ccp}.json"
+    for gone in ("shares_function", "per_share_function", "ratio_function", "filing_function", "filing_for_function"):
+        assert gone not in s, f"{gone}: replaced by one company_fact, the filing class and sec/annual_report"
+    assert fact_fn(names) == "mesh-test.datumesh.com/relay/sec.gov/company_fact"
+    assert filing_cls(names) == "mesh-test.datumesh.com/relay/sec.gov/filing"
+    assert annual_fn(names) == "mesh-test.datumesh.com/sec/annual_report"
 
 
 def test_the_register_section_for_sec_is_named_in_the_table(names):
@@ -79,210 +77,272 @@ def test_the_register_section_for_sec_is_named_in_the_table(names):
 
 # ---------- lines of the first run ----------
 
-def test_first_run_lines_shape_and_order(names, first):
-    """D38: the relay is split by unit form; every number declares its unit (spec 7.1); `returns` of a string is the
-    bare name (D23). The fixtures hold money (USD), shares and USD/shares, so three fact functions are announced."""
+def test_first_run_has_two_function_lines_six_descriptors_one_class_nine_catalogue_entries(names, first):
     _, lines, _ = first
-    funcs, cats, cells, tests = split_lines(lines)
-    check_order(lines)
-    assert len(funcs) == 5 and len(cats) == 5 and tests == []
-    fq, ffq, gfq = fqs(names)
-    kf = kind_fqs(names)
-    by = {l["function"]: l["signature"] for l in funcs}
-    S = {"type": "string", "valid": False}
-    assert by[fq] == {"args": {k: S for k in ("cik", "taxonomy", "concept", "unit", "accession", "period")},
-                      "order": ["cik", "taxonomy", "concept", "unit", "accession", "period"],
-                      "returns": {"type": "number", "unit": {"arg": "unit"}}}
-    assert by[kf["shares"]] == {"args": {k: S for k in ("cik", "taxonomy", "concept", "accession", "period")},
-                                "order": ["cik", "taxonomy", "concept", "accession", "period"],
-                                "returns": {"type": "number", "unit": "count"}}
-    assert by[kf["per_share"]] == {"args": {k: S for k in ("cik", "taxonomy", "concept", "currency", "accession", "period")},
-                                   "order": ["cik", "taxonomy", "concept", "currency", "accession", "period"],
-                                   "returns": {"type": "number", "unit": {"arg": "currency"}}}
-    assert kf["ratio"] not in by, "no pure fact in the fixtures: no function"
-    assert by[ffq] == {"args": {"accession": S, "field": S}, "order": ["accession", "field"], "returns": "string"}
-    assert by[gfq] == {"args": {"cik": S, "fiscal_year": {"type": "number", "unit": "1", "valid": False}},
-                       "order": ["cik", "fiscal_year"], "returns": "string"}
-    assert sorted(c["catalog"] for c in cats) == sorted([fq, kf["shares"], kf["per_share"], ffq, gfq])
+    check_order_all(lines)
+    k = kinds(lines)
+    assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog", "test")] == [2, 6, 1, 9, 0]
+    assert len(k["cell"]) == 1488 + 18 * 6 + 18
+    by = {l["function"]: l["signature"] for l in k["function"]}
+    assert set(by) == {fact_fn(names), annual_fn(names)}, "one relay function, and the operator's annual_report"
+    assert by[fact_fn(names)] == {
+        "args": {"cik": S, "concept": S, "unit": S, "accession": S, "period_start": D, "period_end": D},
+        "order": FACT_ORDER, "returns": {"type": "number", "unit": {"arg": "unit"}}}, (
+        "no argument is a valid-time argument; the unit is the filed unit, returned through {arg: unit}")
+    assert by[annual_fn(names)] == {
+        "args": {"cik": S, "fiscal_year": {"type": "number", "unit": "1", "valid": False}},
+        "order": ["cik", "fiscal_year"], "returns": "string"}
+    assert not any("function" in l and "filing" in l["function"] for l in lines), "the old filing(accession, field) is gone"
+
+
+def test_the_filing_class_follows_the_register_dataset_pattern(names, first):
+    _, lines, _ = first
+    k = kinds(lines)
+    cls = filing_cls(names)
+    want = {m: {"code": {"body": "", "lang": "stored"}, "inputs": [],
+                "signature": {"args": {"accession": S}, "order": ["accession"], "returns": FILING_RETURNS[m]}}
+            for m in FILING_METHODS}
+    got = [l["descriptor"] for l in k["descriptor"]]
+    assert got == [want[m] for m in FILING_METHODS], "six stored methods, each keyed by accession, in the contract's order"
+    hashes = {m: hashlib.sha256(register.jcs(want[m])).hexdigest() for m in FILING_METHODS}
+    (c,) = k["class"]
+    assert c["class"] == cls
+    d = c["descriptor"]
+    assert d["keys"] == {"accession": {"type": "string", "key_normalisation": "none"}} and d["order"] == ["accession"]
+    assert d["methods"] == hashes
+    assert d["steward"]["namespace"] == names["sec"]["namespace"] and d["steward"]["process"].strip()
+    assert set(d) == {"keys", "order", "methods", "steward"}
 
 
 def test_cell_counts(names, first):
     _, lines, _ = first
-    fq, ffq, gfq = fqs(names)
-    cells = [l for l in lines if "cell" in l]
-    n = lambda f: sum(1 for c in cells if c["cell"]["fn"] == f)
-    by = fact_cells(names, lines)
-    assert sum(len(v) for v in by.values()) == sum(IN_SCOPE.values()) == 1488
-    assert set(by) == {"money", "shares", "per_share"}
-    assert n(ffq) == 18 * 6 and n(gfq) == 18
-    assert len(cells) == 1488 + 108 + 18
+    n = lambda f: len(cells_of(lines, f))
+    assert n(fact_fn(names)) == sum(IN_SCOPE.values()) == 1488
+    for m in FILING_METHODS:
+        assert n(f"{filing_cls(names)}/{m}") == 18, m
+    assert n(annual_fn(names)) == 18
 
+
+# ---------- company_fact ----------
 
 def test_company_fact_cell_is_the_figure_as_filed(names, first):
     _, lines, _ = first
-    fq = fqs(names)[0]
-    by = fact_cells(names, lines)
-    cells = {tuple(args_of(c)[k] for k in ("cik", "taxonomy", "concept", "unit", "accession", "period")): c
-             for c in by["money"]}
-    assert len(cells) == len(by["money"]), "keys are unique"
-    ge = cells[(CIK_GE, "us-gaap", "Assets", "USD", "0000040545-23-000023", "2022-12-31")]
+    fq = fact_fn(names)
+    cells = cells_of(lines, fq)
+    key = lambda c: tuple(args_of(c)[k] for k in FACT_ORDER)
+    by = {key(c): c for c in cells}
+    assert len(by) == len(cells), "keys are unique"
+    ge = by[(CIK_GE, "us-gaap:Assets", "USD", "0000040545-23-000023", "2022-12-31", "2022-12-31")]
     assert ge["value"] == {"type": "number", "value": "187788000000"}
-    ge2 = cells[(CIK_GE, "us-gaap", "Assets", "USD", "0000040545-24-000027", "2022-12-31")]
+    ge2 = by[(CIK_GE, "us-gaap:Assets", "USD", "0000040545-24-000027", "2022-12-31", "2022-12-31")]
     assert ge2["value"] == {"type": "number", "value": "188851000000"}
-    assert all(set(c["cell"]) == {"fn", "args"} and all(a["type"] == "string" for a in c["cell"]["args"].values())
-               for c in cells.values())
-    assert all(k[3] == "USD" for k in cells), "the money function holds only currency units"
-    # shares: no unit argument, the unit is `count`; per share: the currency argument, filed as USD/shares
-    sh = {(args_of(c)["concept"], args_of(c)["taxonomy"]) for c in by["shares"]}
-    assert ("EntityCommonStockSharesOutstanding", "dei") in sh
-    assert all("unit" not in args_of(c) and "currency" not in args_of(c) for c in by["shares"])
-    assert by["per_share"] and all(args_of(c)["currency"] == "USD" and "unit" not in args_of(c) for c in by["per_share"])
-    assert {args_of(c)["concept"] for c in by["per_share"]} <= {"EarningsPerShareBasic", "EarningsPerShareDiluted"}
-    assert all(c["value"]["type"] == "number" for l in by.values() for c in l)
+    for c in cells:
+        assert set(c) == {"cell", "value", "licence", "summary", "source"}
+        assert list(c["cell"]["args"]) == FACT_ORDER, "the arguments in the order of the signature"
+        a = c["cell"]["args"]
+        assert all(a[k]["type"] == "string" for k in ("cik", "concept", "unit", "accession"))
+        assert a["period_start"]["type"] == "date" and a["period_end"]["type"] == "date"
+        assert c["value"]["type"] == "number"
+        assert a["concept"]["value"].startswith(("us-gaap:", "dei:")) and "taxonomy" not in a and "period" not in a
+        assert a["period_start"]["value"] <= a["period_end"]["value"]
 
 
-def test_every_cell_carries_licence_source_and_summary(names, first):
+def test_instant_and_duration_periods_and_the_dei_concept(names, first):
+    _, lines, _ = first
+    cells = [args_of(c) for c in cells_of(lines, fact_fn(names))]
+    inst = [a for a in cells if a["concept"] == "us-gaap:Assets"]
+    assert inst and all(a["period_start"] == a["period_end"] for a in inst), "an instant has the same date in both"
+    dur = [a for a in cells if a["concept"] == "us-gaap:Revenues" and a["cik"] == CIK_CAT]
+    assert any((a["period_start"], a["period_end"]) == ("2023-01-01", "2023-12-31") for a in dur)
+    dei = [a for a in cells if a["concept"].startswith("dei:")]
+    assert dei and {a["concept"] for a in dei} == {"dei:EntityCommonStockSharesOutstanding"}
+    assert {a["unit"] for a in dei} == {"shares"}
+
+
+def test_every_unit_is_one_function_and_the_unit_is_a_key(names, first):
+    _, lines, _ = first
+    cells = cells_of(lines, fact_fn(names))
+    units = {args_of(c)["unit"] for c in cells}
+    assert units == {"USD", "shares", "USD/shares"}
+    per = [c for c in cells if args_of(c)["unit"] == "USD/shares"]
+    assert per and {args_of(c)["concept"] for c in per} <= {"us-gaap:EarningsPerShareBasic", "us-gaap:EarningsPerShareDiluted"}
+    sh = {args_of(c)["concept"] for c in cells if args_of(c)["unit"] == "shares"}
+    assert "dei:EntityCommonStockSharesOutstanding" in sh
+    assert not [l for l in lines if "function" in l and any(n in l["function"] for n in ("_shares", "_per_share", "_ratio"))]
+
+
+def test_every_relayed_cell_carries_the_public_licence_source_and_summary(names, first):
     its, lines, _ = first
     s = names["sec"]
     url_sha = {cf_url(names, i["parsed"]["cik"]): sha256(facts_file(i["parsed"]["cik"])) for i in its}
-    cells = [l for l in lines if "cell" in l]
-    for c in cells:
-        assert c["licence"] == s["licence"] == "https://www.sec.gov/about/privacy-information"
+    relayed = cells_of(lines, fact_fn(names)) + [c for m in FILING_METHODS for c in cells_of(lines, f"{filing_cls(names)}/{m}")]
+    assert len(relayed) == 1488 + 108
+    for c in relayed:
+        assert c["licence"] == PUBLIC, "N1/N2: public:<the SEC's terms page>, on every relayed cell"
         src = c["source"]
         check_source_object(src, host_of(s["namespace"]), name="sec.gov", url=src["url"], sha=src["sha256"],
                             retrieved=NOW, takeover="https://mesh-test.datumesh.com/takeover/sec.gov")
         assert src["url"] in url_sha and src["sha256"] == url_sha[src["url"]] and HEX64.match(src["sha256"])
-        assert src["retrieved"] == NOW
         check_summary(c["summary"])
         assert "relayed by datumesh.com" in c["summary"] and s["takeover"] in c["summary"] and "sec.gov" in c["summary"]
 
 
 def test_a_cells_source_is_the_file_of_its_company(names, first):
-    _, lines, _ = first
+    its, lines, _ = first
+    cik_of = {a: i["parsed"]["cik"] for i in its for a in i["parsed"]["filings"]}
     for c in lines:
-        if "cell" in c and "cik" in c["cell"]["args"]:
-            assert c["source"]["url"] == cf_url(names, c["cell"]["args"]["cik"]["value"])
+        if "cell" not in c or "source" not in c:
+            continue
+        a = args_of(c)
+        cik = a["cik"] if "cik" in a else cik_of[a["accession"]]
+        assert c["source"]["url"] == cf_url(names, cik)
 
 
 def test_company_fact_summary_names_company_form_filing_date_fy_and_period_as_filed(names, first):
     _, lines, _ = first
-    fq = fqs(names)[0]
-    c = next(l for l in lines if "cell" in l and l["cell"]["fn"] == fq and
-             args_of(l)["accession"] == "0000040545-24-000027" and args_of(l)["concept"] == "Assets"
-             and args_of(l)["period"] == "2022-12-31")
-    t = c["summary"]
+    c = next(l for l in cells_of(lines, fact_fn(names)) if args_of(l)["accession"] == "0000040545-24-000027"
+             and args_of(l)["concept"] == "us-gaap:Assets" and args_of(l)["period_end"] == "2022-12-31")
     for part in ("GENERAL ELECTRIC COMPANY", "10-K", "2024-02-02", "fiscal year 2023", "2022-12-31", "Assets",
                  "188851000000", "0000040545-24-000027"):
-        assert part in t, part
-    d = next(l for l in lines if "cell" in l and l["cell"]["fn"] == fq and args_of(l)["period"] == "2023-01-01/2023-12-31"
-             and args_of(l)["cik"] == CIK_CAT)
-    assert "2023-01-01/2023-12-31" in d["summary"] or "2023-01-01 to 2023-12-31" in d["summary"]
+        assert part in c["summary"], part
+    d = next(l for l in cells_of(lines, fact_fn(names)) if args_of(l)["period_start"] == "2023-01-01"
+             and args_of(l)["period_end"] == "2023-12-31" and args_of(l)["cik"] == CIK_CAT)
+    assert "2023-01-01" in d["summary"] and "2023-12-31" in d["summary"]
 
 
-def test_filing_cells(names, first):
+# ---------- the filing class (N2) ----------
+
+def test_filing_cells_are_the_methods_of_the_class_keyed_by_accession(names, first):
     _, lines, _ = first
-    ffq = fqs(names)[1]
-    got = {(args_of(c)["accession"], args_of(c)["field"]): c["value"]
-           for c in lines if "cell" in c and c["cell"]["fn"] == ffq}
+    cls = filing_cls(names)
     a = "0000040545-24-000027"
-    assert {f: got[(a, f)] for f in FILING_FIELDS} == {
-        "cik": {"type": "string", "value": CIK_GE}, "form": {"type": "string", "value": "10-K"},
-        "filed": {"type": "string", "value": "2024-02-02"}, "fy": {"type": "string", "value": "2023"},
-        "fp": {"type": "string", "value": "FY"}, "period_end": {"type": "string", "value": "2023-12-31"}}
-    assert got[("0000019617-24-000225", "period_end")]["value"] == "2023-12-31"
-    assert {k[1] for k in got} == set(FILING_FIELDS)
+    want = {"cik": {"type": "string", "value": CIK_GE}, "form": {"type": "string", "value": "10-K"},
+            "filed": {"type": "date", "value": "2024-02-02"}, "fiscal_year": {"type": "number", "value": "2023"},
+            "fiscal_period": {"type": "string", "value": "FY"}, "period_end": {"type": "date", "value": "2023-12-31"}}
+    for m in FILING_METHODS:
+        cs = cells_of(lines, f"{cls}/{m}")
+        assert all(c["cell"]["args"] == {"accession": {"type": "string", "value": args_of(c)["accession"]}} for c in cs)
+        got = {args_of(c)["accession"]: c["value"] for c in cs}
+        assert got[a] == want[m], m
+        assert len(got) == 18
+    pe = {args_of(c)["accession"]: c["value"]["value"] for c in cells_of(lines, f"{cls}/period_end")}
+    assert pe["0000019617-24-000225"] == "2023-12-31", "the period end of the annual statements, not a cover-page date"
+    assert all(c["licence"] == PUBLIC and "source" in c for m in FILING_METHODS for c in cells_of(lines, f"{cls}/{m}"))
 
 
-def test_filing_for_cells(names, first):
+def test_filing_summaries_say_what_they_are(names, first):
     _, lines, _ = first
-    gfq = fqs(names)[2]
-    got = {(args_of(c)["cik"], args_of(c)["fiscal_year"]): c["value"]
-           for c in lines if "cell" in c and c["cell"]["fn"] == gfq}
-    assert all(c["cell"]["args"]["fiscal_year"]["type"] == "number" for c in lines
-               if "cell" in c and c["cell"]["fn"] == gfq), "D38: the fiscal year is a number"
+    cls = filing_cls(names)
+    for m in FILING_METHODS:
+        c = cells_of(lines, f"{cls}/{m}")[0]
+        assert args_of(c)["accession"] in c["summary"] and "filing" in c["summary"], m
+
+
+# ---------- sec/annual_report (N3) ----------
+
+def test_annual_report_cells_are_stored_unsourced_and_say_it_is_our_selection(names, first):
+    _, lines, _ = first
+    fn = annual_fn(names)
+    cs = cells_of(lines, fn)
+    assert len(cs) == 18
+    got = {(args_of(c)["cik"], args_of(c)["fiscal_year"]): c["value"] for c in cs}
     assert got[(CIK_GE, "2023")] == {"type": "string", "value": "0000040545-24-000027"}
     assert got[(CIK_CAT, "2019")] == {"type": "string", "value": "0000018230-20-000056"}
-    assert len(got) == 18
+    for c in cs:
+        assert "source" not in c, "no source: the trust is primary, the cell is not labelled relayed"
+        assert set(c) == {"cell", "value", "licence", "summary"}
+        assert c["licence"] == PUBLIC, "it restates public information"
+        assert c["cell"]["args"]["fiscal_year"]["type"] == "number" and c["cell"]["args"]["cik"]["type"] == "string"
+        assert list(c["cell"]["args"]) == ["cik", "fiscal_year"] and c["value"]["type"] == "string"
+        t = c["summary"]
+        check_summary(t)
+        assert args_of(c)["cik"] in t and args_of(c)["fiscal_year"] in t and c["value"]["value"] in t and "latest" in t
+        assert "selection" in t and "Datumesh" in t and "SEC" in t, "Datumesh's selection over the SEC's filings"
+        assert "relayed by datumesh.com" not in t
 
 
-def test_filing_and_filing_for_summaries_say_what_they_are(names, first):
-    _, lines, _ = first
-    _, ffq, gfq = fqs(names)
-    f = next(c for c in lines if "cell" in c and c["cell"]["fn"] == ffq and args_of(c)["field"] == "form")
-    g = next(c for c in lines if "cell" in c and c["cell"]["fn"] == gfq)
-    assert args_of(f)["accession"] in f["summary"]
-    assert args_of(g)["cik"] in g["summary"] and args_of(g)["fiscal_year"] in g["summary"] and "latest" in g["summary"]
-
-
-# ---------- catalogue (K6) ----------
-
-def cat(lines, fq):
-    return next(l for l in lines if l.get("catalog") == fq)
-
+# ---------- catalogue ----------
 
 def test_company_fact_catalogue(names, first):
-    _, lines, _ = first
-    fq = fqs(names)[0]
+    its, lines, _ = first
+    fq = fact_fn(names)
     c = cat(lines, fq)
     assert c["kind"] == "function" and c["label"].strip()
     d = c["description"]
     assert d.startswith("Relayed by datumesh.com from sec.gov")
-    for part in ("as filed", "accession", "restate", "period", "not normalised"):
+    for part in ("as filed", "accession", "restate", "period", "not normalised", "unit", "shares", "pure", "instant"):
         assert part in d, part
-    order = ["cik", "taxonomy", "concept", "unit", "accession", "period"]
-    assert set(c["args"]) == set(order) and all(isinstance(v, str) and v.strip() for v in c["args"].values())
-    assert "10 digits" in c["args"]["cik"] and "YYYY-MM-DD" in c["args"]["period"]
+    for gone in ("company_fact_shares", "company_fact_per_share", "company_fact_ratio"):
+        assert gone not in d
+    assert list(c["args"]) == FACT_ORDER or set(c["args"]) == set(FACT_ORDER)
+    assert all(isinstance(v, str) and v.strip() for v in c["args"].values())
+    assert "10 digits" in c["args"]["cik"] and "prefix" in c["args"]["concept"] and "us-gaap:" in c["args"]["concept"]
+    assert "same date" in c["args"]["period_end"] or "instant" in c["args"]["period_end"]
+    assert c["open_keys"] == ["accession"], "H7 of CONTRACT-0.4.9: accession is an open key"
     assert len(c["examples"]) >= 2
     cells = {}
-    for l in lines:
-        if "cell" in l and l["cell"]["fn"] == fq:
-            cells[call(fq, order, args_of(l))] = l["value"]
+    for l in cells_of(lines, fq):
+        cells[fact_call(fq, args_of(l))] = l["value"]
     for e in c["examples"]:
         assert e["call"] in cells and e["expected"] == cells[e["call"]]
-
-
-def test_filing_and_filing_for_catalogues(names, first):
-    _, lines, _ = first
-    _, ffq, gfq = fqs(names)
-    f, g = cat(lines, ffq), cat(lines, gfq)
-    assert set(f["args"]) == {"accession", "field"} and set(g["args"]) == {"cik", "fiscal_year"}
-    assert [e["value"] for e in f["dictionary"]["field"]] == FILING_FIELDS
-    assert all(e["label"].strip() for e in f["dictionary"]["field"])
-    assert len(f["examples"]) >= 2 and len(g["examples"]) >= 2
-    for e in f["examples"] + g["examples"]:
-        assert e["expected"]["type"] == "string"
-    ex = f["examples"][0]
-    assert ex["call"].startswith(ffq + '(accession: "') and ', field: "' in ex["call"]
-    ex = g["examples"][0]["call"]
-    assert ex.startswith(gfq + '(cik: "') and ex.endswith(")") and ", fiscal_year: 20" in ex and "fiscal_year: \"" not in ex
-    assert "latest" in g["description"] and "10-K" in g["description"]
-    assert {e["value"]: e["label"] for e in g["dictionary"]["cik"]} == {
-        CIK_CAT: "CATERPILLAR INC", CIK_JPM: "JPMORGAN CHASE & CO", CIK_GE: "GENERAL ELECTRIC COMPANY"}
-
-
-def test_dictionaries_concept_unit_taxonomy_cik(names, first):
-    its, lines, _ = first
-    fq = fqs(names)[0]
-    dic = cat(lines, fq)["dictionary"]
-    assert set(dic) == {"concept", "unit", "taxonomy", "cik"}
-    used = {(l["cell"]["args"]["taxonomy"]["value"], l["cell"]["args"]["concept"]["value"]) for l in lines
-            if "cell" in l and l["cell"]["fn"] == fq}
-    assert used and all(c not in ("EarningsPerShareBasic", "CommonStockSharesOutstanding") for _, c in used)
-    assert {e["value"] for e in dic["concept"]} == {c for _, c in used}
+    dic = c["dictionary"]
+    assert set(dic) == {"concept", "unit", "cik"}, "cik, concept and unit are dictionary keys; accession is open"
+    used = {args_of(l)["concept"] for l in cells_of(lines, fq)}
+    assert {e["value"] for e in dic["concept"]} == used and all(":" in v for v in used)
     labels = {}
     for i in its:
-        for k, v in i["parsed"]["labels"].items():
-            labels[k[1]] = v
+        for (t, n), v in i["parsed"]["labels"].items():
+            labels[f"{t}:{n}"] = v
     for e in dic["concept"]:
         assert e["label"] == labels[e["value"]]["label"], "concept labels as filed"
         assert e.get("description") == labels[e["value"]]["description"]
-    assert {e["value"] for e in dic["unit"]} == {"USD"}
+    assert {e["value"] for e in dic["unit"]} == {"USD", "shares", "USD/shares"}
     assert all(e["label"].strip() and e["label"] != e["value"] for e in dic["unit"])
-    assert {e["value"] for e in dic["taxonomy"]} == {"us-gaap"}
-    assert all(e["label"].strip() for e in dic["taxonomy"])
     assert {e["value"]: e["label"] for e in dic["cik"]} == {
         CIK_CAT: "CATERPILLAR INC", CIK_JPM: "JPMORGAN CHASE & CO", CIK_GE: "GENERAL ELECTRIC COMPANY"}
     assert json.dumps(dic, ensure_ascii=False).count("\n") == 0
+
+
+def test_filing_class_and_method_catalogues(names, first):
+    _, lines, _ = first
+    cls = filing_cls(names)
+    c = cat(lines, cls)
+    assert c["kind"] == "class" and c["label"].strip() and "accession" in c["description"]
+    assert set(c["args"]) == {"accession"} and c["open_keys"] == ["accession"]
+    assert c["description"].startswith("Relayed by datumesh.com from sec.gov")
+    for m in FILING_METHODS:
+        e = cat(lines, f"{cls}/{m}")
+        assert e["kind"] == "function" and e["label"].strip() and set(e["args"]) == {"accession"}
+        assert e["open_keys"] == ["accession"], m
+        assert e["description"].startswith("Relayed by datumesh.com from sec.gov") and "as filed" in e["description"]
+        assert len(e["examples"]) >= 2, m
+        cells = {args_of(l)["accession"]: l["value"] for l in cells_of(lines, f"{cls}/{m}")}
+        for x in e["examples"]:
+            assert x["call"].startswith(f'{cls}/{m}(accession: "') and x["call"].endswith('")')
+            assert x["expected"] == cells[x["call"].split(chr(34))[1]]
+    assert "period end" in cat(lines, f"{cls}/period_end")["description"] and "cover" in cat(lines, f"{cls}/period_end")["description"]
+    assert "fiscal" in cat(lines, f"{cls}/fiscal_year")["description"]
+
+
+def test_annual_report_catalogue_states_the_selection_rule(names, first):
+    _, lines, _ = first
+    fn = annual_fn(names)
+    c = cat(lines, fn)
+    assert c["kind"] == "function" and set(c["args"]) == {"cik", "fiscal_year"}
+    d = c["description"]
+    for part in ("10-K", "10-K/A", "latest", "filed", "accession", "tie", "fiscal year", "Datumesh"):
+        assert part in d, part
+    assert not d.startswith("Relayed"), "it is not relayed: our selection over the SEC's filings"
+    assert "open_keys" not in c
+    assert len(c["examples"]) >= 2
+    cells = {(args_of(l)["cik"], args_of(l)["fiscal_year"]): l["value"] for l in cells_of(lines, fn)}
+    for e in c["examples"]:
+        assert e["call"].startswith(fn + '(cik: "') and e["call"].endswith(")") and "fiscal_year: 20" in e["call"]
+        assert 'fiscal_year: "' not in e["call"]
+        cik, fy = e["call"].split(chr(34))[1], e["call"].rstrip(")").split("fiscal_year: ")[1]
+        assert e["expected"] == cells[(cik, fy)]
+    assert {e["value"]: e["label"] for e in c["dictionary"]["cik"]} == {
+        CIK_CAT: "CATERPILLAR INC", CIK_JPM: "JPMORGAN CHASE & CO", CIK_GE: "GENERAL ELECTRIC COMPANY"}
 
 
 def test_every_line_is_one_json_line_and_nfc(first):
@@ -305,7 +365,7 @@ def test_second_run_emits_nothing_new_and_keeps_the_state(names, first):
     assert sec.emit(later, state, names) == ([], state)
 
 
-def test_a_new_report_emits_only_its_cells_and_moves_filing_for(names, first):
+def test_a_new_report_emits_only_its_cells_and_moves_annual_report(names, first):
     its, _, state = first
     raw = json.loads(facts_file(CIK_GE))
     raw["facts"]["us-gaap"]["Assets"]["units"]["USD"].append(
@@ -315,16 +375,20 @@ def test_a_new_report_emits_only_its_cells_and_moves_filing_for(names, first):
     new = [dict(i) for i in its]
     new[CIKS.index(CIK_GE)] = item(names, CIK_GE, data=data)
     lines, state2 = sec.emit(new, state, names)
-    funcs, cats, cells, tests = split_lines(lines)
-    assert funcs == [] and cats == [] and tests == []
-    fq, ffq, gfq = fqs(names)
+    k = kinds(lines)
+    assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog", "test")] == [0, 0, 0, 0, 0]
+    cells = k["cell"]
     by = lambda f: [c for c in cells if c["cell"]["fn"] == f]
-    assert [c["value"]["value"] for c in by(fq)] == ["177000000000"]
-    assert args_of(by(fq)[0])["accession"] == "0000040545-25-000099"
-    assert {args_of(c)["field"]: c["value"]["value"] for c in by(ffq)} == {
-        "cik": CIK_GE, "form": "10-K/A", "filed": "2025-06-02", "fy": "2024", "fp": "FY", "period_end": "2024-12-31"}
-    assert [(args_of(c)["cik"], args_of(c)["fiscal_year"], c["value"]["value"]) for c in by(gfq)] == [
-        (CIK_GE, "2024", "0000040545-25-000099")], "the latest report of fiscal 2024 is now the amendment"
+    assert [c["value"]["value"] for c in by(fact_fn(names))] == ["177000000000"]
+    assert args_of(by(fact_fn(names))[0])["accession"] == "0000040545-25-000099"
+    a = "0000040545-25-000099"
+    assert {m: by(f"{filing_cls(names)}/{m}")[0]["value"]["value"] for m in FILING_METHODS} == {
+        "cik": CIK_GE, "form": "10-K/A", "filed": "2025-06-02", "fiscal_year": "2024", "fiscal_period": "FY",
+        "period_end": "2024-12-31"}
+    assert all(args_of(by(f"{filing_cls(names)}/{m}")[0]) == {"accession": a} for m in FILING_METHODS)
+    assert [(args_of(c)["cik"], args_of(c)["fiscal_year"], c["value"]["value"]) for c in by(annual_fn(names))] == [
+        (CIK_GE, "2024", a)], "the latest report of fiscal 2024 is now the amendment"
+    assert len(cells) == 1 + 6 + 1
     assert sec.emit(new, state2, names) == ([], state2)
 
 
@@ -341,98 +405,49 @@ def test_emit_with_nothing_in_scope_emits_nothing(names):
     assert sec.emit([item(names, "0000001234", data=data)], {}, names) == ([], {})
 
 
-# ---------- D38: the relay is split by unit form ----------
+# ---------- N1: the one function holds every unit ----------
 
-def test_money_catalogue_says_the_unit_is_the_currency_and_the_value_is_in_it(names, first):
-    _, lines, _ = first
-    c = cat(lines, fqs(names)[0])
-    assert "currency code" in c["args"]["unit"] and "USD" in c["args"]["unit"]
-    assert "returns" in c["description"].lower() or "currency" in c["description"]
-    assert "company_fact_shares" in c["description"] and "company_fact_per_share" in c["description"]
-
-
-def test_shares_and_per_share_catalogues(names, first):
-    _, lines, _ = first
-    kf = kind_fqs(names)
-    sh, ps = cat(lines, kf["shares"]), cat(lines, kf["per_share"])
-    assert set(sh["args"]) == {"cik", "taxonomy", "concept", "accession", "period"}
-    assert "count" in sh["description"] and "shares" in sh["description"]
-    assert set(ps["args"]) == {"cik", "taxonomy", "concept", "currency", "accession", "period"}
-    # the spec gap is named, and the documented meaning is the one D38 gives
-    assert "amount of that currency per share" in ps["description"]
-    assert "units.md" in ps["description"] and "per share" in ps["description"]
-    assert "currency code" in ps["args"]["currency"]
-    assert [e["value"] for e in ps["dictionary"]["currency"]] == ["USD"]
-    assert "unit" not in sh["dictionary"] and "currency" not in sh["dictionary"]
-    by = fact_cells(names, lines)
-    for k, c in (("shares", sh), ("per_share", ps)):
-        assert len(c["examples"]) >= 2
-        got = {}
-        order = ["cik", "taxonomy", "concept", "accession", "period"] if k == "shares" else \
-            ["cik", "taxonomy", "concept", "currency", "accession", "period"]
-        for l in by[k]:
-            got[call(kind_fqs(names)[k], order, args_of(l))] = l["value"]
-        for e in c["examples"]:
-            assert e["call"] in got and e["expected"] == got[e["call"]]
-        assert {e["value"] for e in c["dictionary"]["concept"]} == {args_of(l)["concept"] for l in by[k]}
-
-
-def test_each_unit_form_has_its_function_and_unsupported_units_are_left_out_and_counted(names):
+def test_a_company_holding_every_unit_is_one_function_and_unsupported_units_are_left_out_and_counted(names):
     data = mixed_company()
     parsed = sec.parse_companyfacts(data)
-    assert sorted((r["concept"], r["unit"]) for r in parsed["rows"]) == sorted([
-        ("Assets", "USD"), ("Assets", "EUR"), ("Assets", "USN"), ("EarningsPerShareBasic", "EUR/shares"),
-        ("EarningsPerShareDiluted", "USD/shares"), ("CommonStockSharesOutstanding", "shares"), ("GrossProfit", "pure")])
     assert parsed["left_out_units"] == {"CAD/EUR": 1, "acre": 1, "USD-per-gal": 1}
     assert sec.count_cells(data) == 7, "the estimator counts only what is relayed"
     lines, state = sec.emit([item(names, "0000001234", data=data)], {}, names)
-    funcs, cats, cells, tests = split_lines(lines)
-    kf = kind_fqs(names)
-    assert {l["function"] for l in funcs if "relay/sec.gov/company_fact" in l["function"]} == set(kf.values())
-    by = fact_cells(names, lines)
-    assert {k: len(v) for k, v in by.items()} == {"money": 3, "shares": 1, "per_share": 2, "ratio": 1}
-    assert sorted(args_of(c)["unit"] for c in by["money"]) == ["EUR", "USD", "USN"]
-    assert sorted(args_of(c)["currency"] for c in by["per_share"]) == ["EUR", "USD"]
-    (ratio,) = by["ratio"]
-    assert set(args_of(ratio)) == {"cik", "taxonomy", "concept", "accession", "period"} and ratio["value"]["value"] == "0.5"
-    by_sig = {l["function"]: l["signature"] for l in funcs}
-    assert by_sig[kf["ratio"]]["returns"] == {"type": "number", "unit": "1"}
-    assert by_sig[kf["shares"]]["returns"] == {"type": "number", "unit": "count"}
-    assert {e["value"] for e in cat(lines, kf["money"])["dictionary"]["unit"]} == {"EUR", "USD", "USN"}
-    assert {e["value"] for e in cat(lines, kf["per_share"])["dictionary"]["currency"]} == {"EUR", "USD"}
-    assert "pure" in cat(lines, kf["ratio"])["description"] or "ratio" in cat(lines, kf["ratio"])["description"].lower()
+    k = kinds(lines)
+    fq = fact_fn(names)
+    assert {l["function"] for l in k["function"]} == {fq, annual_fn(names)}
+    cs = cells_of(lines, fq)
+    assert len(cs) == 7
+    assert sorted((args_of(c)["concept"], args_of(c)["unit"]) for c in cs) == sorted([
+        ("us-gaap:Assets", "USD"), ("us-gaap:Assets", "EUR"), ("us-gaap:Assets", "USN"),
+        ("us-gaap:EarningsPerShareBasic", "EUR/shares"), ("us-gaap:EarningsPerShareDiluted", "USD/shares"),
+        ("us-gaap:CommonStockSharesOutstanding", "shares"), ("us-gaap:GrossProfit", "pure")])
+    (ratio,) = [c for c in cs if args_of(c)["unit"] == "pure"]
+    assert ratio["value"] == {"type": "number", "value": "0.5"}
+    assert (args_of(ratio)["period_start"], args_of(ratio)["period_end"]) == ("2023-01-01", "2023-12-31")
+    assert {e["value"] for e in cat(lines, fq)["dictionary"]["unit"]} == {"USD", "EUR", "USN", "EUR/shares", "USD/shares",
+                                                                         "shares", "pure"}
+    assert all(c["licence"] == PUBLIC for c in cs)
     assert sec.emit([item(names, "0000001234", data=data)], state, names) == ([], state)
 
 
-def test_a_unit_form_that_first_appears_in_a_later_run_is_announced_then(names):
+def test_a_unit_that_first_appears_in_a_later_run_emits_only_its_cell(names):
     from sec_helpers import facts_json, rec
-    a = "0000001234-24-000001"
+    a, b = "0000001234-24-000001", "0000001234-25-000001"
     usd = facts_json(1234, "X CO", [("us-gaap", "Assets", "USD", "Assets", [rec("2023-12-31", "10", a, 2023)])])
     lines, state = sec.emit([item(names, "0000001234", data=usd)], {}, names)
-    kf = kind_fqs(names)
-    assert {l["function"] for l in lines if "function" in l} >= {kf["money"]} and kf["shares"] not in str(lines)
-    b = "0000001234-25-000001"
+    assert {l["function"] for l in kinds(lines)["function"]} == {fact_fn(names), annual_fn(names)}
     more = facts_json(1234, "X CO", [
         ("us-gaap", "Assets", "USD", "Assets", [rec("2023-12-31", "10", a, 2023)]),
         ("us-gaap", "CommonStockSharesOutstanding", "shares", "Shares", [rec("2024-12-31", "5", b, 2024)])])
     lines2, state2 = sec.emit([item(names, "0000001234", data=more)], state, names)
-    funcs, cats, cells, _ = split_lines(lines2)
-    assert [l["function"] for l in funcs] == [kf["shares"]] and [c["catalog"] for c in cats] == [kf["shares"]]
+    k = kinds(lines2)
+    assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog")] == [0, 0, 0, 0], "no new function for a new unit"
+    assert [(args_of(c)["unit"], c["value"]["value"]) for c in cells_of(lines2, fact_fn(names))] == [("shares", "5")]
     assert sec.emit([item(names, "0000001234", data=more)], state2, names) == ([], state2)
 
 
-def test_unit_form_of_a_filed_unit():
-    f = sec.unit_form
-    assert f("USD") == ("money", None) and f("EUR") == ("money", None) and f("USN") == ("money", None)
-    assert f("shares") == ("shares", None) and f("pure") == ("ratio", None)
-    assert f("USD/shares") == ("per_share", "USD") and f("EUR/shares") == ("per_share", "EUR")
-    for odd in ("", "usd", "XXX", "ABC", "USD/USD", "shares/USD", "CAD/EUR", "USD/share", "XXX/shares", "acre", "USD-per-shares"):
-        assert f(odd) is None, odd
-    assert "XXX" not in sec.CURRENCIES and len(sec.CURRENCIES) == 189 and {"USD", "EUR", "USN", "TRL"} <= sec.CURRENCIES
-
-
 def test_the_scope_report_lists_the_units_left_out(names):
-    from sec_helpers import facts_json  # noqa: F401
     p = sec.parse_companyfacts(mixed_company())
     ranking = {"ranked": [{"cik": "0000001234", "ticker": "X", "name": "X", "exchange": "Nasdaq", "value": "1"}],
                "listed_without_assets": 0, "frame_not_listed": 0, "frame_entities": 1}
