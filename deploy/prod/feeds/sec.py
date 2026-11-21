@@ -830,10 +830,10 @@ def conformance(rows, frames_list, names, minimum=CONFORMANCE_MINIMUM):
 def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANCE_MINIMUM):
     """Tests of the six filing methods against the submissions API (the second copy of the filing class), one per
     method per annual report that both files have. A report the submissions do not list is skipped, not failed. The
-    expected values are the submissions' own: cik, form, filed and period_end. The submissions API has no fiscal-year
-    member, so fiscal_year is derived as the year before the filing year (exact for the annual reports of calendar-year
-    companies filed in the following year, the fixtures' case) and fiscal_period as FY for a 10-K form: a weaker check.
-    A disagreement with the companyfacts file, whichever way it arises, is ConformanceError (the run stops)."""
+    expected values are the submissions' own: cik, form, filed and period_end, and a disagreement with the companyfacts
+    file is ConformanceError (the run stops). The submissions API has no fiscal year or fiscal period, so those two have
+    no second copy: their tests pin the companyfacts file's own value, and no derived guess is compared (a year derived
+    from the filing date was wrong on real filings, e.g. a fiscal year ending in early 2024 filed in 2024)."""
     s = names["sec"]
     cls = f"{s['namespace']}/{s['filing_class']}"
     mine = {}
@@ -852,13 +852,14 @@ def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANC
                     f"{f['cik']}; nothing is published")
             theirs = {
                 "cik": sub["cik"], "form": sf["form"], "filed": sf["filed"],
-                "fiscal_year": str(int(sf["filed"][:4]) - 1),
-                "fiscal_period": "FY" if sf["form"] in FORMS else None,
                 "period_end": sf["period_end"],
             }
             for m in FILING_METHODS:
                 mine_v = _filing_value(f, m)
-                if theirs[m] is None or str(mine_v) != str(theirs[m]):
+                if m not in theirs:
+                    # No second copy of fiscal_year and fiscal_period: the test pins the relayed value.
+                    theirs[m] = mine_v
+                elif str(mine_v) != str(theirs[m]):
                     raise ConformanceError(
                         f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
                         f"{theirs[m]}; nothing is published")
