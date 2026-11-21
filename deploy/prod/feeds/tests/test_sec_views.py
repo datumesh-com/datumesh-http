@@ -316,7 +316,7 @@ def test_the_views_declare_the_units_they_compute_in():
         assert '"1"' not in f[HOST + "/sec/" + n]["source"]
     for n in ("margin", "percent_change", "cagr", "percent_of_total"):
         assert returns(HOST + "/ratio/" + n) == {"type": "number", "unit": "percent"}, n
-    assert returns(HOST + "/ratio/days_between") == {"type": "number", "unit": "d"}
+    assert returns(HOST + "/calendar/days_between") == {"type": "number", "unit": "d"}
     for n in ("return_on_assets", "gross_margin", "revenue_growth"):
         assert returns(HOST + "/sec/ratio/" + n) == {"type": "number", "unit": "percent"}, n
     for n in ("current_ratio", "inventory_turnover", "fixed_asset_turnover"):
