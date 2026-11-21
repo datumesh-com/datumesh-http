@@ -14,6 +14,7 @@ import sec
 from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from helpers import HEX64, check_source_object, check_summary, host_of, sha256
 from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FACT_ORDER, FILING_METHODS, FILING_RETURNS, IN_SCOPE, NOW,
+                         sub_url, submissions_file,
                          args_of, cf_url, check_order_all, company_cls, fact_fn, facts_file, filing_cls, item, kinds,
                          mixed_company, relay_core, source_of)
 
@@ -22,7 +23,7 @@ S = {"type": "string", "valid": False}
 D = {"type": "date", "valid": False}
 
 
-CF_METHODS = [m for m in FILING_METHODS if m != "period_end"]  # the methods whose cells come from companyfacts
+CF_METHODS = [m for m in FILING_METHODS if m not in ("period_end", "filed")]  # the methods whose cells come from companyfacts
 
 
 def items(names):
@@ -203,7 +204,9 @@ def test_every_relayed_cell_carries_the_public_licence_source_and_summary(names,
     its, lines, _ = first
     s = names["sec"]
     url_sha = {cf_url(names, i["parsed"]["cik"]): sha256(facts_file(i["parsed"]["cik"])) for i in its}
+    url_sha.update({sub_url(names, cik): sha256(submissions_file(cik)) for cik in CIKS})  # filed: C2b
     relayed = cells_of(lines, fact_fn(names)) + [c for m in CF_METHODS for c in cells_of(lines, f"{filing_cls(names)}/{m}")]
+    relayed += cells_of(lines, f"{filing_cls(names)}/filed")
     assert len(relayed) == 1488 + 90
     for c in relayed:
         assert c["licence"] == PUBLIC, "N1/N2: public:<the SEC's terms page>, on every relayed cell"
@@ -223,6 +226,9 @@ def test_a_cells_source_is_the_file_of_its_company(names, first):
             continue
         a = args_of(c)
         cik = a["cik"] if "cik" in a else cik_of[a["accession"]]
+        if c["cell"]["fn"].endswith("/filed"):  # C2b: the submissions' filingDate
+            assert c["source"]["url"] == sub_url(names, cik)
+            continue
         assert c["source"]["url"] == cf_url(names, cik)
 
 
@@ -377,9 +383,9 @@ def test_a_new_report_emits_only_its_cells(names, first):
     assert args_of(by(fact_fn(names))[0])["accession"] == "0000040545-25-000099"
     a = "0000040545-25-000099"
     assert {m: by(f"{filing_cls(names)}/{m}")[0]["value"]["value"] for m in CF_METHODS} == {
-        "cik": CIK_GE, "form": "10-K/A", "filed": "2025-06-02", "fiscal_year": "2024", "fiscal_period": "FY"}
+        "cik": CIK_GE, "form": "10-K/A", "fiscal_year": "2024", "fiscal_period": "FY"}
     assert all(args_of(by(f"{filing_cls(names)}/{m}")[0]) == {"accession": a} for m in CF_METHODS)
-    assert len(cells) == 1 + 5, "the fact and five filing methods; annual_report and period_end are not this file's emit"
+    assert len(cells) == 1 + 4, "the fact and four companyfacts methods; filed and period_end come from the submissions, which list no 2025 filing"
     assert sec.emit(new, state2, names) == ([], state2)
 
 

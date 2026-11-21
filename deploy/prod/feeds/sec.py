@@ -66,7 +66,9 @@ FILING_VALUE_TYPES = {"cik": "string", "form": "string", "filed": "date", "fisca
 FACT_ORDER = ("cik", "concept", "unit", "accession", "period_start", "period_end")
 CONFORMANCE_MINIMUM = 20
 FILING_CONFORMANCE_MINIMUM = 20
-CF_FIELDS = tuple(m for m in FILING_METHODS if m != "period_end")  # the methods whose cells come from companyfacts (C2)
+CF_FIELDS = ("cik", "form", "fiscal_year", "fiscal_period")  # the filing methods whose cells come from companyfacts
+SUBMITTED_FIELDS = ("filed", "period_end")  # the filing methods relayed from the submissions record (C2, C2b)
+MAX_SHOWN = 50  # disagreements listed in one ConformanceError; the rest are counted
 SUBMISSIONS_PAGES = "https://data.sec.gov/submissions/"  # the older pages of a submissions file, by their file names (C2)
 
 # The currency codes of units.md 2.1 (ISO 4217 List One of 2026-09-17 without XXX, and the withdrawn codes kept for
@@ -886,9 +888,38 @@ def company_labels(tickers: bytes, ciks):
     return pairs, ambiguous
 
 
-def _has_period_end(item, accn) -> bool:
+def _submitted(item, accn, field) -> bool:
+    """True when the item's submissions list the filing with a value for the field (filed always; period_end when the
+    reportDate is not empty)."""
     sub = item.get("submissions")
-    return sub is not None and accn in sub["filings"] and sub["filings"][accn]["period_end"] is not None
+    return sub is not None and accn in sub["filings"] and sub["filings"][accn][field] is not None
+
+
+def filed_differences(items) -> dict:
+    """{accession: {"companyfacts": d1, "submissions": d2}} where the companyfacts filed date differs from the submissions'
+    filingDate (C2b). Listed in the run report, never raised."""
+    out = {}
+    for it in items:
+        sub = it.get("submissions")
+        if sub is None:
+            continue
+        for accn, f in it["parsed"]["filings"].items():
+            if accn in sub["filings"] and sub["filings"][accn]["filed"] != f["filed"]:
+                out[accn] = {"companyfacts": f["filed"], "submissions": sub["filings"][accn]["filed"]}
+    return out
+
+
+def latest_filings(items):
+    """Sets each company's filing_for (C2b): the latest-filed annual report of each fiscal year, ordered by the relayed
+    filed date where the submissions list the filing, and by the companyfacts file's otherwise; a tie goes to the higher
+    accession."""
+    for it in items:
+        sub = it.get("submissions")
+        relayed = {a: v["filed"] for a, v in sub["filings"].items()} if sub is not None else {}
+        by_fy = {}
+        for accn, f in it["parsed"]["filings"].items():
+            by_fy.setdefault(f["fy"], []).append((relayed.get(accn, f["filed"]), accn))
+        it["parsed"]["filing_for"] = {fy: max(c)[1] for fy, c in sorted(by_fy.items())}
 
 
 def emit(items, state, names):
@@ -923,9 +954,11 @@ def emit(items, state, names):
             seen_filings.add(accn)
             for field in CF_FIELDS:
                 cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, f, field, src))
-            if _has_period_end(it, accn):
-                cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, dict(f, period_end=sub["filings"][accn]["period_end"]),
-                                                    "period_end", sub["sources"][accn]))
+            for field in SUBMITTED_FIELDS:  # C2, C2b: from the submissions record, or no cell
+                if _submitted(it, accn, field):
+                    value = sub["filings"][accn][field]
+                    cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, dict(f, **{field: value}), field,
+                                                        sub["sources"][accn]))
     if not any(cells.values()):
         return [], state
     lines = []
@@ -1078,47 +1111,52 @@ def conformance(rows, frames_list, names, minimum=CONFORMANCE_MINIMUM):
 def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANCE_MINIMUM):
     """Tests of the six filing methods against the submissions API (the second copy of the filing class), one per
     method per annual report that both files have. A report the submissions do not list is skipped, not failed. The
-    expected values are the submissions' own. cik, form and filed are compared with the companyfacts file, and a
-    disagreement is ConformanceError (the run stops). period_end is the submissions' reportDate, relayed as filed, with no
-    second copy to compare (C2): its test pins that value, and no test is written for a report with no reportDate. The
-    submissions API has no fiscal year or fiscal period, so those two have no second copy either: their tests pin the
-    companyfacts file's own value, and no derived guess is compared (a year derived from the filing date was wrong on real
-    filings, e.g. a fiscal year ending in early 2024 filed in 2024)."""
+    expected values are the submissions' own. cik and form are compared with the companyfacts file: every disagreement is
+    collected, and the run stops with one ConformanceError that lists them (at most MAX_SHOWN, then the count). filed and
+    period_end are the submissions' own (C2, C2b): no second copy is compared, and a filed date that differs from the
+    companyfacts file is listed in the run report (filed_differences). The submissions API has no fiscal year or fiscal
+    period, so those two have no second copy either: their tests pin the companyfacts file's own value, and no derived
+    guess is compared (a year derived from the filing date was wrong on real filings)."""
     s = names["sec"]
-    cls = f"{s['namespace']}/{s['filing_class']}"
+    cls = _names(s)[2]
     mine = {}
     for it in items:
         for accn, f in it["parsed"]["filings"].items():
             mine[accn] = f
-    tests = []
+    tests, bad = [], []
     for sub in submissions_list:
         for accn, sf in sub["filings"].items():
             f = mine.get(accn)
             if f is None:
                 continue
             if sub["cik"] != f["cik"]:
-                raise ConformanceError(
-                    f"{cls} {accn}: the submissions say cik {sub['cik']} and the companyfacts file says cik "
-                    f"{f['cik']}; nothing is published")
-            theirs = {"cik": sub["cik"], "form": sf["form"], "filed": sf["filed"]}
+                bad.append(f"{cls} {accn}: the submissions say cik {sub['cik']} and the companyfacts file says cik {f['cik']}")
+                continue
+            theirs = {"cik": sub["cik"], "form": sf["form"]}
             for m in FILING_METHODS:
                 if m == "period_end":
-                    # No second copy (C2): the relayed value is the submissions' own reportDate; none is no cell and no test.
+                    # C2: the submissions' reportDate; none is no cell and no test
                     if sf["period_end"] is None:
                         continue
                     value = sf["period_end"]
+                elif m == "filed":
+                    # C2b: the submissions' filingDate; a difference is listed in the report, not raised
+                    value = sf["filed"]
                 elif m in theirs:
                     mine_v = _filing_value(f, m)
                     if str(mine_v) != str(theirs[m]):
-                        raise ConformanceError(
-                            f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
-                            f"{theirs[m]}; nothing is published")
+                        bad.append(f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
+                                   f"{theirs[m]}")
                     value = theirs[m]
                 else:
                     # No second copy of fiscal_year and fiscal_period: the test pins the relayed value.
                     value = _filing_value(f, m)
                 tests.append({"test": f"{cls}/{m}", "call": f'{cls}/{m}(accession: "{accn}")',
                               "expect": {"type": FILING_VALUE_TYPES[m], "value": str(value)}})
+    if bad:
+        more = f" (and {len(bad) - MAX_SHOWN} more)" if len(bad) > MAX_SHOWN else ""
+        raise ConformanceError(f"{len(bad)} disagreements with the submissions API: " + "; ".join(bad[:MAX_SHOWN])
+                               + f"{more}; nothing is published")
     if len(tests) < minimum:
         raise ConformanceError(f"{cls}: {len(tests)} filing tests against the submissions, at least {minimum} are "
                                "needed; nothing is published")
@@ -1225,6 +1263,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
     for it in items:
         it["submissions"] = _submissions(get, s, it["parsed"]["cik"], sorted(it["parsed"]["filings"]), now)
     submissions = [it["submissions"] for it in items if it["submissions"] is not None]
+    latest_filings(items)
 
     lines, st = emit(items, state, names)
     pairs, ambiguous = company_labels(tickers, [it["parsed"]["cik"] for it in items])
@@ -1270,8 +1309,10 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         common.warn(f"sec: units not relayed (D38), cells left out: {dict(sorted(left_out_units.items()))}")
     report = scope_report(ranking, choice, no_facts=no_facts, unsupported_units=left_out_units, budget=budget,
                           step=step)
-    missing = sorted(accn for it in items for accn in it["parsed"]["filings"] if not _has_period_end(it, accn))
-    report["left_out"]["left_out_period_end"] = {"count": len(missing), "accessions": missing}
+    for field, key in (("period_end", "left_out_period_end"), ("filed", "left_out_filed")):
+        missing = sorted(accn for it in items for accn in it["parsed"]["filings"] if not _submitted(it, accn, field))
+        report["left_out"][key] = {"count": len(missing), "accessions": missing}
+    report["filed_differs"] = filed_differences(items)
     report["left_out"]["ambiguous_labels"] = ambiguous
     written = []
     if lines:

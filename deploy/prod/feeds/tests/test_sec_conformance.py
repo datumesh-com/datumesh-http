@@ -249,7 +249,7 @@ def test_filings_the_submissions_do_not_have_are_skipped_not_failed(names, items
     assert len(tests) == 5 * 6 and not any("0000040545-20-000009" in t["call"] for t in tests)
 
 
-@pytest.mark.parametrize("field,wrong,method", [("form", "10-K/A", "form"), ("filed", "2024-02-03", "filed")])
+@pytest.mark.parametrize("field,wrong,method", [("form", "10-K/A", "form")])
 def test_a_disagreement_with_the_submissions_stops_the_run(names, items3, field, wrong, method):
     bad = sec.parse_submissions(submissions_file(CIK_GE))
     a = "0000040545-24-000027"

@@ -237,7 +237,6 @@ def test_sec_names_file_lists_only_the_rehearsal_hosts():
 def test_the_scratch_host_has_the_whole_sec_table_with_its_own_host_in_every_name():
     t = sec.sec_table(SCRATCH)
     assert t["sec"]["namespace"] == "scratch.invalid/relay/sec.gov"
-    assert t["sec"]["annual_report_namespace"] == "scratch.invalid/sec"
     assert t["sec"]["takeover"] == "https://scratch.invalid/takeover/sec.gov"
     n = sec.names(SCRATCH)
     assert n["meta"]["host"] == SCRATCH and n["meta"]["status"] == "rehearsal"

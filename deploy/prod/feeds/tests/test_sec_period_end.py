@@ -162,9 +162,9 @@ def _changed(co, **kw):
     return subs_json(cik10, rows)
 
 
-@pytest.mark.parametrize("what,kw", [("form", {"form": "10-K/A"}), ("filed", {"filed": "2024-02-16"}),
+@pytest.mark.parametrize("what,kw", [("form", {"form": "10-K/A"}),
                                      ("cik", {"cik10": "0000999999"})])
-def test_a_disagreement_on_cik_form_or_filed_still_stops_the_run(names, tmp_path, what, kw):
+def test_a_disagreement_on_cik_or_form_still_stops_the_run(names, tmp_path, what, kw):
     co = WORLD[5]
     w = World(sub_overrides={co.cik10: _changed(co, **kw)})
     published = []

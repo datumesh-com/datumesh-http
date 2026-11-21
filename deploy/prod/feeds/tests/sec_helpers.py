@@ -316,10 +316,17 @@ def args_of(cell):
 
 
 def item(names, cik, data=None, parse=None):
-    """An emit() item for a fixture company."""
+    """An emit() item for a fixture company. A fixture company's submissions are attached as run attaches them (C2, C2b):
+    filed and period_end come from them, so a filing they do not list has no filed cell."""
     import sec
     data = data if data is not None else facts_file(cik)
-    return {"parsed": (parse or sec.parse_companyfacts)(data), "source": source_of(cf_url(names, cik), data)}
+    it = {"parsed": (parse or sec.parse_companyfacts)(data), "source": source_of(cf_url(names, cik), data)}
+    if cik in CIKS:
+        sdata = submissions_file(cik)
+        sub = sec.parse_submissions(sdata)
+        src = source_of(sub_url(names, cik), sdata)
+        it["submissions"] = {"cik": sub["cik"], "filings": sub["filings"], "sources": {a: src for a in sub["filings"]}}
+    return it
 
 
 @pytest.fixture(scope="session")

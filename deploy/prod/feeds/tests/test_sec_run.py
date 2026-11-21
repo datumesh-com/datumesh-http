@@ -224,7 +224,7 @@ def test_a_new_report_in_a_later_run_emits_only_its_cells(names, first, tmp_path
     k = kinds(read_lines(path))
     assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog")] == [0, 0, 0, 0]
     fns = sorted((c["cell"]["fn"], len(c["cell"]["args"])) for c in k["cell"])
-    assert fns == sorted([(fact_fn(names), 6)] + [(f"{filing_cls(names)}/{m}", 1) for m in FILING_METHODS if m != "period_end"]), (
+    assert fns == sorted([(fact_fn(names), 6)] + [(f"{filing_cls(names)}/{m}", 1) for m in FILING_METHODS if m not in ("period_end", "filed")]), (
         "the new report has no record in the submissions: no period_end cell")
     rep = json.loads((o / f"sec-scope-{relay._stamp(later)}.json").read_text(encoding="utf-8"))
     assert rep["left_out"]["left_out_period_end"] == {"count": 1, "accessions": ["0000040545-25-000099"]}
