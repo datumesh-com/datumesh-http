@@ -216,6 +216,22 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
             Err(e) => return fail(422, "E_KEY_UNAVAILABLE", e.to_string()),
         }
     };
+    // Reserved paths (CONTRACT-0.4.9 H8): under the mesh's own host, a key namespace takes only the names of the
+    // registered key it is derived from; the mesh's own paths take no name.
+    let signer_ns = doc
+        .get("manifest")
+        .and_then(|m| text(m, "key_id"))
+        .filter(|_| own)
+        .and_then(|key_id| crate::keynames::signer_namespace(inner, key_id, &keydoc));
+    let catalog_names = match doc.get("catalog") {
+        Some(Value::Array(a)) => a.iter().filter_map(|n| text(n, "name")).collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    for name in names.iter().map(|(n, _)| n.as_str()).chain(catalog_names) {
+        if let Err(e) = crate::reserved::check(&inner.config.host, name, signer_ns.as_deref()) {
+            return fail(422, crate::reserved::CODE, e);
+        }
+    }
     // Key-derived names (D39): a bundle signed by a registered key goes under that key's namespace only.
     if own {
         if let Some(key_id) = doc.get("manifest").and_then(|m| text(m, "key_id")) {
@@ -284,6 +300,7 @@ fn refused(e: &BundleError) -> (Reply, String) {
     let (status, code, detail) = match e {
         BundleError::Format(m) => (400, "E_BUNDLE_FORMAT", m.clone()),
         BundleError::NotOwned(m) => (422, "E_NOT_OWNED", m.clone()),
+        BundleError::Reserved(m) => (422, "E_NAME_RESERVED", m.clone()),
         BundleError::Manifest(m) if m.starts_with("the signature does not verify") => {
             (422, "E_BUNDLE_SIGNATURE", m.clone())
         }

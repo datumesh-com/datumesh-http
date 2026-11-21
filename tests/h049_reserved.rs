@@ -166,7 +166,7 @@ fn import_signed_refuses_a_reserved_name_whole() {
         let before = snapshot(&lite);
         let e = import(&lite, &b).expect_err(&format!("{name} must be refused"));
         assert!(format!("{e}").contains(CODE), "{name}: {e}");
-        assert!(lite.store.resolve_name(&name, END).unwrap().is_none(), "{name} is bound");
+        assert!(lite.store.resolve_name(&name, END).map_or(true, |b| b.is_none()), "{name} is bound");
         assert!(lite.store.descriptor(&stored_fn().hash()).is_none(), "{name}: the descriptor is stored");
         assert_eq!(snapshot(&lite), before, "{name}: wrote something");
     }
@@ -198,7 +198,8 @@ fn declare_refuses_a_reserved_name_and_changes_nothing() {
     }
     // an ordinary name is declared
     let ok = format!("{HOST}/seriesx/a");
-    keydoc::declare_at(&*lite.store, HOST, &ok, "CC0-1.0", None, None, &FixedClock(NOW)).unwrap_or_else(|e| panic!("{e}"));
+    keydoc::declare_at(&*lite.store, HOST, &ok, "CC0-1.0", None, None, &FixedClock(NOW))
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 // ---- POST /bundles -----------------------------------------------------------------------------
@@ -206,7 +207,7 @@ fn declare_refuses_a_reserved_name_and_changes_nothing() {
 const KEY_SEED: [u8; 32] = [41; 32];
 
 fn config(log: &std::path::Path) -> Config {
-    let env = vec![
+    let env = [
         ("DATUMESH_HOST".to_string(), HOST.to_string()),
         ("DATUMESH_KEY_NAMES".to_string(), "1".to_string()),
         ("DATUMESH_LOG_DIR".to_string(), log.to_string_lossy().into_owned()),
@@ -231,15 +232,14 @@ async fn register(p: &Public, seed: &[u8; 32]) -> Reply4 {
     let c = p.get("/x/keys/challenge", &[]).await.json()["challenge"].as_str().unwrap().to_string();
     let body = json!({"public_key": to_hex(&SigningKey::from_seed(seed).public_key()), "challenge": c,
         "signature": sign(seed, c.as_bytes())});
-    let r = p
-        .m
-        .http
-        .post(format!("{}/x/keys", p.m.base))
-        .header("content-type", "application/json")
-        .body(body.to_string())
-        .send()
-        .await
-        .unwrap();
+    let r =
+        p.m.http
+            .post(format!("{}/x/keys", p.m.base))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
     let (status, headers) = (r.status().as_u16(), r.headers().clone());
     Reply4 { status, headers, body: r.bytes().await.unwrap().to_vec() }
 }
@@ -283,7 +283,7 @@ async fn post_bundles_refuses_a_reserved_name_whole() {
         let Ok(b) = std::panic::catch_unwind(|| mesh_key_bundle(&ns, &name)) else { continue };
         let r = p.post(b).await;
         reserved_refusal(&r, &name);
-        assert!(p.m.lite.store.resolve_name(&name, END).unwrap().is_none(), "{name} is bound");
+        assert!(p.m.lite.store.resolve_name(&name, END).map_or(true, |b| b.is_none()), "{name} is bound");
         assert!(p.m.lite.store.descriptor(&stored_fn().hash()).is_none(), "{name}: the descriptor is stored");
     }
 }

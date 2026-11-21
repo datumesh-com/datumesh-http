@@ -181,7 +181,9 @@ impl Inner {
                 return Ok((m.clone(), a.to_string()));
             }
         }
-        let m = Arc::new(self.store.slice_values(slice, a).map_err(|e| {
+        // At most `slice_max + 1` members are read (the answer's cap and one more, to know it is cut): the store
+        // stops there (CONTRACT-0.4.9 H5).
+        let m = Arc::new(self.store.slice_values_limit(slice, a, self.config.slice_max + 1).map_err(|e| {
             tracing::warn!(target: "datumesh_http", error = %e, "slice_values");
             ErrorCode::InputUnavailable
         })?);

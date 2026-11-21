@@ -20,7 +20,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{lexical, FunctionDescriptor, Receipt, Slice};
@@ -30,8 +29,6 @@ use crate::config::ConfigError;
 use crate::fnpage::{esc, relay_of, Relay};
 use crate::mesh::Inner;
 
-/// How long a dictionary's order is kept in memory.
-const TTL: Duration = Duration::from_secs(300);
 /// The most URLs in one sitemap file (the sitemap protocol's limit).
 const SITEMAP_MAX: usize = 50_000;
 /// Cache-Control of a period that is over: the edge keeps it a day.
@@ -390,8 +387,9 @@ fn build_overview(inner: &Inner, b: &Bound, page: &SeriesPage) -> Option<Overvie
 /// The values of a dictionary in their order, each with its value id.
 type Dictionary = Arc<Vec<(String, i64)>>;
 
-/// The overviews of every listed series and the sitemap made from them (G4, G5; http 0.4.8): built by the
-/// background thread (`rebuild`) and read by the requests, which never build one.
+/// The overviews of every listed series and the sitemap made from them (G4, G5; http 0.4.8), and the
+/// dictionary orders and entry texts the pages show (CONTRACT-0.4.9 H5): built by the background thread
+/// (`rebuild`) and read by the requests, which never build one.
 #[derive(Default)]
 pub(crate) struct Built {
     overviews: HashMap<String, Arc<Overview>>,
@@ -399,13 +397,20 @@ pub(crate) struct Built {
     root: String,
     /// `sitemap-<n>.xml` (from index 0 for part 1): the urlsets of the parts.
     parts: Vec<String>,
+    /// The dictionary order of each keyed series' column argument, by [`order_key`].
+    orders: HashMap<String, Dictionary>,
+    /// The label and description of each listed series, by its function name.
+    entries: HashMap<String, (String, String)>,
 }
 
-/// Remembered reads: the last built overviews and dictionary orders (the orders for [`TTL`]).
+/// Remembered reads: the last build (the overviews, the orders, the entry texts).
 #[derive(Default)]
 pub(crate) struct Memo {
     built: Option<Arc<Built>>,
-    columns: HashMap<String, (Instant, Dictionary)>,
+}
+
+fn order_key(owner: &str, key: &str) -> String {
+    format!("{owner}\n{key}")
 }
 
 /// The last built overviews, or `None` before the first build has completed.
@@ -425,9 +430,15 @@ pub(crate) fn build(inner: &Inner) -> Built {
     let now = inner.now();
     let origin = inner.config.origin();
     let mut overviews = HashMap::new();
+    let mut orders = HashMap::new();
+    let mut entries = HashMap::new();
     let mut urls: Vec<(String, String)> = Vec::new();
     for page in &inner.config.series {
         let Some(b) = bound(inner, page, &now) else { continue };
+        entries.insert(b.name.clone(), entry_text_now(&*inner.store, &b.name));
+        if let Some(col) = &page.column_arg {
+            orders.insert(order_key(&b.name, col), dictionary_order_now(&*inner.store, &b.name, col));
+        }
         let Some(ov) = build_overview(inner, &b, page) else { continue };
         if !ov.periods.is_empty() {
             urls.push((format!("/series/{}/", b.name), ov.latest.clone()));
@@ -438,7 +449,7 @@ pub(crate) fn build(inner: &Inner) -> Built {
         overviews.insert(page.function.clone(), Arc::new(ov));
     }
     let (root, parts) = sitemap_bodies(&origin, &urls);
-    Built { overviews, root, parts }
+    Built { overviews, root, parts, orders, entries }
 }
 
 /// Builds the overview now and makes it the one requests read; counted as `by` (`background`).
@@ -448,18 +459,15 @@ pub(crate) fn rebuild(inner: &Inner, by: &'static str) {
     inner.metrics.series_build(by);
 }
 
-/// The values of a dictionary in the order the publisher gave them (the store's value ids), each with its id.
+/// The values of a dictionary in the order the publisher gave them (the store's value ids), each with its id, as
+/// the last build has them (empty before it, or for a key the series does not name). A request never reads the
+/// store for it (CONTRACT-0.4.9 H5).
 fn dictionary_order(inner: &Inner, owner: &str, key: &str) -> Dictionary {
-    let memo_key = format!("{owner}\n{key}");
-    {
-        let memo = inner.series.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, v)) = memo.columns.get(&memo_key) {
-            if at.elapsed() < TTL {
-                return v.clone();
-            }
-        }
-    }
-    let store: &dyn Store = &*inner.store;
+    built(inner).and_then(|b| b.orders.get(&order_key(owner, key)).cloned()).unwrap_or_default()
+}
+
+/// The dictionary order of `owner`'s `key` now: the store's catalogue and value ids (the overview thread's read).
+fn dictionary_order_now(store: &dyn Store, owner: &str, key: &str) -> Dictionary {
     let mut out = Vec::new();
     if let Ok(sum) = store.catalog_summary() {
         let values: Vec<String> = sum
@@ -479,13 +487,7 @@ fn dictionary_order(inner: &Inner, owner: &str, key: &str) -> Dictionary {
         }
         out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     }
-    let out = Arc::new(out);
-    let mut memo = inner.series.lock().unwrap_or_else(|p| p.into_inner());
-    if memo.columns.len() >= 1_000 {
-        memo.columns.clear();
-    }
-    memo.columns.insert(memo_key, (Instant::now(), out.clone()));
-    out
+    Arc::new(out)
 }
 
 /// The columns of a keyed series: the dictionary's values in dictionary order, then any value the cells
@@ -862,8 +864,7 @@ fn not_modified(inm: Option<&str>, etag: &str) -> bool {
 }
 
 fn view_base(inner: &Inner, b: &Bound, page: &SeriesPage, label: String, description: String) -> View {
-    let now = inner.now();
-    let relay = if page.computed { None } else { relay_of(inner, &b.name, &b.fn_hash, &b.d, &now) };
+    let relay = if page.computed { None } else { relay_of(inner, &b.name, &b.fn_hash) };
     let computed_from = if page.computed {
         page.source.clone().or_else(|| {
             let i = description.find(" from ")?;
@@ -907,8 +908,14 @@ fn view_base(inner: &Inner, b: &Bound, page: &SeriesPage, label: String, descrip
     }
 }
 
+/// The label and description of a series' function, as the last build has them (CONTRACT-0.4.9 H5).
 fn entry_text(inner: &Inner, name: &str) -> (String, String) {
-    match crate::find::entry_by_name(&*inner.store, name) {
+    built(inner).and_then(|b| b.entries.get(name).cloned()).unwrap_or_else(|| (name.to_string(), String::new()))
+}
+
+/// The label and description of a function now: the overview thread's read.
+fn entry_text_now(store: &dyn Store, name: &str) -> (String, String) {
+    match crate::find::entry_by_name(store, name) {
         Some(e) => {
             let label = if e.label.is_empty() { name.to_string() } else { e.label };
             (label, e.description)
@@ -1186,6 +1193,8 @@ pub(crate) fn respond(inner: &Inner, rest: &str, inm: Option<&str>) -> Out {
 
 /// The longest interval of a series with month pages, in years.
 const INTERVAL_YEARS: u32 = 10;
+/// The longest interval of a series with year pages, in years (CONTRACT-0.4.9 H5).
+const INTERVAL_YEARS_YEAR: u32 = 50;
 const JSON_TYPE: &str = "application/json";
 const ARROW_TYPE: &str = crate::slice::ARROW;
 
@@ -1239,7 +1248,11 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
     if parse_date(&from).is_none() || parse_date(&to).is_none() || from > to {
         return interval_bad("E_PARSE_URI");
     }
-    if page.granularity == Granularity::Month && to > plus_years(&from, INTERVAL_YEARS) {
+    let longest = match page.granularity {
+        Granularity::Month => INTERVAL_YEARS,
+        Granularity::Year => INTERVAL_YEARS_YEAR,
+    };
+    if to > plus_years(&from, longest) {
         return interval_bad("E_RANGE_TOO_LARGE");
     }
     let form = match params.remove("format").as_deref() {
@@ -1264,7 +1277,8 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
     }
     let Some(slice) = slice_of(&b, &p2, &Span::Days(&from, &to)) else { return interval_bad("E_PARSE_URI") };
     let store: &dyn Store = &*inner.store;
-    let Ok(mut members) = store.slice_values(&slice, &now) else {
+    // At most `slice_max + 1` members are read: one more than the answer holds, to know it is cut (H5).
+    let Ok(mut members) = store.slice_values_limit(&slice, &now, inner.config.slice_max + 1) else {
         return interval_error(503, "error", Some("E_EVAL_UNAVAILABLE"), "no-store");
     };
     // The open arguments, the date first, in the order of the signature after it.

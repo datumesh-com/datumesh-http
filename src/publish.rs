@@ -71,7 +71,7 @@ use datumesh_core::{
 };
 use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
-use datumesh_store::{Binding, CellWrite, Namespace, Store};
+use datumesh_store::{Binding, CellWrite, FunctionTest, Namespace, Store};
 
 use crate::testrun::{self, run_test, Overlay, Ran, RowWrite, TestSpec};
 
@@ -613,7 +613,11 @@ enum Op {
     /// A cell: its blob, its receipt, and the version when `version`.
     Cell { tx: String, id: String, receipt: Vec<u8>, blob: Option<Vec<u8>>, version: bool },
     /// A catalogue line (R5): the entry, and its dictionaries (`publisher`, signed by the run's key).
-    Catalog { entry: datumesh_store::CatalogEntry, dictionaries: Vec<(String, Vec<datumesh_store::KeyValue>)> },
+    Catalog {
+        entry: datumesh_store::CatalogEntry,
+        dictionaries: Vec<(String, Vec<datumesh_store::KeyValue>)>,
+        open_keys: Vec<String>,
+    },
 }
 
 /// The lines of a file, numbered, without the blank ones.
@@ -657,19 +661,60 @@ pub(crate) fn cell_string_values(r: &datumesh_core::Receipt, out: &mut BTreeSet<
     }
 }
 
-/// Stores the values of [`cell_string_values`] that no dictionary has yet (R3).
+/// The most distinct values a string key of a function takes from its cells before the key is open
+/// (`DATUMESH_DICTIONARY_MAX`, CONTRACT-0.4.9 H7): read from the process environment when it is needed; 1000 when
+/// unset or not a positive integer.
+pub(crate) fn dictionary_limit() -> u64 {
+    std::env::var("DATUMESH_DICTIONARY_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(1000)
+}
+
+/// Stores the values of [`cell_string_values`] that no dictionary has yet (R3), by the rule of CONTRACT-0.4.9 H7:
+/// for each (function, key) the new values are added only while the key would have at most
+/// [`dictionary_limit`] values; a publish that would take it past the limit adds none of them and marks the key
+/// open. An open key takes no automatic values again; the values it has stay.
 pub(crate) fn store_cell_values<S: Store + ?Sized>(
     store: &S,
     seen: BTreeSet<(String, String, String)>,
 ) -> Result<(), String> {
+    let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for (owner, key, value) in seen {
-        if crate::find::has_value(store, &owner, &key, &value) {
+        groups.entry((owner, key)).or_default().push(value);
+    }
+    let limit = dictionary_limit();
+    for ((owner, key), values) in groups {
+        if store.key_is_open(&owner, &key).map_err(|e| e.to_string())? {
             continue;
         }
-        let kv = datumesh_store::KeyValue { value, label: String::new(), aliases: Vec::new() };
-        store.upsert_key_values(&owner, &key, std::slice::from_ref(&kv)).map_err(|e| e.to_string())?;
+        let fresh: Vec<String> =
+            values.into_iter().filter(|v| !crate::find::has_value(store, &owner, &key, v)).collect();
+        if fresh.is_empty() {
+            continue;
+        }
+        let have = store.key_value_count(&owner, &key).map_err(|e| e.to_string())?;
+        if have + fresh.len() as u64 > limit {
+            store.mark_key_open(&owner, &key).map_err(|e| e.to_string())?;
+            continue;
+        }
+        let kvs: Vec<datumesh_store::KeyValue> = fresh
+            .into_iter()
+            .map(|value| datumesh_store::KeyValue { value, label: String::new(), aliases: Vec::new() })
+            .collect();
+        store.upsert_key_values(&owner, &key, &kvs).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// The function a test row is named by when it is written (CONTRACT-0.4.9 H1): a file's own test names the
+/// function its `test` member names; a held test is the group's function.
+fn row_name(own: Option<usize>, spec: &TestSpec, group: &str) -> String {
+    match own {
+        Some(_) => spec.function.clone(),
+        None => group.to_string(),
+    }
 }
 
 /// Whether a line is a cell line: none of the other kinds (the dispatch order of `plan_line`).
@@ -793,6 +838,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             let n = *n;
             match json::parse(text.as_bytes()).map_err(|e| PublishError::at(n, e.to_string())) {
                 Ok(v) if is_cell_line(&v) => {
+                    // The reserved paths (CONTRACT-0.4.9 H8), as for any other line.
+                    if let Some(name) = v.get("cell").and_then(|c| c.get("fn")).and_then(Value::as_str) {
+                        crate::reserved::check(self.ctx.host, name, None).map_err(|e| PublishError::at(n, e))?;
+                    }
                     cells.push((n, v));
                     if cells.len() == CHUNK {
                         self.plan_cells(std::mem::take(&mut cells))?;
@@ -812,6 +861,13 @@ impl<S: Store + ?Sized> Planner<'_, S> {
     /// One line that is not a cell (the dispatch of the lines before cells, as it was).
     fn plan_line(&mut self, n: usize, v: &Value) -> Result<(), PublishError> {
         let err = |d: String| PublishError::at(n, d);
+        // The reserved paths (CONTRACT-0.4.9 H8): a name a line gives is checked before anything else of it. The
+        // file is written by the mesh's own key, which takes no key namespace's name.
+        let named =
+            v.get("class").or_else(|| v.get("function")).or_else(|| v.get("formula")).or_else(|| v.get("catalog"));
+        if let Some(name) = named.and_then(Value::as_str) {
+            crate::reserved::check(self.ctx.host, name, None).map_err(err)?;
+        }
         if let Some(name) = v.get("class").and_then(Value::as_str) {
             self.class_line(n, name, v)?;
         } else if let Some(d) = v.get("descriptor") {
@@ -867,7 +923,7 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             return Err(err(format!("{} is bound nowhere", d.name)));
         }
         let entry = d.entry(hash, datumesh_store::CatalogSource::Publisher, Some(self.key.key_id().to_string()));
-        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary });
+        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary, open_keys: d.open_keys });
         Ok(())
     }
 
@@ -1209,8 +1265,8 @@ fn write<S: Store + ?Sized>(
                     }
                 }
             }
-            Op::Catalog { entry, dictionaries } => {
-                crate::catalog::store_publisher(store, entry, dictionaries).map_err(err)?;
+            Op::Catalog { entry, dictionaries, open_keys } => {
+                crate::catalog::store_publisher(store, entry, dictionaries, open_keys).map_err(err)?;
             }
             Op::Cell { .. } => {
                 let mut j = i;
@@ -1497,8 +1553,9 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
     for (line, name, hash) in &groups {
         let own: Vec<(usize, TestSpec)> =
             file_tests.iter().filter(|t| &t.2 == hash).map(|t| (t.0, t.1.clone())).collect();
-        let held = testrun::held_tests(store, hash).map_err(|e| PublishError::at(*line, e))?;
-        if !checked && own.is_empty() && held.is_empty() {
+        // The held tests of this function, read once (as 0.4.8 read them, before the function is built).
+        let all_held = testrun::held_of_name(store, hash, name, now).map_err(|e| PublishError::at(*line, e))?;
+        if !checked && own.is_empty() && all_held.is_empty() {
             continue;
         }
         let mut run = testrun::Run::new(store, overlay, now);
@@ -1508,8 +1565,15 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
         if built.compiled.is_some() && !formulas.iter().any(|f| &f.2 == hash) {
             continue;
         }
+        // A computed function's held tests are all run (its coverage is of all of them); a stored function's
+        // only where they read a cell this file writes (CONTRACT-0.4.9 H6).
+        let written: BTreeSet<&str> = overlay.cells.iter().filter(|c| &c.name == name).map(|c| c.id.as_str()).collect();
+        let held: Vec<(FunctionTest, TestSpec, String)> = all_held
+            .into_iter()
+            .filter(|(_, _, cell)| built.compiled.is_some() || written.contains(cell.as_str()))
+            .collect();
         let mut specs: Vec<(Option<usize>, TestSpec)> = own.into_iter().map(|(n, s)| (Some(n), s)).collect();
-        for (_, spec) in held {
+        for (_, spec, _) in held {
             if !specs.iter().any(|(_, s)| s.case == spec.case) {
                 specs.push((None, spec));
             }
@@ -1517,7 +1581,7 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
         let ran: Vec<Ran> = specs.iter().map(|(_, s)| run_test(store, overlay, now, s)).collect();
         let Some(compiled) = built.compiled.as_ref() else {
             // A stored function: its tests are stored and counted; it has no branch arms.
-            for ((_, spec), r) in specs.iter().zip(&ran) {
+            for ((own_n, spec), r) in specs.iter().zip(&ran) {
                 let (result, detail) = testrun::result_of(spec, r);
                 rows.push(RowWrite {
                     fn_hash: hash.clone(),
@@ -1528,6 +1592,7 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
                     detail,
                     branches_total: 0,
                     branches_covered: 0,
+                    fn_name: row_name(*own_n, spec, name),
                 });
             }
             continue;
@@ -1565,7 +1630,7 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
         }
         let refs: Vec<&Ran> = ran.iter().collect();
         let cov = testrun::coverage_of(compiled, &built.function.signature, &refs);
-        for ((_, spec), r) in specs.iter().zip(&ran) {
+        for ((own_n, spec), r) in specs.iter().zip(&ran) {
             let (result, detail) = testrun::result_of(spec, r);
             rows.push(RowWrite {
                 fn_hash: hash.clone(),
@@ -1576,6 +1641,7 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
                 detail,
                 branches_total: cov.branches,
                 branches_covered: cov.covered,
+                fn_name: row_name(*own_n, spec, name),
             });
         }
     }
@@ -1662,8 +1728,10 @@ fn publish_planned<S: Store + ?Sized>(
         .collect();
     testrun::rerun_readers(store, &rebound, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
     // The stored functions' tests read the cells this file writes, and the names it rebinds.
-    let touched: BTreeSet<String> = rebound.into_iter().chain(overlay.cells.iter().map(|c| c.name.clone())).collect();
-    testrun::rerun_stored_tests(store, &touched, &now).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
+    let rebound: BTreeSet<String> = rebound.into_iter().collect();
+    let written_cells: Vec<(String, String)> = overlay.cells.iter().map(|c| (c.name.clone(), c.id.clone())).collect();
+    testrun::rerun_stored_tests(store, &rebound, &written_cells, &now)
+        .map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
     if let Some(log) = &opts.backfill {
         if out.functions + out.classes + out.versions > 0 {
             append_log(log, &written).map_err(|e| PublishError::at(0, format!("backfill log: {e}")))?;

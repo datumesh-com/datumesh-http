@@ -197,8 +197,9 @@ pub fn refused_whole(lite: &Lite, name: &str, lines: &[String], line: usize, now
     e
 }
 
+/// A lookup the store refuses (a name its grammar does not take, `CanonName`) is no binding either.
 pub fn unbound(lite: &Lite, name: &str) -> bool {
-    lite.store.resolve_binding(name, "9999-12-31T23:59:59.999999Z").unwrap().is_none()
+    lite.store.resolve_binding(name, "9999-12-31T23:59:59.999999Z").map_or(true, |b| b.is_none())
 }
 
 pub fn now_clock() -> &'static str {

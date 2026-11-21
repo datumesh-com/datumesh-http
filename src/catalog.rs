@@ -25,6 +25,8 @@ pub(crate) struct Described {
     pub(crate) args: BTreeMap<String, String>,
     pub(crate) examples: String,
     pub(crate) dictionary: Vec<(String, Vec<KeyValue>)>,
+    /// The keys open from the first cell (`open_keys`, CONTRACT-0.4.9 H7): no automatic values for them.
+    pub(crate) open_keys: Vec<String>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -110,7 +112,19 @@ pub(crate) fn parse(v: &Value, name_key: &str) -> Result<Described, String> {
         }
         Some(_) => return Err("dictionary is not an object".into()),
     }
-    Ok(Described { kind, name, label, description, args, examples, dictionary })
+    let mut open_keys = Vec::new();
+    match v.get("open_keys") {
+        None => {}
+        Some(Value::Array(ks)) => {
+            for k in ks {
+                let k = k.as_str().ok_or("open_keys: a key is not a string")?;
+                check_name(k, "open_keys").map_err(|e| format!("open_keys: {e}"))?;
+                open_keys.push(k.to_string());
+            }
+        }
+        Some(_) => return Err("open_keys is not an array".into()),
+    }
+    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys })
 }
 
 impl Described {
@@ -136,6 +150,7 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
     store: &S,
     entry: &CatalogEntry,
     dictionaries: &[(String, Vec<KeyValue>)],
+    open_keys: &[String],
 ) -> Result<(), String> {
     let same = crate::find::entry_by_name(store, &entry.name).is_some_and(|old| {
         old.kind == entry.kind
@@ -150,12 +165,18 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
     if !same {
         store.upsert_catalog(std::slice::from_ref(entry)).map_err(|e| e.to_string())?;
     }
+    // The keys the entry names are open from now: no automatic values for them (CONTRACT-0.4.9 H7).
+    for key in open_keys {
+        store.mark_key_open(&entry.name, key).map_err(|e| e.to_string())?;
+    }
     for (key, values) in dictionaries {
         let fresh: Vec<KeyValue> = values
             .iter()
             .filter(|kv| {
-                crate::find::value_row(store, &entry.name, key, &kv.value)
-                    .is_none_or(|(label, aliases)| label != kv.label || aliases != kv.aliases)
+                // A value the store does not hold is new (the exact lookup); one it holds is compared with its label.
+                !crate::find::has_value(store, &entry.name, key, &kv.value)
+                    || crate::find::value_row(store, &entry.name, key, &kv.value)
+                        .is_none_or(|(label, aliases)| label != kv.label || aliases != kv.aliases)
             })
             .cloned()
             .collect();

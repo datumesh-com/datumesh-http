@@ -8,6 +8,7 @@
 //!    (store `mark_key_open`); an open key never gets automatic values again; existing values stay.
 //! 5. A catalogue entry's `"open_keys": [...]` makes those keys open from the first cell.
 //! 7. The lookup per value is exact (`has_key_value`).
+//!
 //! `GET /metrics` gains `datumesh_dictionary_open_keys_total`.
 //!
 //! These tests use the new store 0.5.2 methods `key_value_count`, `has_key_value` and `key_is_open`, and FAIL
@@ -140,10 +141,14 @@ fn a_publish_that_would_exceed_adds_none_of_its_values() {
 fn a_value_already_known_is_not_new() {
     limit_is_five();
     let lite = Lite::new("h7-known");
-    publish(&lite, "a.jsonl", &[vec![function_line(D, &sig(), None)], sites(D, &["s1", "s2", "s3", "s4", "s5"])].concat(), NOW);
+    publish(
+        &lite,
+        "a.jsonl",
+        &[vec![function_line(D, &sig(), None)], sites(D, &["s1", "s2", "s3", "s4", "s5"])].concat(),
+        NOW,
+    );
     // the same values again, with other dates: nothing new, nothing past the limit, the key stays closed
-    let again: Vec<String> =
-        ["s1", "s2", "s3"].iter().map(|s| cell(D, s, "2027-01-01", "9")).collect();
+    let again: Vec<String> = ["s1", "s2", "s3"].iter().map(|s| cell(D, s, "2027-01-01", "9")).collect();
     publish(&lite, "b.jsonl", &again, T1);
     assert_eq!(count(&lite, D, "site"), 5);
     assert!(!open(&lite, D, "site"));
@@ -169,7 +174,14 @@ fn a_publishers_own_dictionary_is_stored_as_given() {
     limit_is_five();
     let lite = Lite::new("h7-own");
     let dict: Vec<Value> = (0..8).map(|i| json!({"value": format!("w{i}"), "label": format!("Site {i}")})).collect();
-    let entry = catalog_line(G, "function", "G", "A function with a dictionary.", json!({"site": "the site"}), json!({"site": dict}));
+    let entry = catalog_line(
+        G,
+        "function",
+        "G",
+        "A function with a dictionary.",
+        json!({"site": "the site"}),
+        json!({"site": dict}),
+    );
     publish(&lite, "a.jsonl", &[function_line(G, &sig(), None), entry], NOW);
     assert_eq!(count(&lite, G, "site"), 8, "more than the limit, as given");
     // cells with values the dictionary has change nothing; a value it has not is not added (past the limit)

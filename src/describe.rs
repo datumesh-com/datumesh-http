@@ -15,10 +15,11 @@
 //! methods, so its recorded cells are covered the same way. Nothing is evaluated to build the index,
 //! and no product of argument extents is formed.
 //!
-//! The index is kept in memory (object id to object, cell id to cell). It is built on the first
-//! describe or short-id request, and built again when the mesh is told of a stored version
-//! ([`Mesh::stored_version_added`](crate::Mesh::stored_version_added)), when it learns of a class,
-//! when a formula cell is computed that the index does not hold yet, or after [`INDEX_TTL`].
+//! The index is kept in memory (object id to object, cell id to cell). A thread of the mesh builds it
+//! (CONTRACT-0.4.9 H3): at start (after `DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`), again when the mesh is told of a
+//! stored version ([`Mesh::stored_version_added`](crate::Mesh::stored_version_added)), when it learns of a class,
+//! and after [`INDEX_TTL`]. A request for an object id reads the last build and never builds one: before the
+//! first build it is `503` with `Retry-After` and `no-store`.
 //!
 //! The store cannot list the classes it holds, so the classes the index covers are the ones the
 //! mesh has *heard of*: a class a stored version was added under, a class a request or a describe
@@ -40,8 +41,12 @@ use crate::envelope::{self, Cache, Reply};
 use crate::mesh::Inner;
 
 /// How long an index is used before it is built again (a stored version another process added is
-/// not announced to this mesh).
-pub(crate) const INDEX_TTL: Duration = Duration::from_secs(30);
+/// not announced to this mesh). A full build reads every recorded cell of every class's methods, so it
+/// runs every five minutes, as the series overview does; what this mesh writes or hears of is indexed at once.
+pub(crate) const INDEX_TTL: Duration = Duration::from_secs(300);
+
+/// How often the index thread looks at the index (it builds one when it is due).
+pub(crate) const INDEX_TICK: Duration = Duration::from_millis(500);
 
 /// The most recorded cells of one method the index reads from the store (per method, per build).
 pub(crate) const INDEX_LIMIT: usize = 1_000_000;
@@ -64,7 +69,9 @@ pub(crate) struct Index {
     built: Option<Built>,
 }
 
-struct Built {
+pub(crate) struct Built {
+    /// The classes whose objects this build holds.
+    classes: BTreeSet<String>,
     at: Instant,
     /// Object id to object.
     objects: BTreeMap<String, Known>,
@@ -158,52 +165,124 @@ impl Inner {
         out
     }
 
-    /// Builds the index of known objects as of `now`.
-    fn build_index(&self, ix: &mut Index, now: &str) {
+    /// Builds the index of known objects as of `now` and makes it the one requests read, when it is missing,
+    /// dirty or old (the index thread's work; a request never calls this). The store is read without the lock
+    /// held, so a request is not held up by a build.
+    pub(crate) fn refresh_index(&self) {
+        let (mut classes, announced) = {
+            let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+            let due = ix.built.as_ref().is_none_or(|b| b.at.elapsed() > INDEX_TTL) || ix.dirty;
+            if !due {
+                return;
+            }
+            ix.dirty = false;
+            (ix.classes.clone(), std::mem::take(&mut ix.announced))
+        };
+        let now = self.now();
+        let built = self.build_index(&mut classes, announced, &now);
+        let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+        ix.classes = classes;
+        ix.built = Some(built);
+    }
+
+    /// Builds the index from the classes heard of (`classes`, and the ones the announced cells are of).
+    fn build_index(&self, classes: &mut BTreeSet<String>, announced: Vec<String>, now: &str) -> Built {
         // The classes announced cells were of, and the classes of the configured aliases.
-        for id in std::mem::take(&mut ix.announced) {
+        for id in announced {
             if let Some(c) = class_of_cell(self, &id) {
-                ix.classes.insert(c);
+                classes.insert(c);
             }
         }
         for target in self.config.aliases.values() {
             if let Some((ns, _)) = target.rsplit_once('/') {
-                ix.classes.insert(ns.to_string());
+                classes.insert(ns.to_string());
             }
         }
         let mut objects = BTreeMap::new();
         let mut cells = BTreeMap::new();
-        for name in &ix.classes {
-            let Ok(Some(c)) = self.class_binding(name, now) else { continue };
-            let d = &c.descriptor;
-            // Every method of the class, stored or computed (its `extent.keys` function among them).
-            for (m, hash) in &d.methods {
-                let name_of = format!("{name}/{m}");
-                let Ok(fd) = self.descriptor(hash) else { continue };
-                for cell in self.recorded_cells(&name_of, hash, &fd, now) {
-                    let Some(object) = object_of(name, d, &cell.args) else { continue };
-                    let Ok(id) = object.object_id(&c.class_hash) else { continue };
-                    cells.insert(cell.id(), id.clone());
-                    objects.insert(id, Known { key: object, class_hash: c.class_hash.clone() });
-                }
-            }
+        for name in classes.iter() {
+            self.index_class(name, now, &mut objects, &mut cells);
         }
-        ix.built = Some(Built { at: Instant::now(), objects, cells });
-        ix.dirty = false;
+        Built { classes: classes.clone(), at: Instant::now(), objects, cells }
     }
 
-    /// Runs `f` on the index, built first when it is missing, dirty or old.
-    fn with_index<T>(&self, f: impl FnOnce(&Built) -> T) -> T {
+    /// The objects of the class `name` and its recorded cells, into `objects` and `cells`: the class's methods,
+    /// stored or computed (its `extent.keys` function among them), each cell with every argument open.
+    fn index_class(
+        &self,
+        name: &str,
+        now: &str,
+        objects: &mut BTreeMap<String, Known>,
+        cells: &mut BTreeMap<String, String>,
+    ) {
+        let Ok(Some(c)) = self.class_binding(name, now) else { return };
+        let d = &c.descriptor;
+        for (m, hash) in &d.methods {
+            let name_of = format!("{name}/{m}");
+            let Ok(fd) = self.descriptor(hash) else { continue };
+            for cell in self.recorded_cells(&name_of, hash, &fd, now) {
+                let Some(object) = object_of(name, d, &cell.args) else { continue };
+                let Ok(id) = object.object_id(&c.class_hash) else { continue };
+                cells.insert(cell.id(), id.clone());
+                objects.insert(id, Known { key: object, class_hash: c.class_hash.clone() });
+            }
+        }
+    }
+
+    /// A class a describe names for the first time is indexed at once, into the last build (CONTRACT-0.4.9 H3, as
+    /// 0.4.8 made a named class known to the next describe): the class's own objects only, once per class. A request
+    /// never rebuilds the whole index. Before the first build nothing is done (the build will include the class).
+    pub(crate) fn index_named_class(&self, name: &str) {
+        let now = self.now();
+        let covered = {
+            let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+            ix.classes.insert(name.to_string());
+            ix.built.as_ref().is_none_or(|b| b.classes.contains(name))
+        };
+        if covered {
+            return;
+        }
+        let mut objects = BTreeMap::new();
+        let mut cells = BTreeMap::new();
+        self.index_class(name, &now, &mut objects, &mut cells);
         let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-        let stale = ix.built.as_ref().is_none_or(|b| b.at.elapsed() > INDEX_TTL);
-        if stale || ix.dirty {
-            let now = self.now();
-            self.build_index(&mut ix, &now);
+        if let Some(b) = ix.built.as_mut() {
+            b.objects.extend(objects);
+            b.cells.extend(cells);
+            b.classes.insert(name.to_string());
         }
-        match &ix.built {
-            Some(b) => f(b),
-            None => f(&Built { at: Instant::now(), objects: BTreeMap::new(), cells: BTreeMap::new() }),
+    }
+
+    /// Puts the object of `cell` into the last build at once (O(1), CONTRACT-0.4.9 H3): a formula cell just computed,
+    /// or a stored version just added, is known to describe straight away, as 0.4.8's rebuild made it. The
+    /// cell's class is heard of from now on; nothing is done before the first build (it will include the cell).
+    pub(crate) fn index_cell_now(&self, cell: &Cell) {
+        let class = cell.ns.clone();
+        let now = self.now();
+        let Ok(Some(c)) = self.class_binding(&class, &now) else { return };
+        let Some(object) = object_of(&class, &c.descriptor, &cell.args) else { return };
+        let Ok(id) = object.object_id(&c.class_hash) else { return };
+        let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+        // The class is one the mesh has heard of from now on (a rebuild would find it through the cell as well).
+        ix.classes.insert(class);
+        if let Some(b) = ix.built.as_mut() {
+            b.cells.insert(cell.id(), id.clone());
+            b.objects.insert(id, Known { key: object, class_hash: c.class_hash.clone() });
         }
+    }
+
+    /// As [`Inner::index_cell_now`] for a stored version of `cell_id`, read from its receipt.
+    pub(crate) fn index_stored_now(&self, cell_id: &str) {
+        let far = "9999-12-31T23:59:59.999999Z";
+        let Some((_, bytes)) = self.store.stored_asof_with_receipt(cell_id, far).ok().flatten() else { return };
+        let Ok(r) = datumesh_core::Receipt::from_json(&bytes) else { return };
+        self.index_cell_now(r.cell());
+    }
+
+    /// Runs `f` on the last build of the index, or `None` before the first build (a request never builds it).
+    fn with_index<T>(&self, f: impl FnOnce(&Built) -> T) -> Option<T> {
+        let ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+        ix.built.as_ref().map(f)
     }
 
     /// The describe reply for `id` (see the module documentation).
@@ -212,7 +291,10 @@ impl Inner {
         // A class name.
         if lexical::check_function_name(id, "$").is_ok() {
             return match Bindings::class(self, id, &now) {
-                Ok(Some(c)) => self.class_answer(id, &c),
+                Ok(Some(c)) => {
+                    self.index_named_class(id);
+                    self.class_answer(id, &c)
+                }
                 Ok(None) => {
                     // A method of a class is not a function the mesh describes (16.8): its name is
                     // under the class's name.
@@ -240,16 +322,17 @@ impl Inner {
         }
         let hex = |s: &str, n: usize| s.len() == n && lexical::check_hex(s, n, "$").is_ok();
         if hex(id, 64) {
-            return self.with_index(|b| {
+            let answer = self.with_index(|b| {
                 let object = b.objects.get(id).or_else(|| b.cells.get(id).and_then(|o| b.objects.get(o)));
                 match object {
                     Some(k) => self.object_answer(&k.key, &k.class_hash),
                     None => not_found(),
                 }
             });
+            return answer.unwrap_or_else(index_not_yet);
         }
         if hex(id, 12) {
-            return self.with_index(|b| {
+            let answer = self.with_index(|b| {
                 let mut found: BTreeSet<&String> = BTreeSet::new();
                 for o in b.objects.keys().filter(|o| o.starts_with(id)) {
                     found.insert(o);
@@ -269,6 +352,7 @@ impl Inner {
                     (Some(_), Some(_)) => envelope::bad_request_reply(ErrorCode::ShortIdAmbiguous),
                 }
             });
+            return answer.unwrap_or_else(index_not_yet);
         }
         not_found()
     }
@@ -280,7 +364,8 @@ impl Inner {
         let Ok(answer) = FunctionAnswer::new(name, d) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
-        let counts = crate::testrun::counts(&*self.store, &self.config.host, name, fn_hash, &self.now());
+        let unnamed = self.is_unnamed(fn_hash);
+        let counts = crate::testrun::counts(&*self.store, name, fn_hash, unnamed, &self.now());
         let Ok((count, branches, covered, counterexamples)) = counts else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
@@ -295,8 +380,7 @@ impl Inner {
         // A relayed function names its source and the takeover page (spec-0.6.0, 16.8; core's
         // DescribeSource needs the takeover). The function page is not a member of the answer (16.8
         // is strictly checked): it is the `Link` header of the response (see `http::describe`).
-        let now = self.now();
-        if let Some(relay) = crate::fnpage::relay_of(self, name, fn_hash, d, &now) {
+        if let Some(relay) = crate::fnpage::relay_of(self, name, fn_hash) {
             if let Some(takeover) = relay.takeover {
                 let source =
                     datumesh_core::DescribeSource { name: relay.name, relayed_by: self.config.host.clone(), takeover };
@@ -405,6 +489,11 @@ pub(crate) fn publisher_of(name: &str) -> &str {
 
 fn bad_key() -> Reply {
     envelope::bad_request_reply(ErrorCode::KeyEncoding)
+}
+
+/// `503` for an object id before the index's first build.
+fn index_not_yet() -> Reply {
+    envelope::not_yet_reply(INDEX_TTL.as_secs(), "The index of objects")
 }
 
 fn not_found() -> Reply {

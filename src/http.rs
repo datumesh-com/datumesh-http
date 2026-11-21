@@ -639,7 +639,8 @@ impl Inner {
         }
         let lo = from.unwrap_or_else(|| "0001-01-01T00:00:00.000000Z".into());
         let hi = to.clone().unwrap_or_else(|| "9999-12-31T23:59:59.999999Z".into());
-        let mut vs = match self.store.versions(target.cell_id(), &lo, &hi) {
+        // One more than a page, to know there is a next (CONTRACT-0.4.9 H5): the store stops there.
+        let mut vs = match self.store.versions_limit(target.cell_id(), &lo, &hi, VERSIONS_PAGE + 1) {
             Ok(v) => v,
             Err(_) => return envelope::error_answer_reply(ErrorCode::InputUnavailable, Some(&target.bound.fn_hash)),
         };
@@ -971,6 +972,9 @@ struct FindQuery {
     summary: Option<String>,
 }
 
+/// `Retry-After` of a find answer before the find thread's first build (CONTRACT-0.4.9 H4).
+const FIND_RETRY_SECS: u64 = 5;
+
 /// The hybrid `/find` (CONTRACT-build2-part2-read R3; see `crate::find`), and `/find?summary=1`.
 #[utoipa::path(get, path = "/find",
     params(("q" = Option<String>, Query, description = "The query: words, a name, a label, an alias or a value, or a request such as `<book> <chapter>:<verse>`. Matching is case-insensitive after NFC."), ("limit" = Option<usize>, Query, description = "At most this many results (default 10, at most 50)."), ("summary" = Option<String>, Query, description = "`1`: the catalogue summary (`classes`, `functions`, with labels, cell counts and small dictionaries) instead of results.")),
@@ -983,13 +987,27 @@ async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: Hea
     let query = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(crate::find::DEFAULT_LIMIT).clamp(1, crate::find::MAX_LIMIT);
     let summary = q.summary.as_deref() == Some("1");
+    // The summary and the empty query are read from the find thread's last build (CONTRACT-0.4.9 H4): before
+    // its first build they are `503`. Any other query is answered on the request.
+    let empty = query.trim().is_empty();
     let r = inner
         .pool
         .clone()
-        .run(move || if summary { crate::find::summary(&inner) } else { crate::find::answer(&inner, &query, limit) })
+        .run(move || {
+            if summary {
+                crate::find::summary(&inner)
+            } else if empty {
+                crate::find::empty_answer(&inner, limit)
+            } else {
+                Some(crate::find::answer(&inner, &query, limit))
+            }
+        })
         .await
-        .unwrap_or(Value::Null);
-    plain_json(200, r, Cache::Public(60))
+        .unwrap_or(None);
+    match r {
+        Some(v) => plain_json(200, v, Cache::Public(60)),
+        None => to_response(crate::envelope::not_yet_reply(FIND_RETRY_SECS, "The catalogue summary")),
+    }
 }
 
 #[derive(serde::Deserialize)]

@@ -165,6 +165,7 @@ mod mesh;
 mod metrics;
 mod pool;
 pub mod publish;
+mod reserved;
 mod scenario;
 mod series;
 pub mod slice;

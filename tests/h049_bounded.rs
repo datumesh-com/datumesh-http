@@ -118,7 +118,11 @@ async fn versions_are_capped_at_a_thousand_with_a_link_to_the_rest() {
     let txs: Vec<&str> = vs.iter().map(|v| v["tx"].as_str().unwrap()).collect();
     assert!(txs.windows(2).all(|w| w[0] < w[1]), "ascending by tx");
     assert_eq!(txs[0], "2026-03-01T12:00:00.000001Z");
-    let next = j["next"].as_str().unwrap_or_else(|| panic!("a link to the rest: {j}")).replacen(&format!("https://{HOST}"), "", 1);
+    let next = j["next"].as_str().unwrap_or_else(|| panic!("a link to the rest: {j}")).replacen(
+        &format!("https://{HOST}"),
+        "",
+        1,
+    );
     let rest = get(&m, &next, &[]).await.json();
     let rest_vs = rest["versions"].as_array().unwrap();
     assert_eq!(rest_vs.len(), 3, "{rest}");
@@ -159,7 +163,8 @@ async fn year_series(label: &str) -> Served {
     let p = lite.path("series.json");
     std::fs::write(
         &p,
-        json!([{"function": POLICY, "granularity": "year", "date_arg": "date", "unit": "percent", "kind": "relayed"}]).to_string(),
+        json!([{"function": POLICY, "granularity": "year", "date_arg": "date", "unit": "percent", "kind": "relayed"}])
+            .to_string(),
     )
     .unwrap();
     let path = p.to_string_lossy().into_owned();

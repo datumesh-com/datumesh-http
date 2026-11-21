@@ -343,3 +343,13 @@ pub fn name_unbound_reply(max_age: u64) -> Reply {
         Err(_) => Reply::json(404, not_covered(None), Cache::Public(max_age)),
     }
 }
+
+/// `503` for a read of a background build before that build has finished its first run (CONTRACT-0.4.9 H2 to
+/// H4): `Retry-After` in seconds (1 to 300), never cached. A request never builds the answer itself.
+pub fn not_yet_reply(retry_after: u64, what: &str) -> Reply {
+    let body =
+        object(vec![("error", s("not_yet")), ("detail", s(&format!("{what} is being built; try again shortly.")))]);
+    let mut r = Reply::json(503, bytes(body), Cache::NoStore);
+    r.retry_after = Some(retry_after.clamp(1, 300));
+    r
+}

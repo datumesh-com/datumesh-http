@@ -194,6 +194,16 @@ fn public_of(keydoc: &[u8], key_id: &str) -> Option<[u8; 32]> {
     hex_of::<32>(entry.get("public")?.as_str()?, true)
 }
 
+/// The key namespace a bundle signed by `key_id` may publish under (H8): the namespace derived from the key, when
+/// the key is a registered one (not the mesh's own key). `None` for the mesh's own key, or a key the document lacks.
+pub(crate) fn signer_namespace(inner: &Inner, key_id: &str, keydoc: &[u8]) -> Option<String> {
+    if inner.own_key_id.as_deref() == Some(key_id) {
+        return None;
+    }
+    let public = public_of(keydoc, key_id)?;
+    Some(namespace_of(&inner.config.host, &public))
+}
+
 /// The key-names rule of `POST /bundles` (D39), for a bundle of the mesh's own host signed by `key_id`: a key
 /// namespace, or a key the mesh registered (any key but its own), publishes under the namespace of its own
 /// key only. `Some((status, code, detail))` refuses the bundle; nothing is written then.

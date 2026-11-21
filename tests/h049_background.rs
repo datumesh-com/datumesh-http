@@ -258,7 +258,11 @@ fn dated(f: &str, domain: &str, date: &str, value: &str) -> String {
 /// BANK has four cells, ESTR one: one descriptor, two names.
 async fn twins(label: &str, vars: &[(&str, &str)]) -> Served {
     let lite = Lite::new(label);
-    let f0 = write(&lite, "functions.jsonl", &[function_line(BANK, &date_sig(), None), function_line(ESTR, &date_sig(), None)]);
+    let f0 = write(
+        &lite,
+        "functions.jsonl",
+        &[function_line(BANK, &date_sig(), None), function_line(ESTR, &date_sig(), None)],
+    );
     run(&lite, &f0, BOUND_CLOCK).unwrap_or_else(|e| panic!("{e}"));
     let mut v = Vec::new();
     for (d, x) in [("2026-03-19", "4.5"), ("2026-03-20", "4.5"), ("2026-05-07", "4.25"), ("2026-05-08", "4.25")] {

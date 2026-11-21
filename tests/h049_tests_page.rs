@@ -88,7 +88,7 @@ async fn the_page_shows_the_stored_results_not_a_fresh_run() {
     lite.store.record_function_test(&hash, &t1, "2029-06-01T00:00:00.000000Z", "error", "tampered").unwrap();
     let never = tline(F, "W", "99");
     let t3 = put_raw(&lite, &hash, &never, None);
-    name_all(&lite, &hash, F, &[t3.clone()]);
+    name_all(&lite, &hash, F, std::slice::from_ref(&t3));
     let m = build_served(lite, None, |_| {}).await;
 
     let j = page_json(&m, &fn_path(F)).await;
@@ -109,8 +109,13 @@ async fn the_page_shows_the_stored_results_not_a_fresh_run() {
     assert_eq!(t["cases_total"], 4, "{t}");
     let cases = t["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 4, "{t}");
-    assert!(cases.iter().all(|c| c["call"].is_string() && c.get("expect").is_some() && c.get("result").is_some()), "{t}");
-    let result_of = |call_text: &str| cases.iter().find(|c| c["call"] == call_text).unwrap_or_else(|| panic!("{call_text}: {t}"))["result"].clone();
+    assert!(
+        cases.iter().all(|c| c["call"].is_string() && c.get("expect").is_some() && c.get("result").is_some()),
+        "{t}"
+    );
+    let result_of = |call_text: &str| {
+        cases.iter().find(|c| c["call"] == call_text).unwrap_or_else(|| panic!("{call_text}: {t}"))["result"].clone()
+    };
     assert_eq!(result_of(&call(F, "N")), "fail", "{t}");
     assert_eq!(result_of(&call(F, "S")), "error", "{t}");
     assert_eq!(result_of(&call(F, "E")), "pass", "{t}");
@@ -162,7 +167,8 @@ async fn tests_that_never_ran_are_not_run() {
     let f = write(&lite, "f.jsonl", &[function_line(F, &sig(), None), cell(F, "N", "10")]);
     run(&lite, &f, NOW).unwrap_or_else(|e| panic!("{e}"));
     let hash = hash_in(&lite, F);
-    let cases: Vec<String> = ["10", "11", "12"].iter().map(|w| put_raw(&lite, &hash, &tline(F, "N", w), None)).collect();
+    let cases: Vec<String> =
+        ["10", "11", "12"].iter().map(|w| put_raw(&lite, &hash, &tline(F, "N", w), None)).collect();
     name_all(&lite, &hash, F, &cases);
     let m = build_served(lite, None, |_| {}).await;
     let t = page_json(&m, &fn_path(F)).await["tests"].clone();
@@ -192,7 +198,11 @@ async fn the_branch_counts_are_the_stored_ones() {
     let m = build_served(lite, None, |_| {}).await;
     let t = page_json(&m, &fn_path(&c.per_unit)).await["tests"].clone();
     assert!(t.get("derived").is_none(), "{t}");
-    assert_eq!((t["count"].as_u64(), t["branches"].as_u64(), t["covered"].as_u64()), (Some(6), Some(2), Some(2)), "{t}");
+    assert_eq!(
+        (t["count"].as_u64(), t["branches"].as_u64(), t["covered"].as_u64()),
+        (Some(6), Some(2), Some(2)),
+        "{t}"
+    );
     assert_eq!(t["last_run"]["result"], "pass", "{t}");
     // a stored count that no run would give shows as stored
     m.lite.store.set_function_branches(&hash, 5, 1).unwrap();
@@ -222,7 +232,9 @@ async fn two_functions_of_one_hash_count_their_own_tests() {
     let hash = hash_in(&lite, A);
     // B's tests recorded as failing: A's page must not count them
     for s in ["N", "S"] {
-        lite.store.record_function_test(&hash, &case_id(&tline(B, s, "10")), "2030-01-01T00:00:00.000000Z", "fail", "x").unwrap();
+        lite.store
+            .record_function_test(&hash, &case_id(&tline(B, s, "10")), "2030-01-01T00:00:00.000000Z", "fail", "x")
+            .unwrap();
     }
     let m = build_served(lite, None, |_| {}).await;
     let a = page_json(&m, &fn_path(A)).await["tests"].clone();
@@ -241,7 +253,8 @@ async fn two_functions_of_one_hash_count_their_own_tests() {
         let d = m.get(&describe_path(n)).await;
         assert_eq!(d["tests"]["count"], want, "{n}: {d}");
     }
-    assert!(!plain(&publish4::get(&m, &format!("/fn/{A}"), &[]).await.text()).contains("counts include tests of other functions"));
+    assert!(!plain(&publish4::get(&m, &format!("/fn/{A}"), &[]).await.text())
+        .contains("counts include tests of other functions"));
 }
 
 /// Old rows with no name (written before 0.4.9) are named by a thread of the mesh, once; after that each
@@ -334,7 +347,10 @@ async fn the_page_lists_the_first_hundred_and_says_how_many_there_are() {
     name_all(&lite, &hash, F, &cases);
     let m = build_served(lite, None, |_| {}).await;
     let j = page_json(&m, &fn_path(F)).await;
-    assert_eq!((j["tests"]["cases_total"].as_u64(), j["tests"]["cases"].as_array().map(Vec::len)), (Some(250), Some(100)));
+    assert_eq!(
+        (j["tests"]["cases_total"].as_u64(), j["tests"]["cases"].as_array().map(Vec::len)),
+        (Some(250), Some(100))
+    );
     let h = plain(&publish4::get(&m, &format!("/fn/{F}"), &[]).await.text());
     assert!(h.contains("Showing the first 100 of 250 tests"), "{h}");
     assert!(h.contains("last run") && h.contains("2026-01-01"), "{h}");

@@ -7,16 +7,16 @@
 //!   `examples`, `licence`. The tests below read the text of a section (tags removed, entities decoded);
 //! * `description`: the catalogue description and a line per argument; `signature`: the arguments with
 //!   types and units, `returns`, the `fn_hash`, the binding history (hash and since); `body`: the
-//!   formula of a computed function; `tests`: `6 tests`, `2 of 2 branches`, the derived cases (each
-//!   covered or not), `counterexamples`, `last run` and its result, each test's call and expected value
+//!   formula of a computed function; `tests`: `6 tests`, `2 of 2 branches`, `counterexamples`, `last run`
+//!   and its result (the stored results only: CONTRACT-0.4.9 H1, no test runs on the page), each test's call and expected value
 //!   or fault; `lineage`: inputs and dependants as links to their pages (`/fn/<name>`), for a relay the
 //!   source, "relayed by <mesh host>" and the takeover page (see `relayed_source.rs`); `examples`: the
 //!   publisher's example calls, linked to `/cell/...`;
 //! * JSON, by `Accept: application/json` or `?format=json` (the same body): the members `name`,
 //!   `fn_hash`, `description` (string), `args` (argument -> catalogue line), `signature` (`args`,
 //!   `order`, `returns`, `fn_hash`, `bindings`: [{`fn_hash`, `since`}]), `body` (string, absent or null for
-//!   a stored function), `tests` (`count`, `branches`, `covered`, `counterexamples`, `derived`: [{`case`,
-//!   `covered`}], `cases`: [{`call`, `expect`}], `last_run`: {`result`, ...}), `lineage` (`inputs` and
+//!   a stored function), `tests` (`count`, `branches`, `covered`, `counterexamples`, `cases`: [{`call`,
+//!   `expect`}], `last_run`: {`result`, `at`, ...}; no `derived` since 0.4.9), `lineage` (`inputs` and
 //!   `dependants`: [{`name`, `page`}], `source` for a relay), `examples`: [{`call`, `expected`, `cell`}],
 //!   `licence`;
 //! * an unknown name is `404` with the not-covered shape (`outcome: not_covered`, `E_NAME_UNBOUND`);
@@ -153,9 +153,9 @@ async fn the_page_for_people() {
     let b = norm(&plain(&section(&html, "body")));
     assert!(b.contains(&c.reading) && b.contains("units"), "{b}");
 
-    // tests: count, branches, derived cases, each test, the last run
+    // tests: count, branches, each test, the last run (the derived cases are not on the page since 0.4.9)
     let t = norm(&plain(&section(&html, "tests")));
-    for want in ["6 tests", "2 of 2 branches", "zero(units)", "negative(units)", "E_FORMULA_ABSENT", "last run"] {
+    for want in ["6 tests", "2 of 2 branches", "E_FORMULA_ABSENT", "last run"] {
         assert!(t.to_lowercase().contains(&want.to_lowercase()), "{want}: {t}");
     }
     for call in [pu_call(&c, "N", "2"), pu_call(&c, "N", "0"), pu_call(&c, "N", "-3"), pu_call(&c, "ZZ", "2")] {
@@ -248,12 +248,8 @@ async fn the_json_form_is_the_same_data() {
         (Some(6), Some(2), Some(2), Some(0)),
         "{t}"
     );
-    let derived = t["derived"].as_array().unwrap();
-    assert_eq!(derived.len(), 3, "{t}");
-    for case in ["zero(units)", "negative(units)", &format!("absent({})", c.reading)] {
-        let d = derived.iter().find(|d| d["case"] == case).unwrap_or_else(|| panic!("{case}: {t}"));
-        assert_eq!(d["covered"], true, "{d}");
-    }
+    // no derived cases: a page runs nothing, and the cases of a run are not stored (CONTRACT-0.4.9 H1)
+    assert!(t.get("derived").is_none(), "{t}");
     let cases = t["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 6);
     assert!(cases.iter().all(|x| x["call"].is_string() && x.get("expect").is_some()), "{t}");

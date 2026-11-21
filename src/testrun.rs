@@ -20,7 +20,7 @@ use datumesh_engine::{Budget, EvalError, Inputs, Runtime};
 use datumesh_formula::coverage::{self, BranchKind, Coverage, EvalObserver};
 use datumesh_formula::eval::{self, Args, Binding, CellKey, Outcome, PatternArg, SliceKey, Stop, Version, World};
 use datumesh_formula::{check_descriptor, Code, Compiled, Env, Function};
-use datumesh_store::{FunctionTest, Store};
+use datumesh_store::{FunctionTest, Store, TestSummary};
 
 use crate::call::{self, Bindings, Bound};
 use datumesh_core::ErrorCode;
@@ -715,7 +715,8 @@ pub fn result_of(spec: &TestSpec, ran: &Ran) -> (&'static str, String) {
     }
 }
 
-/// The held tests of `hash`, parsed (rows whose JCS does not parse are skipped).
+/// The held tests of `hash`, parsed (rows whose JCS does not parse are skipped). Reads every row of the
+/// hash: a publish reads it, a page does not (see [`summary_of`] and [`rows_page`]).
 pub fn held_tests<S: Store + ?Sized>(store: &S, hash: &str) -> Result<Vec<(FunctionTest, TestSpec)>, String> {
     let mut out = Vec::new();
     for row in store.function_tests(hash).map_err(|e| e.to_string())? {
@@ -731,27 +732,179 @@ pub fn held_tests<S: Store + ?Sized>(store: &S, hash: &str) -> Result<Vec<(Funct
 /// `function_tests` (QUESTIONS-build2 D23): a function's own tests are the held tests whose call
 /// names it. The call is read with the call parser; a call that does not resolve (its name since
 /// unbound) is read as the text before its first `(`.
-fn call_function<S: Store + ?Sized>(store: &S, now: &str, spec: &TestSpec) -> String {
+pub(crate) fn call_function<S: Store + ?Sized>(store: &S, now: &str, spec: &TestSpec) -> String {
+    resolve_call_of(store, now, spec).map_or_else(|| text_name(&spec.call), |(name, _)| name)
+}
+
+/// The text before the first `(` of a call: the name a call that does not resolve is read as.
+fn text_name(call: &str) -> String {
+    call.split('(').next().unwrap_or("").trim().to_string()
+}
+
+/// The function a test's call names and the id of the cell it reads, as the store reads them now.
+/// `None` when the call does not resolve.
+fn resolve_call_of<S: Store + ?Sized>(store: &S, now: &str, spec: &TestSpec) -> Option<(String, String)> {
     let overlay = Overlay::default();
     let names = Names { store, overlay: &overlay };
     let asof = spec.asof.clone().unwrap_or_else(|| now.to_string());
-    match call::resolve_call(&spec.call, &asof, &BTreeMap::new(), &names, false) {
-        Ok(t) => format!("{}/{}", t.cell.ns, t.cell.fn_name),
-        Err(_) => spec.call.split('(').next().unwrap_or("").trim().to_string(),
-    }
+    let t = call::resolve_call(&spec.call, &asof, &BTreeMap::new(), &names, false).ok()?;
+    Some((format!("{}/{}", t.cell.ns, t.cell.fn_name), t.cell.id()))
 }
 
-/// The held tests of the function `name`, bound to `hash`: [`held_tests`] whose call names `name`.
-/// Foreign `test_case` cells stay per hash (spec 7.3 gives them no function name).
-pub fn held_tests_of<S: Store + ?Sized>(
+/// The held tests of the function `name` (bound to `hash`), parsed, each with the id of the cell its call
+/// reads (empty when the call does not resolve). Publish-time reads: every row of the hash is looked at.
+pub(crate) fn held_of_name<S: Store + ?Sized>(
     store: &S,
     hash: &str,
     name: &str,
     now: &str,
+) -> Result<Vec<(FunctionTest, TestSpec, String)>, String> {
+    let mut out = Vec::new();
+    for (row, spec) in held_tests(store, hash)? {
+        let (fname, cell) =
+            resolve_call_of(store, now, &spec).unwrap_or_else(|| (text_name(&spec.call), String::new()));
+        if fname == name {
+            out.push((row, spec, cell));
+        }
+    }
+    Ok(out)
+}
+
+/// Adds one row to a summary.
+fn accumulate(s: &mut TestSummary, row: &FunctionTest) {
+    s.count += 1;
+    match row.last_result.as_deref() {
+        Some("pass") => s.pass += 1,
+        Some("fail") => s.fail += 1,
+        Some("error") => s.error += 1,
+        _ => s.not_run += 1,
+    }
+    if let Some(at) = &row.last_run_at {
+        if s.last_run_at.as_ref().is_none_or(|latest| at > latest) {
+            s.last_run_at = Some(at.clone());
+        }
+    }
+    s.branches_total = s.branches_total.max(row.branches_total);
+    s.branches_covered = s.branches_covered.max(row.branches_covered);
+}
+
+/// Every row of `hash` that belongs to the function `name`, in case order, handed to `f` until it
+/// returns `false`. Whether a page reads the tests by the name their rows carry (`unnamed` false, one
+/// indexed page at a time) or by the call of each row (`unnamed` true) depends on whether the hash still has
+/// rows no one has named: the naming thread of the mesh names the old rows once, and until a hash's rows are
+/// named its pages read this way (a transitional cost, on the pages of that hash only).
+fn scan_rows<S: Store + ?Sized>(
+    store: &S,
+    hash: &str,
+    name: &str,
+    unnamed: bool,
+    now: &str,
+    mut f: impl FnMut(&FunctionTest, Option<&TestSpec>) -> bool,
+) -> Result<(), String> {
+    const PAGE: usize = 1_000;
+    let by = if unnamed { None } else { Some(name) };
+    let mut after: Option<String> = None;
+    loop {
+        let page = store.function_tests_page(hash, by, after.as_deref(), PAGE).map_err(|e| e.to_string())?;
+        let Some(last) = page.last() else { return Ok(()) };
+        after = Some(last.case.clone());
+        for row in &page {
+            let spec = json::parse(&row.test_json).ok().and_then(|v| parse_test(&v).ok());
+            if unnamed {
+                let Some(spec) = spec.as_ref() else { continue };
+                if call_function(store, now, spec) != name {
+                    continue;
+                }
+            }
+            if !f(row, spec.as_ref()) {
+                return Ok(());
+            }
+        }
+        if page.len() < PAGE {
+            return Ok(());
+        }
+    }
+}
+
+/// The most rows named in one batch by [`name_old_tests`].
+const NAME_BATCH: usize = 1_000;
+
+/// Names the stored tests written before 0.4.9 (CONTRACT-0.4.9 H1): the rows with no name, in batches
+/// of [`NAME_BATCH`] (S1), each named by the function its call names. A hash with rows still unnamed is in
+/// `inner.unnamed` while the pass runs, so its pages read its tests by call meanwhile; the pass ends by clearing
+/// the set. Runs once, on the naming thread of the mesh; the rows written from now on are named when written.
+pub(crate) fn name_old_tests(inner: &crate::mesh::Inner) {
+    let store: &dyn Store = &*inner.store;
+    loop {
+        let batch = match store.unnamed_function_tests(NAME_BATCH) {
+            Ok(b) if !b.is_empty() => b,
+            Ok(_) => break,
+            Err(e) => {
+                tracing::warn!(error = %e, "the tests could not be read to name them; they stay unnamed");
+                return;
+            }
+        };
+        let now = inner.now();
+        {
+            let mut unnamed = inner.unnamed.lock().unwrap_or_else(|p| p.into_inner());
+            unnamed.extend(batch.iter().map(|row| row.fn_hash.clone()));
+        }
+        let mut by_hash: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for row in batch {
+            let name = match json::parse(&row.test_json).ok().and_then(|v| parse_test(&v).ok()) {
+                Some(spec) => call_function(store, &now, &spec),
+                // A row whose test does not parse names nothing: it is named as no function, once.
+                None => String::new(),
+            };
+            by_hash.entry(row.fn_hash).or_default().push((row.case, name));
+        }
+        for (hash, names) in by_hash {
+            if let Err(e) = store.name_function_tests(&hash, &names) {
+                tracing::warn!(error = %e, "the tests could not be named; they stay unnamed");
+                return;
+            }
+        }
+    }
+    inner.unnamed.lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+
+/// The summary of the tests of the function `name` (bound to `hash`), from the store's aggregate.
+pub(crate) fn summary_of<S: Store + ?Sized>(
+    store: &S,
+    hash: &str,
+    name: &str,
+    unnamed: bool,
+    now: &str,
+) -> Result<TestSummary, String> {
+    if !unnamed {
+        return store.function_test_summary(hash, Some(name)).map_err(|e| e.to_string());
+    }
+    let mut s = TestSummary::default();
+    scan_rows(store, hash, name, true, now, |row, _| {
+        accumulate(&mut s, row);
+        true
+    })?;
+    Ok(s)
+}
+
+/// The first `limit` tests of the function `name` after `after` (by case), each with its parsed spec.
+/// Rows whose JCS does not parse are skipped.
+pub(crate) fn rows_page<S: Store + ?Sized>(
+    store: &S,
+    hash: &str,
+    name: &str,
+    unnamed: bool,
+    now: &str,
+    limit: usize,
 ) -> Result<Vec<(FunctionTest, TestSpec)>, String> {
-    let mut held = held_tests(store, hash)?;
-    held.retain(|(_, spec)| call_function(store, now, spec) == name);
-    Ok(held)
+    let mut out = Vec::new();
+    scan_rows(store, hash, name, unnamed, now, |row, spec| {
+        if let Some(spec) = spec {
+            out.push((row.clone(), spec.clone()));
+        }
+        out.len() < limit
+    })?;
+    Ok(out)
 }
 
 /// A store write a test run makes: the row (inserted, or its result updated) and the branch counts
@@ -766,45 +919,57 @@ pub struct RowWrite {
     pub detail: String,
     pub branches_total: u32,
     pub branches_covered: u32,
+    /// The function the test's call names (the store's name of the row, set when the row is written).
+    pub fn_name: String,
 }
 
 /// The writes that bring the store's rows to `rows`: an insert for a new row, a record for a row
-/// whose result changed, and the branch counts when they changed. Returns how many rows changed.
+/// whose result changed, and the branch counts when they changed, and the name of each row (set once).
+/// The rows of a hash are read once. Returns how many rows changed.
 pub fn apply_rows<S: Store + ?Sized>(store: &S, rows: &[RowWrite], run_at: &str) -> Result<usize, String> {
     let mut changed = 0;
-    let mut branches: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    let mut by_hash: BTreeMap<&str, Vec<&RowWrite>> = BTreeMap::new();
     for r in rows {
-        let held = store.function_tests(&r.fn_hash).map_err(|e| e.to_string())?;
-        match held.iter().find(|h| h.case == r.case) {
-            None => {
-                let mut t = FunctionTest::new(&r.fn_hash, &r.case, &r.jcs, &r.signed_by);
-                t.last_run_at = Some(run_at.to_string());
-                t.last_result = Some(r.result.to_string());
-                t.last_detail = Some(r.detail.clone()).filter(|d| !d.is_empty());
-                t.branches_total = r.branches_total;
-                t.branches_covered = r.branches_covered;
-                store.put_function_test(&t).map_err(|e| e.to_string())?;
-                changed += 1;
-            }
-            Some(h) => {
-                let detail = Some(r.detail.clone()).filter(|d| !d.is_empty());
-                if h.last_result.as_deref() != Some(r.result) || h.last_detail != detail {
-                    store
-                        .record_function_test(&r.fn_hash, &r.case, run_at, r.result, &r.detail)
-                        .map_err(|e| e.to_string())?;
+        by_hash.entry(r.fn_hash.as_str()).or_default().push(r);
+    }
+    for (hash, rs) in by_hash {
+        let mut held: BTreeMap<String, FunctionTest> =
+            store.function_tests(hash).map_err(|e| e.to_string())?.into_iter().map(|t| (t.case.clone(), t)).collect();
+        let before_branches = held.values().next().map(|h| (h.branches_total, h.branches_covered));
+        let mut names: Vec<(String, String)> = Vec::new();
+        for r in &rs {
+            let detail = Some(r.detail.clone()).filter(|d| !d.is_empty());
+            match held.get(&r.case) {
+                None => {
+                    let mut t = FunctionTest::new(hash, &r.case, &r.jcs, &r.signed_by);
+                    t.last_run_at = Some(run_at.to_string());
+                    t.last_result = Some(r.result.to_string());
+                    t.last_detail = detail;
+                    t.branches_total = r.branches_total;
+                    t.branches_covered = r.branches_covered;
+                    store.put_function_test(&t).map_err(|e| e.to_string())?;
+                    held.insert(r.case.clone(), t);
                     changed += 1;
                 }
+                Some(h) => {
+                    if h.last_result.as_deref() != Some(r.result) || h.last_detail != detail {
+                        store
+                            .record_function_test(hash, &r.case, run_at, r.result, &r.detail)
+                            .map_err(|e| e.to_string())?;
+                        changed += 1;
+                    }
+                }
+            }
+            names.push((r.case.clone(), r.fn_name.clone()));
+        }
+        if let Some(last) = rs.last() {
+            let target = (last.branches_total, last.branches_covered);
+            if before_branches.is_some_and(|b| b != target) {
+                store.set_function_branches(hash, target.0, target.1).map_err(|e| e.to_string())?;
+                changed += 1;
             }
         }
-        branches.insert(r.fn_hash.clone(), (r.branches_total, r.branches_covered));
-    }
-    for (hash, (total, covered)) in branches {
-        let held = store.function_tests(&hash).map_err(|e| e.to_string())?;
-        let differs = held.first().is_some_and(|h| h.branches_total != total || h.branches_covered != covered);
-        if differs {
-            store.set_function_branches(&hash, total, covered).map_err(|e| e.to_string())?;
-            changed += 1;
-        }
+        store.name_function_tests(hash, &names).map_err(|e| e.to_string())?;
     }
     Ok(changed)
 }
@@ -827,16 +992,16 @@ pub fn rerun_readers<S: Store + ?Sized>(store: &S, names: &[String], run_at: &st
             todo.extend(store.bound_names(&hash).map_err(|e| e.to_string())?);
             let all = held_tests(store, &hash)?;
             let Some((_, first)) = all.first() else { continue };
-            let fname = first.function.clone();
-            let held = held_tests_of(store, &hash, &fname, run_at)?;
+            let fname = call_function(store, run_at, first);
             if store.resolve_name(&fname, run_at).map_err(|e| e.to_string())?.as_deref() != Some(hash.as_str()) {
                 continue;
             }
+            let held = held_of_name(store, &hash, &fname, run_at)?;
             let mut run = Run::new(store, &overlay, run_at);
             let Ok(b) = run.built(&fname, &hash) else { continue };
             let Some(c) = &b.compiled else { continue };
             let ran: Vec<(TestSpec, Ran)> =
-                held.iter().map(|(_, s)| (s.clone(), run_test(store, &overlay, run_at, s))).collect();
+                held.iter().map(|(_, s, _)| (s.clone(), run_test(store, &overlay, run_at, s))).collect();
             let runs: Vec<&Ran> = ran.iter().map(|(_, r)| r).collect();
             let cov = coverage_of(c, &b.function.signature, &runs);
             let rows: Vec<RowWrite> = ran
@@ -852,6 +1017,7 @@ pub fn rerun_readers<S: Store + ?Sized>(store: &S, names: &[String], run_at: &st
                         detail,
                         branches_total: cov.branches,
                         branches_covered: cov.covered,
+                        fn_name: fname.clone(),
                     }
                 })
                 .collect();
@@ -861,26 +1027,30 @@ pub fn rerun_readers<S: Store + ?Sized>(store: &S, names: &[String], run_at: &st
     Ok(reached)
 }
 
-/// Reruns the tests of each stored function bound to one of `names` as of `run_at` (CONTRACT-build2-part5
-/// F2): a stored function's test reads the cell its call names, so a new version of such a cell, or a
-/// rebind of its name, changes the result. The results are recorded and nothing is refused. A
-/// computed function is not rerun here (its tests are unchanged). Returns the rows changed.
+/// Reruns the stored functions' tests that read what a file or bundle wrote (CONTRACT-build2-part5 F2,
+/// CONTRACT-0.4.9 H6). `rebound` are the names it rebinds: every test of such a name is rerun. `written`
+/// are the (function name, cell id) of the cells it wrote: only the tests whose call reads one of those
+/// cells are rerun, the others keep their results and their `last_run_at`. A computed function is not
+/// rerun here (its tests are unchanged). Nothing is refused: a failure is recorded. Returns the rows changed.
 pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
     store: &S,
-    names: &BTreeSet<String>,
+    rebound: &BTreeSet<String>,
+    written: &[(String, String)],
     run_at: &str,
 ) -> Result<usize, String> {
     let overlay = Overlay::default();
-    // Per (hash, name): functions with one signature share a hash but not their tests (D23).
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut names: BTreeSet<String> = rebound.clone();
+    names.extend(written.iter().map(|(n, _)| n.clone()));
     let mut changed = 0;
-    for name in names {
+    for name in &names {
         let Some(hash) = store.resolve_name(name, run_at).map_err(|e| e.to_string())? else { continue };
-        if !seen.insert((hash.clone(), name.clone())) {
-            continue;
-        }
-        let held = held_tests_of(store, &hash, name, run_at)?;
-        if held.is_empty() {
+        let all_of_name = rebound.contains(name);
+        let cells: BTreeSet<&str> = written.iter().filter(|(n, _)| n == name).map(|(_, id)| id.as_str()).collect();
+        let selected: Vec<(FunctionTest, TestSpec, String)> = held_of_name(store, &hash, name, run_at)?
+            .into_iter()
+            .filter(|(_, _, cell)| all_of_name || cells.contains(cell.as_str()))
+            .collect();
+        if selected.is_empty() {
             continue;
         }
         let mut run = Run::new(store, &overlay, run_at);
@@ -888,9 +1058,9 @@ pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
         if b.compiled.is_some() {
             continue;
         }
-        let rows: Vec<RowWrite> = held
+        let rows: Vec<RowWrite> = selected
             .iter()
-            .map(|(_, s)| {
+            .map(|(_, s, _)| {
                 let (result, detail) = result_of(s, &run_test(store, &overlay, run_at, s));
                 RowWrite {
                     fn_hash: hash.clone(),
@@ -901,6 +1071,7 @@ pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
                     detail,
                     branches_total: 0,
                     branches_covered: 0,
+                    fn_name: name.clone(),
                 }
             })
             .collect();
@@ -909,22 +1080,20 @@ pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
     Ok(changed)
 }
 
-/// The counts of the held tests of the function `name` (hash `hash`), for `describe`: `(count, branches, covered,
-/// counterexamples)`. A counterexample is an open one ([`counterexamples`]): a failing or erroring
-/// test of this mesh, or a `false` test cell of any host for the function's hash (spec 7.3, 16.8).
+/// The counts of the tests of the function `name` (hash `hash`), for `describe` and the function page, from
+/// the store's aggregate: `(count, branches, covered, counterexamples)`. A counterexample is an open one
+/// ([`open_counterexamples`]): a failing or erroring test of this mesh, or a `false` test cell of any host for
+/// the function's hash (spec 7.3, 16.8). Runs nothing.
 pub fn counts<S: Store + ?Sized>(
     store: &S,
-    host: &str,
     name: &str,
     hash: &str,
+    unnamed: bool,
     now: &str,
 ) -> Result<(u64, u64, u64, u64), String> {
-    let rows = held_tests_of(store, hash, name, now)?;
-    let count = rows.len() as u64;
-    let (branches, covered) =
-        rows.first().map_or((0, 0), |(r, _)| (r.branches_total as u64, r.branches_covered as u64));
-    let counterexamples = counterexamples(store, host, name, hash, now)?.len() as u64;
-    Ok((count, branches, covered, counterexamples))
+    let s = summary_of(store, hash, name, unnamed, now)?;
+    let foreign = foreign_counterexamples(store, hash, now)?.len() as u64;
+    Ok((s.count, s.branches_total as u64, s.branches_covered as u64, s.fail + s.error + foreign))
 }
 
 /// An open counterexample of a function (spec 7.3): who says the function gives a wrong result,
@@ -938,31 +1107,47 @@ pub struct Counterexample {
 }
 
 /// The open counterexamples of the function `hash` as of `now`: this mesh's own failing or
-/// erroring held tests (signed by `host`), and the `false` `<host>/test_case` cells of every host
-/// this mesh holds for `hash`, the latest version of each cell (`asof` `now`), each cell once.
+/// erroring tests of `name` (signed by `host`), and the `false` `<host>/test_case` cells of every host
+/// this mesh holds for `hash`, the latest version of each cell (`asof` `now`), each cell once. The own ones
+/// are read only when the aggregate says there are some.
 ///
 /// The cells are read as the store reads a slice (5.6): for each held namespace `N`, the binding of
 /// `N/test_case` now, and the slice of its cells whose `function_hash` argument is `hash` and whose
 /// `case` is open. The store's typed-argument index (`cell_args`, on fn_hash, name, type, value)
 /// serves the `function_hash` argument, so no cell of another function is read. Computed test cells
 /// are not counted: a test cell this mesh computes is a test of its own, already counted as one.
-pub fn counterexamples<S: Store + ?Sized>(
+pub fn open_counterexamples<S: Store + ?Sized>(
     store: &S,
     host: &str,
     name: &str,
     hash: &str,
+    unnamed: bool,
     now: &str,
 ) -> Result<Vec<Counterexample>, String> {
-    // This mesh's own failing tests are those of the function `name` (D23: functions with one
-    // signature share a hash). The `test_case` cells below stay per hash: spec 7.3 gives a cell the
-    // function hash and the case only, so for stored functions of one signature a foreign
-    // counterexample applies to each of them; a later spec round may add the name (D23).
-    let mut out: Vec<Counterexample> = held_tests_of(store, hash, name, now)?
-        .into_iter()
-        .map(|(r, _)| r)
-        .filter(|r| matches!(r.last_result.as_deref(), Some("fail") | Some("error")))
-        .map(|r| Counterexample { signer: host.to_string(), case: r.case })
-        .collect();
+    let mut out: Vec<Counterexample> = Vec::new();
+    let s = summary_of(store, hash, name, unnamed, now)?;
+    if s.fail + s.error > 0 {
+        scan_rows(store, hash, name, unnamed, now, |row, _| {
+            if matches!(row.last_result.as_deref(), Some("fail") | Some("error")) {
+                out.push(Counterexample { signer: host.to_string(), case: row.case.clone() });
+            }
+            true
+        })?;
+    }
+    out.extend(foreign_counterexamples(store, hash, now)?);
+    Ok(out)
+}
+
+/// The `false` `<host>/test_case` cells of every host this mesh holds for `hash`, as of `now` (see
+/// [`open_counterexamples`]).
+pub(crate) fn foreign_counterexamples<S: Store + ?Sized>(
+    store: &S,
+    hash: &str,
+    now: &str,
+) -> Result<Vec<Counterexample>, String> {
+    let mut out = Vec::new();
+    // Spec 7.3 gives a cell the function hash and the case only, so for stored functions of one signature a
+    // foreign counterexample applies to each of them; a later spec round may add the name (D23).
     let subject = Scalar::from_lexical(Type::String, hash).map_err(|e| e.to_string())?;
     for ns in store.namespaces().map_err(|e| e.to_string())? {
         let name = format!("{}/{TEST_CASE_NAME}", ns.host);

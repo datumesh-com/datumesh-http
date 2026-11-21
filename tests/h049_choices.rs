@@ -7,7 +7,7 @@
 //!   - H2 takeover page: `DATUMESH_SERIES_FIRST_BUILD_DELAY_SECS` (the series thread builds it);
 //!   - H3 object-id describe: `DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`;
 //!   - H4 `/find?summary=1` and the empty query: `DATUMESH_FIND_FIRST_BUILD_DELAY_SECS`.
-//!   A cold answer is `503`, `Retry-After` in 1..=300 whole seconds, `Cache-Control: no-store`.
+//!     A cold answer is `503`, `Retry-After` in 1..=300 whole seconds, `Cache-Control: no-store`.
 //! * H1 JSON: `tests.last_run` is exactly `{result, at, pass, fail, error, not_run}`; `result` is `error`,
 //!   `fail`, `not run` or `pass`; `at` is null (or absent) when nothing ever ran; `describe`'s `tests` keeps
 //!   exactly `{count, branches, covered, counterexamples}`. `counterexamples` = stored fail + error rows of the

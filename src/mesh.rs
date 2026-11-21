@@ -174,7 +174,10 @@ impl MeshBuilder {
             reindex: Mutex::new(()),
             publish_limits: Mutex::new(crate::bundles::Limits::default()),
             relays: Mutex::new(HashMap::new()),
-            name_cells: Mutex::new(HashMap::new()),
+            takeover: Mutex::new(None),
+            find: Mutex::new(None),
+            value_counts_at: Mutex::new(None),
+            unnamed: Mutex::new(HashSet::new()),
             series: Mutex::new(crate::series::Memo::default()),
             challenges: Mutex::new(crate::keynames::Challenges::default()),
             keys_lock: Mutex::new(()),
@@ -207,6 +210,86 @@ impl MeshBuilder {
             let inner = mesh.inner.clone();
             let _ = s.spawn(move || crate::find::sync_operator_catalog(&inner)).join();
         });
+        // The object index (describe of an object id, CONTRACT-0.4.9 H3): on a thread of its own, after its first
+        // delay, then when it is due (dirty, or older than 30 s). Requests read the last build.
+        let weak = Arc::downgrade(&mesh.inner);
+        let delay = mesh.inner.config.index_first_build_delay;
+        if delay.is_zero() {
+            on_scoped_thread(&mesh.inner, Inner::refresh_index);
+        }
+        let spawned = std::thread::Builder::new().name("datumesh-object-index".into()).spawn(move || {
+            let started = Instant::now();
+            loop {
+                let Some(inner) = weak.upgrade() else { break };
+                if started.elapsed() >= delay {
+                    inner.refresh_index();
+                }
+                drop(inner);
+                std::thread::sleep(crate::describe::INDEX_TICK);
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the object index thread is not started; describe of an object id answers 503");
+        }
+        // The takeover lists (CONTRACT-0.4.9 H2): built after the series' first delay, then every series refresh
+        // interval (the series' knobs, as the takeover lists are read with the series overview).
+        let weak = Arc::downgrade(&mesh.inner);
+        let (delay, refresh) = (mesh.inner.config.series_first_build_delay, mesh.inner.config.series_refresh);
+        let mut last: Option<Instant> = None;
+        if delay.is_zero() {
+            on_scoped_thread(&mesh.inner, crate::takeover::refresh);
+            last = Some(Instant::now());
+        }
+        let spawned = std::thread::Builder::new().name("datumesh-takeover".into()).spawn(move || {
+            let started = Instant::now();
+            loop {
+                let Some(inner) = weak.upgrade() else { break };
+                if started.elapsed() >= delay && last.is_none_or(|t| t.elapsed() >= refresh) {
+                    crate::takeover::refresh(&inner);
+                    last = Some(Instant::now());
+                }
+                drop(inner);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the takeover thread is not started; the takeover pages answer 503");
+        }
+        // The find answers (CONTRACT-0.4.9 H4): the summary and the empty query's listing, built after the first
+        // delay, then every 300 s. Requests read the last build.
+        let weak = Arc::downgrade(&mesh.inner);
+        let delay = mesh.inner.config.find_first_build_delay;
+        let mut last: Option<Instant> = None;
+        if delay.is_zero() {
+            on_scoped_thread(&mesh.inner, crate::find::refresh);
+            last = Some(Instant::now());
+        }
+        let spawned = std::thread::Builder::new().name("datumesh-find".into()).spawn(move || {
+            let started = Instant::now();
+            loop {
+                let Some(inner) = weak.upgrade() else { break };
+                if started.elapsed() >= delay && last.is_none_or(|t| t.elapsed() >= FIND_REFRESH) {
+                    crate::find::refresh(&inner);
+                    last = Some(Instant::now());
+                }
+                drop(inner);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the find thread is not started; the summary and the empty query answer 503");
+        }
+        // The names of the stored tests written before 0.4.9 (CONTRACT-0.4.9 H1): once, in batches, on a thread of
+        // its own; the rows written from now on are named when they are written.
+        let weak = Arc::downgrade(&mesh.inner);
+        let spawned = std::thread::Builder::new().name("datumesh-test-names".into()).spawn(move || {
+            if let Some(inner) = weak.upgrade() {
+                crate::testrun::name_old_tests(&inner);
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the test naming thread is not started; old tests stay unnamed");
+        }
         let weak = Arc::downgrade(&mesh.inner);
         let spawned = std::thread::Builder::new().name("datumesh-index".into()).spawn(move || loop {
             let Some(inner) = weak.upgrade() else { break };
@@ -245,6 +328,18 @@ impl MeshBuilder {
         Ok(mesh)
     }
 }
+
+/// Runs `f` on a thread of its own and waits for it: the first build of a background answer at start, when no
+/// delay is set (the store's client is synchronous, so it does not run on the caller's thread).
+fn on_scoped_thread(inner: &Arc<Inner>, f: fn(&Inner)) {
+    std::thread::scope(|s| {
+        let inner = inner.clone();
+        let _ = s.spawn(move || f(&inner)).join();
+    });
+}
+
+/// How often the find thread builds its answers again (CONTRACT-0.4.9 H4).
+const FIND_REFRESH: Duration = Duration::from_secs(300);
 
 /// The last `ok` receipt served for a cell, for `stale` answers.
 struct LastGood {
@@ -296,8 +391,15 @@ pub(crate) struct Inner {
     pub(crate) publish_limits: Mutex<crate::bundles::Limits>,
     /// Where a relayed function's source was read, by function name and hash (Build 2 Part 5, F5).
     pub(crate) relays: Mutex<HashMap<String, (Instant, Option<crate::fnpage::Relay>)>>,
-    /// The cells of a function by name, where its hash is shared (http 0.4.6, D23): name and hash to (when, count).
-    pub(crate) name_cells: Mutex<HashMap<String, (Instant, u64)>>,
+    /// The last build of the takeover thread: the relayed functions of each source domain (CONTRACT-0.4.9 H2).
+    pub(crate) takeover: Mutex<Option<Arc<crate::takeover::Lists>>>,
+    /// The last build of the find thread: the catalogue summary and the empty query's listing (CONTRACT-0.4.9 H4).
+    pub(crate) find: Mutex<Option<Arc<crate::find::Built>>>,
+    /// When the value counts of the catalogue were last refreshed (H4: once per `DATUMESH_VALUE_COUNTS_SECS`).
+    pub(crate) value_counts_at: Mutex<Option<Instant>>,
+    /// The hashes whose stored tests are not all named yet (the naming thread, CONTRACT-0.4.9 H1): their pages read
+    /// their tests by call, not by name, until it is done.
+    pub(crate) unnamed: Mutex<HashSet<String>>,
     /// The overviews and dictionary orders of the series pages (Build 2 Part 6, G5).
     pub(crate) series: Mutex<crate::series::Memo>,
     /// The challenges of `POST /x/keys` issued and not yet used (QUESTIONS-build2 D39).
@@ -669,6 +771,11 @@ impl Inner {
         self.clock.now()
     }
 
+    /// Whether the stored tests of `fn_hash` are not all named yet (see [`Inner::unnamed`]).
+    pub(crate) fn is_unnamed(&self, fn_hash: &str) -> bool {
+        self.unnamed.lock().unwrap_or_else(|p| p.into_inner()).contains(fn_hash)
+    }
+
     /// A descriptor by hash (cached: content-addressed).
     pub(crate) fn descriptor(&self, fn_hash: &str) -> Result<Arc<FunctionDescriptor>, ErrorCode> {
         if let Some(d) = self.descriptors.lock().unwrap_or_else(|p| p.into_inner()).get(fn_hash) {
@@ -729,6 +836,7 @@ impl Inner {
         self.latest.forget(cell_id);
         self.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.known.lock().unwrap_or_else(|p| p.into_inner()).announce(cell_id);
+        self.index_stored_now(cell_id);
     }
 
     /// The receipt's hash, asof, trust and `ok` envelope (cached by its bytes).
@@ -904,6 +1012,7 @@ impl Inner {
             // A formula cell answered: the describe index learns of it (CONTRACT-1.8b H4).
             if !stored && matches!(r, Ok(Answer::Receipt(_))) {
                 self.known.lock().unwrap_or_else(|p| p.into_inner()).note_computed(&target.cell);
+                self.index_cell_now(&target.cell);
             }
             return match r {
                 Ok(Answer::Receipt(bytes)) => {

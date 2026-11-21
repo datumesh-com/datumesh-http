@@ -49,6 +49,8 @@ pub enum BundleError {
     Store(String),
     /// A test hook (`import_signed_with`'s `stop_after`): stopped after this many writes.
     Stopped(usize),
+    /// A name under a path the mesh reserves (`E_NAME_RESERVED`, CONTRACT-0.4.9 H8); the text starts with the code.
+    Reserved(String),
     /// The public rule (Build 2 Part 3, D8): a computed function of the bundle is not covered by its
     /// tests (`E_TESTS_MISSING`), or one of its tests fails (`E_TESTS_FAILING`). The text starts with
     /// the code and lists them.
@@ -60,6 +62,7 @@ impl std::fmt::Display for BundleError {
         match self {
             BundleError::Format(s) => write!(f, "bundle format: {s}"),
             BundleError::NotOwned(s) => write!(f, "not owned: {s}"),
+            BundleError::Reserved(s) => f.write_str(s),
             BundleError::Manifest(s) => write!(f, "manifest: {s}"),
             BundleError::Descriptor(s) => write!(f, "descriptor: {s}"),
             BundleError::Receipt(s) => write!(f, "receipt: {s}"),
@@ -482,6 +485,13 @@ fn import_with<S: Store + ?Sized>(
     if let Some((d, _)) = catalog_entries.iter().find(|(d, _)| !d.name.starts_with(&format!("{namespace}/"))) {
         return Err(BundleError::NotOwned(format!("catalog: {} is not under {namespace}/", d.name)));
     }
+    // The reserved paths (H8). The mesh's own import (no key document fetched for the request) takes no key
+    // namespace's name; `POST /bundles` checks its own signer before it gets here.
+    if keydoc.is_none() {
+        for n in names.iter().map(|(n, _)| n).chain(catalog_entries.iter().map(|(d, _)| &d.name)) {
+            crate::reserved::check(host, n, None).map_err(BundleError::Reserved)?;
+        }
+    }
 
     // 3. Manifest: the key of the namespace's host, valid now, signing the bundle's names and receipts.
     let keydoc_fetched = keydoc;
@@ -684,13 +694,14 @@ fn import_with<S: Store + ?Sized>(
     let rebound: Vec<String> = binds.iter().map(|(n, _)| (*n).clone()).collect();
     crate::testrun::rerun_readers(store, &rebound, &now).map_err(BundleError::Store)?;
     // The stored functions' tests read the cells this bundle writes, and the names it rebinds (F2).
-    let touched: BTreeSet<String> =
-        rebound.into_iter().chain(receipts.iter().map(|(_, r)| r.cell().function_name())).collect();
-    crate::testrun::rerun_stored_tests(store, &touched, &now).map_err(BundleError::Store)?;
+    let rebound: BTreeSet<String> = rebound.into_iter().collect();
+    let written_cells: Vec<(String, String)> =
+        receipts.iter().map(|(_, r)| (r.cell().function_name(), r.cell().id())).collect();
+    crate::testrun::rerun_stored_tests(store, &rebound, &written_cells, &now).map_err(BundleError::Store)?;
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));
-        crate::catalog::store_publisher(store, &entry, &d.dictionary).map_err(BundleError::Store)?;
+        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys).map_err(BundleError::Store)?;
     }
     let mut cell_values = BTreeSet::new();
     for (_, r) in &receipts {

@@ -14,14 +14,14 @@
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Arg, Cell, FunctionDescriptor, Receipt, Slice};
+use datumesh_core::{FunctionDescriptor, Receipt};
 use datumesh_store::Store;
 
 use crate::envelope::{self, Cache, Reply};
 use crate::mesh::Inner;
-use crate::testrun::{self, Case, Expect, Overlay, Ran, Run, TestSpec};
+use crate::testrun::{self, Expect, TestSpec};
 
-/// How many of a function's recorded cells are read for a `source`.
+/// How many of a function's recorded cells are read for a `source` (the first of them, lowest cell id first).
 const RELAY_SCAN: usize = 8;
 /// How long a function's source is remembered.
 const RELAY_TTL: Duration = Duration::from_secs(300);
@@ -39,16 +39,18 @@ pub(crate) fn page_url(inner: &Inner, name: &str) -> String {
     format!("{}/fn/{name}", inner.config.origin())
 }
 
-/// The relay of a function (the first `source` among its first recorded cells), cached.
-pub(crate) fn relay_of(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDescriptor, now: &str) -> Option<Relay> {
+/// The relay of a function (the first `source` among its first recorded cells), cached. A source found is kept
+/// for the life of the process (a function's source does not change for a hash); a function with none is
+/// looked at again after [`RELAY_TTL`].
+pub(crate) fn relay_of(inner: &Inner, name: &str, fn_hash: &str) -> Option<Relay> {
     // Keyed by name and hash: two functions of one descriptor are two functions with their own cells.
     let key = format!("{name}\n{fn_hash}");
     if let Some((at, r)) = inner.relays.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-        if at.elapsed() < RELAY_TTL {
+        if r.is_some() || at.elapsed() < RELAY_TTL {
             return r.clone();
         }
     }
-    let found = read_relay(inner, name, fn_hash, d, now);
+    let found = read_relay(inner, name, fn_hash);
     let mut cache = inner.relays.lock().unwrap_or_else(|p| p.into_inner());
     if cache.len() >= 10_000 {
         cache.clear();
@@ -61,16 +63,11 @@ pub(crate) fn relay_of(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDes
 /// for now (all cells of a relay carry the source; a mixed function is not a relay the rule names). A
 /// store index of the sources per function (filled by `publish-stored`) would answer without the
 /// scan: that is the step after this one.
-fn read_relay(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDescriptor, now: &str) -> Option<Relay> {
+fn read_relay(inner: &Inner, name: &str, fn_hash: &str) -> Option<Relay> {
     let (ns, f) = name.rsplit_once('/')?;
-    let args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
-    let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: fn_hash.into(), args };
-    let slice = Slice::from_value(&cell.to_value()).ok()?;
-    let values = inner.store.slice_values(&slice, now).ok()?;
-    let hashes: Vec<String> = values.iter().take(RELAY_SCAN).map(|v| v.version.receipt_hash.clone()).collect();
-    let refs: Vec<&str> = hashes.iter().map(String::as_str).collect();
-    let receipts = inner.store.receipts_many(&refs).ok()?;
-    for bytes in receipts.into_iter().flatten() {
+    // The receipts of the first few stored cells, in one bounded read (CONTRACT-0.4.9 H2).
+    let receipts = inner.store.stored_receipts_of(ns, f, fn_hash, RELAY_SCAN).ok()?;
+    for bytes in receipts {
         let Ok(r) = Receipt::from_json(&bytes) else { continue };
         if let Some(s) = r.source() {
             return Some(Relay { name: s.name().to_string(), takeover: s.takeover().map(str::to_string) });
@@ -83,6 +80,7 @@ fn read_relay(inner: &Inner, name: &str, fn_hash: &str, d: &FunctionDescriptor, 
 pub(crate) const CASES_SHOWN: usize = 100;
 
 /// The cases a function page shows (the first [`CASES_SHOWN`]) and the total of them.
+#[cfg(test)]
 fn shown_cases(all: Vec<Value>) -> (Vec<Value>, usize) {
     let total = all.len();
     (all.into_iter().take(CASES_SHOWN).collect(), total)
@@ -127,6 +125,20 @@ fn expect_text(e: &Expect) -> String {
     match e {
         Expect::Value(v) => v.lexical().to_string(),
         Expect::Fault(code) => format!("fault {code}"),
+    }
+}
+
+/// The worst result of a function's stored tests: `error`, then `fail`, then `not run` when any test has not run
+/// (or there are none), else `pass`.
+fn worst_result(sum: &datumesh_store::TestSummary) -> &'static str {
+    if sum.error > 0 {
+        "error"
+    } else if sum.fail > 0 {
+        "fail"
+    } else if sum.not_run > 0 || sum.count == 0 {
+        "not run"
+    } else {
+        "pass"
     }
 }
 
@@ -184,32 +196,16 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
     // The body: a computed function's formula.
     let body = if d.lang == "stored" { Value::Null } else { s(&d.body) };
 
-    // The tests: counts, the derived cases, each test's call and expectation, the last run.
-    let (count, branches, covered, counterexamples) =
-        testrun::counts(store, &inner.config.host, name, &fn_hash, &now).unwrap_or((0, 0, 0, 0));
-    let open: Vec<Value> = testrun::counterexamples(store, &inner.config.host, name, &fn_hash, &now)
+    // The tests: the stored results only (CONTRACT-0.4.9 H1); a request runs nothing.
+    let unnamed = inner.is_unnamed(&fn_hash);
+    let summary = testrun::summary_of(store, &fn_hash, name, unnamed, &now).unwrap_or_default();
+    let open: Vec<Value> = testrun::open_counterexamples(store, &inner.config.host, name, &fn_hash, unnamed, &now)
         .unwrap_or_default()
         .into_iter()
         .map(|c| obj(vec![("signer", s(&c.signer)), ("case", s(&c.case))]))
         .collect();
-    let held = testrun::held_tests_of(store, &fn_hash, name, &now).unwrap_or_default();
-    let overlay = Overlay::default();
-    let ran: Vec<Ran> = held.iter().map(|(_, spec)| testrun::run_test(store, &overlay, &now, spec)).collect();
-    let refs: Vec<&Ran> = ran.iter().collect();
-    let derived: Vec<Value> = {
-        let mut run = Run::new(store, &overlay, &now);
-        match run.built(name, &fn_hash) {
-            Ok(b) => match b.compiled.as_ref() {
-                Some(c) => testrun::cases_of(c, &b.function.signature, &refs)
-                    .into_iter()
-                    .map(|(Case(case), ok)| obj(vec![("case", s(&case)), ("covered", Value::Bool(ok))]))
-                    .collect(),
-                None => Vec::new(),
-            },
-            Err(_) => Vec::new(),
-        }
-    };
-    // Each case with its last result (`pass`, `fail`, `error`; null before its first run).
+    // Each case with its last result (`pass`, `fail`, `error`; null before its first run), the first 100.
+    let held = testrun::rows_page(store, &fn_hash, name, unnamed, &now, CASES_SHOWN).unwrap_or_default();
     let cases: Vec<Value> = held
         .iter()
         .map(|(row, spec): &(_, TestSpec)| {
@@ -217,29 +213,27 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
             obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)])
         })
         .collect();
-    let (cases, cases_total) = shown_cases(cases);
-    let rows: Vec<&datumesh_store::FunctionTest> = held.iter().map(|(r, _)| r).collect();
-    let results: Vec<Option<&str>> = rows.iter().map(|r| r.last_result.as_deref()).collect();
-    // The worst result first, whatever the store's order: error, then fail (QUESTIONS-build2 D22).
-    let worst = ["error", "fail"].into_iter().find(|w| results.iter().flatten().any(|r| r == w));
-    let result = if let Some(bad) = worst.or_else(|| results.iter().flatten().copied().find(|r| *r != "pass")) {
-        bad.to_string()
-    } else if !results.is_empty() && results.iter().all(|r| r.is_some()) {
-        "pass".to_string()
-    } else {
-        "not run".to_string()
-    };
-    let at = rows.iter().filter_map(|r| r.last_run_at.clone()).max().unwrap_or_default();
+    let cases_total = summary.count;
+    let at = summary.last_run_at.as_deref().map_or(Value::Null, s);
     let tests = obj(vec![
-        ("count", num(count)),
-        ("branches", num(branches)),
-        ("covered", num(covered)),
-        ("counterexamples", num(counterexamples)),
+        ("count", num(summary.count)),
+        ("branches", num(summary.branches_total as u64)),
+        ("covered", num(summary.branches_covered as u64)),
+        ("counterexamples", num(open.len() as u64)),
         ("open_counterexamples", Value::Array(open)),
-        ("derived", Value::Array(derived)),
         ("cases", Value::Array(cases)),
-        ("cases_total", num(cases_total as u64)),
-        ("last_run", obj(vec![("result", s(&result)), ("at", s(&at))])),
+        ("cases_total", num(cases_total)),
+        (
+            "last_run",
+            obj(vec![
+                ("result", s(worst_result(&summary))),
+                ("at", at),
+                ("pass", num(summary.pass)),
+                ("fail", num(summary.fail)),
+                ("error", num(summary.error)),
+                ("not_run", num(summary.not_run)),
+            ]),
+        ),
     ]);
 
     // The lineage: inputs, dependants on this mesh, the relay's source.
@@ -258,7 +252,7 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         ("inputs", Value::Array(inputs)),
         ("dependants", Value::Array(dependants.iter().map(|n| link(n)).collect())),
     ];
-    let relay = relay_of(inner, name, &fn_hash, &d, &now);
+    let relay = relay_of(inner, name, &fn_hash);
     if let Some(r) = &relay {
         let mut src = vec![("name", s(&r.name)), ("relayed_by", s(&inner.config.host))];
         if let Some(t) = &r.takeover {
@@ -318,7 +312,8 @@ pub(crate) fn respond(inner: &Inner, name: &str, json_form: bool) -> Reply {
     if json_form {
         return Reply::json(200, d.to_jcs(), Cache::Public(inner.config.ttl.latest_max_age.as_secs()));
     }
-    let body = render(&d);
+    let unnamed = d.get("fn_hash").and_then(Value::as_str).is_some_and(|h| inner.is_unnamed(h));
+    let body = render(&d, unnamed);
     Reply {
         status: 200,
         body: body.into_bytes().into(),
@@ -362,8 +357,10 @@ fn text_of(v: &Value) -> String {
     }
 }
 
-/// The HTML page of the data `d` (no script; every publisher string escaped).
-pub(crate) fn render(d: &Value) -> String {
+/// The HTML page of the data `d` (no script; every publisher string escaped). `unnamed`: the function's hash
+/// still has tests no one has named, so its counts may include tests of other functions of the same signature
+/// (CONTRACT-0.4.9 H1).
+fn render(d: &Value, unnamed: bool) -> String {
     let name = get(d, "name").as_str().unwrap_or("");
     let label = get(d, "label").as_str().unwrap_or(name);
     let mut h = String::new();
@@ -453,18 +450,16 @@ pub(crate) fn render(d: &Value) -> String {
     ));
     let last = get(t, "last_run");
     h.push_str(&format!(
-        "<p>Last run: {} {}</p>\n",
+        "<p>Worst result: {}; last run {}.</p>\n",
         esc(get(last, "result").as_str().unwrap_or("")),
-        esc(get(last, "at").as_str().unwrap_or(""))
+        esc(get(last, "at").as_str().unwrap_or("never"))
     ));
-    h.push_str("<h3>Derived cases</h3>\n<ul>\n");
-    if let Value::Array(ds) = get(t, "derived") {
-        for c in ds {
-            let covered = if get(c, "covered").as_bool() == Some(true) { "covered" } else { "not covered" };
-            h.push_str(&format!("<li>{}: {}</li>\n", prose(get(c, "case").as_str().unwrap_or("")), covered));
-        }
+    if unnamed {
+        h.push_str(
+            "<p>The counts include tests of other functions of the same signature (their tests are being named).</p>\n",
+        );
     }
-    h.push_str("</ul>\n<h3>Counterexamples</h3>\n<ul>\n");
+    h.push_str("<h3>Counterexamples</h3>\n<ul>\n");
     if let Value::Array(open) = get(t, "open_counterexamples") {
         for c in open {
             h.push_str(&format!(

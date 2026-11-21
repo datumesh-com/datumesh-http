@@ -16,10 +16,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Arg, Cell, ClassDescriptor, FunctionDescriptor, Slice};
+use datumesh_core::{ClassDescriptor, FunctionDescriptor};
 use datumesh_store::{CatalogEntry, CatalogKind, Hit, Store};
 use unicode_normalization::UnicodeNormalization;
 
@@ -79,6 +79,11 @@ pub(crate) fn generic_words(store: &dyn Store) -> HashSet<String> {
     g
 }
 
+/// Whether the store has the dictionary value `value` of `key` of `owner` (exact, CONTRACT-0.4.9 H7).
+pub(crate) fn has_value<S: Store + ?Sized>(store: &S, owner: &str, key: &str, value: &str) -> bool {
+    store.has_key_value(owner, key, value).unwrap_or(false)
+}
+
 /// The label and aliases the store has for the dictionary value `value` of `key` of `owner`, if any.
 pub(crate) fn value_row<S: Store + ?Sized>(
     store: &S,
@@ -95,18 +100,9 @@ pub(crate) fn value_row<S: Store + ?Sized>(
     })
 }
 
-/// Whether the store has the dictionary value `value` of `key` of `owner`.
-pub(crate) fn has_value<S: Store + ?Sized>(store: &S, owner: &str, key: &str, value: &str) -> bool {
-    value_row(store, owner, key, value).is_some()
-}
-
-/// The catalogue entry of `name`, found by its name.
+/// The catalogue entry of `name`, found by its name (an exact lookup, CONTRACT-0.4.9 H4).
 pub(crate) fn entry_by_name<S: Store + ?Sized>(store: &S, name: &str) -> Option<CatalogEntry> {
-    let hits = store.text_find(&nfc(name), 1000).ok()?;
-    hits.into_iter().find_map(|h| match h {
-        Hit::Entry { entry, .. } if entry.name == name => Some(entry),
-        _ => None,
-    })
+    store.catalog_entry(name).ok().flatten()
 }
 
 /// What a query is read against: the store, the mesh's now and the generic words.
@@ -773,7 +769,6 @@ fn class_coverage(ctx: &Ctx, lk: &mut Lookup, qn: &str, toks: &[String], limit: 
 /// `source`, the domain the values come from, as a separate member (spec-0.6.1, 9.6, 16.8). The
 /// relay is the one `describe` names (the function page's), so the two agree.
 fn annotate(inner: &Inner, results: &mut [Value]) {
-    let now = inner.now();
     for r in results.iter_mut() {
         let Value::Object(members) = r else { continue };
         let text = |k: &str| members.iter().find(|(m, _)| m == k).and_then(|(_, v)| v.as_str()).map(str::to_string);
@@ -785,10 +780,7 @@ fn annotate(inner: &Inner, results: &mut [Value]) {
             continue;
         }
         let Some(fn_hash) = fn_hash else { continue };
-        let Some(d) = inner.store.descriptor(&fn_hash).and_then(|b| FunctionDescriptor::from_json(&b[..]).ok()) else {
-            continue;
-        };
-        if let Some(relay) = crate::fnpage::relay_of(inner, &name, &fn_hash, &d, &now) {
+        if let Some(relay) = crate::fnpage::relay_of(inner, &name, &fn_hash) {
             members.push(("source".into(), Value::String(relay.name)));
         }
     }
@@ -800,12 +792,12 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     let mut lk = Lookup::default();
     let qn = nfc(query.trim());
     if qn.is_empty() {
-        let mut results = listing(&ctx, &mut lk, limit);
-        annotate(inner, &mut results);
+        // The empty query is answered from the find thread's build (see `empty_answer`); this is never reached
+        // from the handler, which routes it there.
         return Value::Object(vec![
             ("query".into(), Value::String(query.into())),
             ("vector".into(), Value::Bool(false)),
-            ("results".into(), Value::Array(results)),
+            ("results".into(), Value::Array(Vec::new())),
         ]);
     }
     let toks: Vec<String> = qn.split_whitespace().map(str::to_string).collect();
@@ -928,9 +920,61 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     Value::Object(out)
 }
 
-/// `GET /find?summary=1` (R2): the catalogue as an operator's summary, for the tool descriptions.
-pub(crate) fn summary(inner: &Inner) -> Value {
+/// The answers the find thread builds (CONTRACT-0.4.9 H4): the catalogue summary of `GET /find?summary=1`, and the
+/// listing of the empty query (the first [`MAX_LIMIT`] entries). A request reads the last build.
+pub(crate) struct Built {
+    summary: Value,
+    listing: Vec<Value>,
+}
+
+/// Builds the summary and the listing now (the find thread's work; never a request's).
+pub(crate) fn build(inner: &Inner) -> Built {
     let ctx = ctx_of(inner);
+    let summary = summary_value(inner, &ctx);
+    let mut lk = Lookup::default();
+    let mut listing = listing(&ctx, &mut lk, MAX_LIMIT);
+    annotate(inner, &mut listing);
+    Built { summary, listing }
+}
+
+/// The last build of the find thread's answers, or `None` before its first build.
+fn built(inner: &Inner) -> Option<Arc<Built>> {
+    inner.find.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// `GET /find?summary=1` (R2): the catalogue as an operator's summary, for the tool descriptions. `None` before
+/// the first build (`503`).
+pub(crate) fn summary(inner: &Inner) -> Option<Value> {
+    built(inner).map(|b| b.summary.clone())
+}
+
+/// The answer to the empty query: the first `limit` of the last build's listing. `None` before the first build.
+pub(crate) fn empty_answer(inner: &Inner, limit: usize) -> Option<Value> {
+    let b = built(inner)?;
+    let results: Vec<Value> = b.listing.iter().take(limit).cloned().collect();
+    Some(Value::Object(vec![
+        ("query".into(), Value::String(String::new())),
+        ("vector".into(), Value::Bool(false)),
+        ("results".into(), Value::Array(results)),
+    ]))
+}
+
+/// Runs one build of the find answers and makes it the one requests read (the find thread), and counts the open
+/// dictionary keys for the metrics (CONTRACT-0.4.9 H7).
+pub(crate) fn refresh(inner: &Inner) {
+    let b = Arc::new(build(inner));
+    *inner.find.lock().unwrap_or_else(|p| p.into_inner()) = Some(b);
+    inner.metrics.set_open_keys(count_open_keys(inner));
+}
+
+/// The open dictionary keys the store holds (S9, `open_key_count`); 0 when the store cannot count them.
+fn count_open_keys(inner: &Inner) -> u64 {
+    let store: &dyn Store = &*inner.store;
+    store.open_key_count().unwrap_or(0)
+}
+
+/// The catalogue summary (see [`summary`]), built by [`build`].
+fn summary_value(inner: &Inner, ctx: &Ctx<'_>) -> Value {
     let mut lk = Lookup::default();
     let Ok(s) = ctx.store.catalog_summary() else {
         return Value::Object(vec![
@@ -960,7 +1004,7 @@ pub(crate) fn summary(inner: &Inner) -> Value {
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let (mut classes, mut functions) = (Vec::new(), Vec::new());
     // The store counts a function's cells by its hash; functions of one descriptor (stored functions of
-    // one signature) share it, so a hash bound to several listed names is counted again by name.
+    // one signature) share it, so a hash bound to several listed names is counted again by name (S6).
     let mut hash_of: BTreeMap<String, String> = BTreeMap::new();
     let mut named: BTreeMap<String, usize> = BTreeMap::new();
     for e in entries.iter().filter(|e| e.kind == CatalogKind::Function) {
@@ -982,7 +1026,7 @@ pub(crate) fn summary(inner: &Inner) -> Value {
         let keys = dicts.get(&e.name).cloned().unwrap_or_default();
         let cells = match hash_of.get(&e.name) {
             Some(h) if named.get(h).is_some_and(|n| *n > 1) => {
-                cells_of_name(inner, &e.name, h, &ctx.now).unwrap_or(e.n_cells.max(0) as u64)
+                cells_of_name(ctx.store, &e.name, h).unwrap_or(e.n_cells.max(0) as u64)
             }
             _ => e.n_cells.max(0) as u64,
         };
@@ -1006,30 +1050,10 @@ pub(crate) fn summary(inner: &Inner) -> Value {
     ])
 }
 
-/// How long the count of a function's cells by name is kept.
-const NAME_CELLS_TTL: Duration = Duration::from_secs(300);
-
-/// The stored cells of the function `name` (hash `hash`) as of `now`, counted by name: the slice of
-/// every cell of `ns/fn` (the store's own count is by hash, which two names may share). Cached.
-fn cells_of_name(inner: &Inner, name: &str, hash: &str, now: &str) -> Option<u64> {
-    let key = format!("{name}\n{hash}");
-    if let Some((at, n)) = inner.name_cells.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-        if at.elapsed() < NAME_CELLS_TTL {
-            return Some(*n);
-        }
-    }
-    let d = inner.descriptor(hash).ok()?;
+/// The stored cells of the function `name` (hash `hash`), counted by name (one indexed count, S6).
+fn cells_of_name(store: &dyn Store, name: &str, hash: &str) -> Option<u64> {
     let (ns, f) = name.rsplit_once('/')?;
-    let args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
-    let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: hash.into(), args };
-    let slice = Slice::from_value(&cell.to_value()).ok()?;
-    let n = inner.store.slice_values(&slice, now).ok()?.len() as u64;
-    let mut cache = inner.name_cells.lock().unwrap_or_else(|p| p.into_inner());
-    if cache.len() >= 10_000 {
-        cache.clear();
-    }
-    cache.insert(key, (Instant::now(), n));
-    Some(n)
+    store.stored_cell_count(ns, f, hash).ok()
 }
 
 /// Index maintenance (R3): the generic words, the value counts, and the embeddings of the entries
@@ -1040,7 +1064,18 @@ const INDEX_BATCH: usize = 16;
 pub(crate) fn reindex(inner: &Inner) {
     let Ok(_guard) = inner.reindex.lock() else { return };
     let store: &dyn Store = &*inner.store;
-    let _ = store.refresh_value_counts();
+    // The value counts once at start, then at most once per `DATUMESH_VALUE_COUNTS_SECS` (CONTRACT-0.4.9 H4).
+    let due = {
+        let mut at = inner.value_counts_at.lock().unwrap_or_else(|p| p.into_inner());
+        let due = at.is_none_or(|t| t.elapsed() >= inner.config.value_counts_refresh);
+        if due {
+            *at = Some(Instant::now());
+        }
+        due
+    };
+    if due {
+        let _ = store.refresh_value_counts();
+    }
     let generic = generic_words(store);
     if let Ok(mut g) = inner.generic.write() {
         *g = Arc::new(generic);

@@ -167,6 +167,8 @@ pub enum DeclareError {
     Key(Error),
     /// The store refused: no key document of the host, or a write failed.
     Store(String),
+    /// The name is under a path the mesh reserves (`E_NAME_RESERVED`, CONTRACT-0.4.9 H8).
+    Reserved(String),
 }
 
 impl std::fmt::Display for DeclareError {
@@ -180,6 +182,7 @@ impl std::fmt::Display for DeclareError {
             }
             DeclareError::Key(e) => write!(f, "{e}"),
             DeclareError::Store(e) => f.write_str(e),
+            DeclareError::Reserved(e) => f.write_str(e),
         }
     }
 }
@@ -200,6 +203,7 @@ pub fn declare_at<S: Store + ?Sized>(
     clock: &dyn Clock,
 ) -> Result<Declared, DeclareError> {
     let now = clock.now();
+    crate::reserved::check(host, fn_name, None).map_err(DeclareError::Reserved)?;
     if let Some(start) = valid_from.filter(|f| *f < now.as_str()) {
         return Err(DeclareError::StartBeforeNow { fn_name: fn_name.into(), start: start.into(), now });
     }

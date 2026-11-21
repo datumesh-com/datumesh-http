@@ -7,14 +7,26 @@
 //! The data is built once as a JSON value and the HTML is rendered from it, like the function page.
 //! Everything shown is a validated DNS name, a function name or a hash, and is escaped anyway.
 
+//! The relayed functions of every source domain are listed by a thread of the mesh (CONTRACT-0.4.9 H2): a request
+//! reads the last build, and before its first build answers `503` with `Retry-After` and `no-store`.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use datumesh_core::json::Value;
-use datumesh_core::{lexical, FunctionDescriptor};
+use datumesh_core::lexical;
 use datumesh_store::CatalogKind;
 
 use crate::envelope::{self, Cache, Reply};
 use crate::fnpage::{esc, page_url, relay_of};
 use crate::mesh::Inner;
 use datumesh_core::ErrorCode;
+
+/// `Retry-After` of the takeover page before its first build, in seconds.
+const RETRY_SECS: u64 = 5;
+
+/// The relayed functions of each source domain, by name: `(name, fn_hash)`, sorted.
+pub(crate) type Lists = BTreeMap<String, Vec<(String, String)>>;
 
 fn s(v: &str) -> Value {
     Value::String(v.to_string())
@@ -24,23 +36,35 @@ fn obj(members: Vec<(&str, Value)>) -> Value {
     Value::Object(members.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-/// The functions bound now whose relay source is `domain`, by name: `(name, fn_hash)`.
-fn relayed_from(inner: &Inner, domain: &str) -> Vec<(String, String)> {
-    let Ok(summary) = inner.store.catalog_summary() else { return Vec::new() };
+/// The relayed functions of every source domain, from the names bound now (the thread's build, never a request's):
+/// each function that has a relay source is listed under its domain.
+pub(crate) fn build(inner: &Inner) -> Lists {
+    let mut out: Lists = BTreeMap::new();
+    let Ok(summary) = inner.store.catalog_summary() else { return out };
     let now = inner.now();
-    let mut out = Vec::new();
     for e in summary.entries.iter().filter(|e| e.kind == CatalogKind::Function) {
         let Ok(Some(b)) = inner.store.resolve_binding(&e.name, &now) else { continue };
-        let Some(d) = inner.store.descriptor(&b.fn_hash).and_then(|d| FunctionDescriptor::from_json(&d).ok()) else {
-            continue;
-        };
-        if relay_of(inner, &e.name, &b.fn_hash, &d, &now).is_some_and(|r| r.name == domain) {
-            out.push((e.name.clone(), b.fn_hash));
+        if let Some(r) = relay_of(inner, &e.name, &b.fn_hash) {
+            out.entry(r.name).or_default().push((e.name.clone(), b.fn_hash));
         }
     }
-    out.sort();
-    out.dedup();
+    for list in out.values_mut() {
+        list.sort();
+        list.dedup();
+    }
     out
+}
+
+/// Runs one build of the lists and makes it the one requests read (the takeover thread).
+pub(crate) fn refresh(inner: &Inner) {
+    let lists = Arc::new(build(inner));
+    *inner.takeover.lock().unwrap_or_else(|p| p.into_inner()) = Some(lists);
+}
+
+/// The relayed functions of `domain` as the last build has them; `None` before the first build.
+fn relayed_from(inner: &Inner, domain: &str) -> Option<Vec<(String, String)>> {
+    let lists = inner.takeover.lock().unwrap_or_else(|p| p.into_inner()).clone()?;
+    Some(lists.get(domain).cloned().unwrap_or_default())
 }
 
 /// The takeover policy (QUESTIONS-build2 D40), the same sentences in the JSON `policy` and on the page. It
@@ -53,8 +77,7 @@ const POLICY: [&str; 4] = [
 ];
 
 /// The page's data, or `None` when this mesh relays nothing from `domain`.
-pub(crate) fn data(inner: &Inner, domain: &str) -> Option<Value> {
-    let found = relayed_from(inner, domain);
+pub(crate) fn data(inner: &Inner, domain: &str, found: &[(String, String)]) -> Option<Value> {
     if found.is_empty() {
         return None;
     }
@@ -92,7 +115,10 @@ pub(crate) fn respond(inner: &Inner, domain: &str, json_form: bool) -> Reply {
         return envelope::bad_request_reply(ErrorCode::CanonName);
     }
     let max_age = inner.config.ttl.latest_max_age.as_secs();
-    let Some(d) = data(inner, domain) else {
+    let Some(found) = relayed_from(inner, domain) else {
+        return envelope::not_yet_reply(RETRY_SECS, "The takeover list");
+    };
+    let Some(d) = data(inner, domain, &found) else {
         if json_form {
             return envelope::name_unbound_reply(max_age);
         }
