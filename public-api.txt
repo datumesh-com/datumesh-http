@@ -39,6 +39,7 @@ pub datumesh_http::bundle::BundleError::Format(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Manifest(alloc::string::String)
 pub datumesh_http::bundle::BundleError::NotOwned(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Receipt(alloc::string::String)
+pub datumesh_http::bundle::BundleError::Reserved(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Stopped(usize)
 pub datumesh_http::bundle::BundleError::Store(alloc::string::String)
 pub datumesh_http::bundle::BundleError::Tests(alloc::string::String)
@@ -305,9 +306,12 @@ pub datumesh_http::config::Config::catalog: alloc::collections::btree::map::BTre
 pub datumesh_http::config::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::cross_mesh: bool
 pub datumesh_http::config::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub datumesh_http::config::Config::dictionary_max: usize
 pub datumesh_http::config::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::explain_depth: usize
+pub datumesh_http::config::Config::find_first_build_delay: core::time::Duration
 pub datumesh_http::config::Config::host: alloc::string::String
+pub datumesh_http::config::Config::index_first_build_delay: core::time::Duration
 pub datumesh_http::config::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::config::Config::key_names: bool
 pub datumesh_http::config::Config::log_dir: core::option::Option<std::path::PathBuf>
@@ -326,6 +330,7 @@ pub datumesh_http::config::Config::slice_page: usize
 pub datumesh_http::config::Config::test_cells: bool
 pub datumesh_http::config::Config::trust_proxy: bool
 pub datumesh_http::config::Config::ttl: datumesh_http::config::Ttls
+pub datumesh_http::config::Config::value_counts_refresh: core::time::Duration
 impl datumesh_http::config::Config
 pub fn datumesh_http::config::Config::check(&self) -> core::result::Result<(), datumesh_http::config::ConfigError>
 pub fn datumesh_http::config::Config::from_env() -> core::result::Result<datumesh_http::config::Config, datumesh_http::config::ConfigError>
@@ -507,6 +512,7 @@ pub fn datumesh_http::envelope::is_error_code(datumesh_core::error::ErrorCode) -
 pub fn datumesh_http::envelope::is_request_code(datumesh_core::error::ErrorCode) -> bool
 pub fn datumesh_http::envelope::name_unbound_reply(u64) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::not_covered(core::option::Option<datumesh_core::envelope::Fault>) -> alloc::vec::Vec<u8>
+pub fn datumesh_http::envelope::not_yet_reply(u64, &str) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::ok(&[u8], datumesh_core::envelope::Trust) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::payment_required(&str, &str, &str) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::pending(&datumesh_core::envelope::Pending) -> alloc::vec::Vec<u8>
@@ -562,6 +568,7 @@ pub datumesh_http::keydoc::DeclareError::EndBeforeNow::end: alloc::string::Strin
 pub datumesh_http::keydoc::DeclareError::EndBeforeNow::fn_name: alloc::string::String
 pub datumesh_http::keydoc::DeclareError::EndBeforeNow::now: alloc::string::String
 pub datumesh_http::keydoc::DeclareError::Key(datumesh_core::error::Error)
+pub datumesh_http::keydoc::DeclareError::Reserved(alloc::string::String)
 pub datumesh_http::keydoc::DeclareError::StartBeforeNow
 pub datumesh_http::keydoc::DeclareError::StartBeforeNow::fn_name: alloc::string::String
 pub datumesh_http::keydoc::DeclareError::StartBeforeNow::now: alloc::string::String
@@ -683,9 +690,12 @@ pub datumesh_http::Config::catalog: alloc::collections::btree::map::BTreeMap<all
 pub datumesh_http::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::cross_mesh: bool
 pub datumesh_http::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub datumesh_http::Config::dictionary_max: usize
 pub datumesh_http::Config::embed_url: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::explain_depth: usize
+pub datumesh_http::Config::find_first_build_delay: core::time::Duration
 pub datumesh_http::Config::host: alloc::string::String
+pub datumesh_http::Config::index_first_build_delay: core::time::Duration
 pub datumesh_http::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::Config::key_names: bool
 pub datumesh_http::Config::log_dir: core::option::Option<std::path::PathBuf>
@@ -704,6 +714,7 @@ pub datumesh_http::Config::slice_page: usize
 pub datumesh_http::Config::test_cells: bool
 pub datumesh_http::Config::trust_proxy: bool
 pub datumesh_http::Config::ttl: datumesh_http::config::Ttls
+pub datumesh_http::Config::value_counts_refresh: core::time::Duration
 impl datumesh_http::config::Config
 pub fn datumesh_http::config::Config::check(&self) -> core::result::Result<(), datumesh_http::config::ConfigError>
 pub fn datumesh_http::config::Config::from_env() -> core::result::Result<datumesh_http::config::Config, datumesh_http::config::ConfigError>
