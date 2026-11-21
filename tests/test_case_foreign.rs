@@ -122,7 +122,7 @@ async fn test_cells_are_named_under_the_host_whatever_the_namespace_of_the_funct
         let m = serve_lite(&format!("tcf-host{i}"), &ls, Some(test_cells_config()), |_| {}).await;
         let hash = fn_hash(&m, &c.per_unit);
         for t in per_unit_tests(&c) {
-            let call = test_case_call(&hash, &case_id(&t));
+            let call = test_case_call(&c.per_unit, &hash, &case_id(&t));
             assert!(call.starts_with(&format!("{HOST}/test_case(")), "{call}");
             let v = m.get(&format!("/cell/{}", call_path(&call))).await;
             assert_eq!(v["outcome"], "ok", "{prefix}: {t}: {v}");
@@ -162,7 +162,7 @@ async fn without_the_switch_no_test_cell_is_served() {
     let m = serve_lite("tcf-prod", &lines(&c), None, |_| {}).await;
     let hash = fn_hash(&m, &c.per_unit);
     for t in per_unit_tests(&c) {
-        let r = m.get_any(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(&t))))).await;
+        let r = m.get_any(&format!("/cell/{}", call_path(&test_case_call(&c.per_unit, &hash, &case_id(&t))))).await;
         assert_eq!((r.status, r.json["outcome"].as_str()), (404, Some("not_covered")), "{}", r.json);
         assert_eq!(r.json["error"], "E_NAME_UNBOUND", "{}", r.json);
     }

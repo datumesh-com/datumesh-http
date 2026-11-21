@@ -448,9 +448,13 @@ pub fn test_cells_config() -> datumesh_http::Config {
 /// follows.
 pub const HASH_ARG: &str = "function_hash";
 
-/// The call of the test cell of `case` of the function with hash `fn_hash`.
-pub fn test_case_call(fn_hash: &str, case: &str) -> String {
-    format!("{HOST}/test_case(case: \"{case}\", {HASH_ARG}: \"{fn_hash}\")")
+/// The argument of the named test cell (spec 7.3, since 0.4.10) that names the function under test.
+pub const FUNCTION_ARG: &str = "function";
+
+/// The call of the named test cell of `case` of the function `function` with hash `fn_hash` (the form
+/// the mesh binds on a fresh mesh since 0.4.10).
+pub fn test_case_call(function: &str, fn_hash: &str, case: &str) -> String {
+    format!("{HOST}/test_case(case: \"{case}\", {FUNCTION_ARG}: \"{function}\", {HASH_ARG}: \"{fn_hash}\")")
 }
 
 /// Publishes the fixture runs `(clock, lines)` in order on one store and serves it.

@@ -59,8 +59,8 @@ async fn a_rebind_reruns_the_tests_of_its_dependants_and_shows_the_failures() {
     // and the cells say which: N is false, the absent site is still true
     for (f, tests) in [(&c.scaled, scaled_tests(&c)), (&c.outer, outer_tests(&c))] {
         let hash = fn_hash(&m, f);
-        let n_case = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(&tests[0]))))).await;
-        let absent = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(&tests[1]))))).await;
+        let n_case = m.get(&format!("/cell/{}", call_path(&test_case_call(f, &hash, &case_id(&tests[0]))))).await;
+        let absent = m.get(&format!("/cell/{}", call_path(&test_case_call(f, &hash, &case_id(&tests[1]))))).await;
         assert_eq!(n_case["receipt"]["value"], false, "{f}: {n_case}");
         assert_eq!(absent["receipt"]["value"], true, "{f}: {absent}");
     }

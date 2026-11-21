@@ -608,8 +608,9 @@ enum Op {
     Descriptor { hash: String, bytes: Vec<u8>, counted: bool },
     /// A function (stored or formula): put its descriptor, and bind the name when `bind`.
     Function { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool },
-    /// A class: put it, and bind it (its methods with it, in the store) when `bind`.
-    Class { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool, methods: Vec<String> },
+    /// A class: put it, and bind it (its methods with it, in the store) when `bind`. `methods` are the
+    /// methods' names and function hashes, bound under their names with the class.
+    Class { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool, methods: Vec<(String, String)> },
     /// A cell: its blob, its receipt, and the version when `version`.
     Cell { tx: String, id: String, receipt: Vec<u8>, blob: Option<Vec<u8>>, version: bool },
     /// A catalogue line (R5): the entry, and its dictionaries (`publisher`, signed by the run's key).
@@ -994,14 +995,7 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             }
         }
         self.sim.class_bytes.insert(hash.clone(), def.bytes.clone());
-        self.ops.push(Op::Class {
-            name: name.to_string(),
-            start,
-            hash,
-            bytes: def.bytes,
-            bind,
-            methods: methods.into_iter().map(|(m, _)| m).collect(),
-        });
+        self.ops.push(Op::Class { name: name.to_string(), start, hash, bytes: def.bytes, bind, methods });
         Ok(())
     }
 
@@ -1260,7 +1254,7 @@ fn write<S: Store + ?Sized>(
                     store.bind_class(name, hash, start).map_err(|e| err(format!("bind {name}: {e}")))?;
                     out.classes += 1;
                     written.bound(name, start);
-                    for m in methods {
+                    for (m, _) in methods {
                         written.bound(m, start);
                     }
                 }
@@ -1505,7 +1499,15 @@ fn overlay_of(ops: &[Op]) -> Result<Overlay, PublishError> {
             Op::Cell { receipt, .. } => {
                 overlay.cell(receipt).map_err(|e| PublishError::at(0, format!("tests: {e}")))?;
             }
-            Op::Class { .. } | Op::Catalog { .. } => {}
+            Op::Class { start, bind, methods, .. } => {
+                // the methods a class binds with it, as the store binds them (bind_class)
+                if *bind {
+                    for (m, fh) in methods {
+                        overlay.functions.entry(m.clone()).or_default().push((start.clone(), fh.clone()));
+                    }
+                }
+            }
+            Op::Catalog { .. } => {}
         }
     }
     Ok(overlay)

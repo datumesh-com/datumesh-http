@@ -128,7 +128,7 @@ The server reads the environment; files named there are read at start (secrets o
 | `DATUMESH_BUDGET_MS` | 1000 | the budget before `pending` |
 | `DATUMESH_POOL_SIZE` | 32 | the blocking pool, the concurrency limit, and the store's connections |
 | `DATUMESH_BATCH_MAX`, `DATUMESH_SLICE_PAGE`, `DATUMESH_SLICE_MAX`, `DATUMESH_EXPLAIN_DEPTH`, `DATUMESH_MAX_JOBS` | 1000, 1000, 1048576, 4, 10000 | bounds |
-| `DATUMESH_TEST_CELLS` | off | since 0.4.0, mesh-test only: each held function test is a signed cell (trust `primary`: host-signed, no inputs) `<host>/test_case(function_hash, case) -> boolean`, signed by the mesh (production names none) |
+| `DATUMESH_TEST_CELLS` | off | since 0.4.0, mesh-test only: each held function test is a signed cell (trust `primary`: host-signed, no inputs) `<host>/test_case(function_hash, case) -> boolean`, signed by the mesh (production names none). Since 0.4.10 a name unbound on the mesh binds the named form, `<host>/test_case(case, function, function_hash) -> boolean` (spec 7.3): `function` is the test's function name, and a name already bound to the two-argument form keeps it. See "Test cells" |
 | `DATUMESH_RATE_LIMITS`, `DATUMESH_RATE_PER_IP`, `DATUMESH_RATE_IP_BURST`, `DATUMESH_RATE_PER_KEY`, `DATUMESH_RATE_VERIFY_PER_IP` | on, 60, 120, 600, 60 | rate limits, per minute |
 | `DATUMESH_RATE_SERIES_PER_IP` | 30 | since 0.4.5: the `/series` pages per IP a minute, besides the per-IP limit (its burst is the same number) |
 | `DATUMESH_SERIES_FILE` | none | since 0.4.5: the series with month or year pages (a JSON array: `function`, `granularity` `month` or `year`, `date_arg`, `column_arg`?, `fixed`?, `unit`, `kind` `relayed` or `computed`, `source`?); without it there are no `/series` pages and `/slice` keeps its JSON form for browsers |
@@ -165,6 +165,10 @@ A dictionary value is a value a string key of a function takes, with a label, th
 6. `find` fills an open key only from an exact cell value the query gives, as for any value it does not know. It never offers one from the dictionary.
 
 `GET /metrics` gives `datumesh_dictionary_open_keys_total`, the number of open keys the find thread counted (the open keys of the functions the catalogue names).
+
+## Test cells
+
+Since 0.4.10, with `DATUMESH_TEST_CELLS` on, the mesh's `<host>/test_case` is the named form (spec 7.3): `test_case(case, function, function_hash) -> boolean`, where `function` is the name of the function the test is of (the name its call gives, as stored with the row). A cell `test_case(case: "…", function: "<name>", function_hash: "<hash>")` is `true` when that function, run as the held test says, gives what the test expects; for a name that is not a test of the function the cell is an error. A mesh whose `<host>/test_case` is already bound to the two-argument form (`test_case(case, function_hash)`, the 0.4.0 to 0.4.9 binding) keeps it: there is no rebind. `describe` and the function page count a foreign `false` cell of the two-argument form for every function of the hash, and of the named form only for the function it names.
 
 ## Reserved paths
 

@@ -87,7 +87,7 @@ async fn covered_counts_the_arms_the_tests_take() {
 }
 
 fn test_cell_path(m: &Served, c: &Calc, line: &str) -> String {
-    format!("/cell/{}", call_path(&test_case_call(&fn_hash(m, &c.per_unit), &case_id(line))))
+    format!("/cell/{}", call_path(&test_case_call(&c.per_unit, &fn_hash(m, &c.per_unit), &case_id(line))))
 }
 
 /// On mesh-test: each test is a signed boolean cell, trust `primary` (spec 5.5: host-signed, no inputs; QUESTIONS D16), `true` for a test that passes.
@@ -106,7 +106,10 @@ async fn on_mesh_test_each_test_is_a_cell() {
     }
     // the cell of a case that no test of the function has is not a value
     let v = m
-        .get_any(&format!("/cell/{}", call_path(&test_case_call(&fn_hash(&m, &c.per_unit), "0000000000000000"))))
+        .get_any(&format!(
+            "/cell/{}",
+            call_path(&test_case_call(&c.per_unit, &fn_hash(&m, &c.per_unit), "0000000000000000"))
+        ))
         .await;
     assert_ne!(v.json["outcome"], "ok", "{}", v.json);
     assert!((400..600).contains(&v.status), "{}", v.status);
