@@ -6,6 +6,7 @@
 #   FEEDS_HOST: mesh-test.datumesh.com (rehearsal) or datumesh.com (production). There is no default: the names
 #   a job publishes are spelled for that host, and state and output are kept per host.
 #   module: ecb_fx estr policy_rates treasury boe chirps   (register runs by hand, see README.md)
+#     sec: SEC company facts, mesh-test only (Part 7): FEEDS_HOST=mesh-test.datumesh.com, refused for the production host
 #   series: writes /srv/datumesh/feeds/series.<host>.json, the series file of the month pages, from names.toml
 #     (nothing is fetched or published; the mesh reads it through DATUMESH_SERIES_FILE)
 #   history: ecb_fx treasury: ecb_fx backfills from eurofxref-hist.zip; treasury backfills from 1990, a year a file,
@@ -25,8 +26,13 @@ case "$host" in
 esac
 case "$module" in
   ecb_fx|estr|policy_rates|treasury|boe|chirps|series) ;;
+  sec) ;;
   *) echo "run_feed.sh: unknown module $module" >&2; exit 2 ;;
 esac
+
+if [ "$module" = sec ] && [ "$host" != mesh-test.datumesh.com ]; then
+  echo "run_feed.sh: sec is rehearsal-only (Part 7, K7): FEEDS_HOST=mesh-test.datumesh.com" >&2; exit 2
+fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=${DATUMESH_ROOT:-/srv/datumesh}

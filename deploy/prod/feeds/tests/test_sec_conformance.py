@@ -1,0 +1,187 @@
+"""K2 / D21: source-conformance against the frames API (the SEC's own second channel for the same concept, period and
+CIK). At least 20 tests a run, and a disagreement stops the run."""
+import copy
+
+import pytest
+
+import sec
+from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
+from common import ConformanceError
+from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FRAMES_ASSETS, NOW, facts_file, frames_json, sec_fixture,
+                         synth_company)
+
+
+def fq(names):
+    return f"{names['sec']['namespace']}/{names['sec']['function']}"
+
+
+def call(names, cik, concept, unit, accession, period, taxonomy="us-gaap"):
+    vals = dict(cik=cik, taxonomy=taxonomy, concept=concept, unit=unit, accession=accession, period=period)
+    return f"{fq(names)}({', '.join(f'{k}: {chr(34)}{v}{chr(34)}' for k, v in vals.items())})"
+
+
+@pytest.fixture(scope="module")
+def rows():
+    return [r for c in CIKS for r in sec.parse_companyfacts(facts_file(c))["rows"]]
+
+
+@pytest.fixture(scope="module")
+def frame():
+    return sec.parse_frames(sec_fixture(FRAMES_ASSETS))
+
+
+def test_real_frame_against_real_companyfacts(names, rows, frame):
+    tests = sec.conformance(rows, [frame], names, minimum=1)
+    assert sorted(t["call"] for t in tests) == sorted([
+        call(names, CIK_CAT, "Assets", "USD", "0000018230-25-000008", "2023-12-31"),
+        call(names, CIK_GE, "Assets", "USD", "0000040545-25-000015", "2023-12-31")])
+    for t in tests:
+        assert set(t) == {"test", "call", "expect"} and t["test"] == fq(names)
+    by = {t["call"]: t["expect"] for t in tests}
+    assert by[call(names, CIK_GE, "Assets", "USD", "0000040545-25-000015", "2023-12-31")] == {"type": "number", "value": "173300000000"}
+    assert by[call(names, CIK_CAT, "Assets", "USD", "0000018230-25-000008", "2023-12-31")] == {"type": "number", "value": "87476000000"}
+
+
+def test_the_frames_value_is_the_latest_filed_so_a_restated_figure_is_checked_in_its_own_report(names, rows, frame):
+    """GE: the frame's 2023-12-31 Assets is 173300000000 (FY2024 report). The FY2023 report's 163045000000 is a different
+    cell and is not what the frame says, so the test is on the frame's accession, never on the other one."""
+    tests = sec.conformance(rows, [frame], names, minimum=1)
+    assert not any("0000040545-24-000027" in t["call"] for t in tests)
+
+
+def test_a_frame_entry_whose_report_is_out_of_scope_is_skipped_not_failed(names, rows, frame):
+    """JPMorgan's frame accession (0001628280-26-008131) is a fiscal 2025 report: not in the rows, not a test."""
+    tests = sec.conformance(rows, [frame], names, minimum=1)
+    assert not any(CIK_JPM in t["call"] for t in tests)
+
+
+def test_default_minimum_is_20(names, rows, frame):
+    with pytest.raises(ConformanceError) as e:
+        sec.conformance(rows, [frame], names)
+    assert "20" in str(e.value) and "2" in str(e.value)
+
+
+def test_a_disagreement_stops_the_run(names, rows):
+    data = sec_fixture(FRAMES_ASSETS)
+    bad = data.replace(b'"val":87476000000', b'"val":87476000001')
+    assert bad != data
+    with pytest.raises(ConformanceError) as e:
+        sec.conformance(rows, [sec.parse_frames(bad)], names, minimum=1)
+    m = str(e.value)
+    assert CIK_CAT in m and "87476000001" in m and "87476000000" in m and "0000018230-25-000008" in m
+
+
+def test_a_frame_fact_of_an_in_scope_report_that_the_rows_lack_is_a_disagreement(names, rows, frame):
+    fewer = [r for r in rows if not (r["cik"] == CIK_GE and r["concept"] == "Assets" and r["period"] == "2023-12-31"
+                                     and r["accession"] == "0000040545-25-000015")]
+    assert len(fewer) == len(rows) - 1
+    with pytest.raises(ConformanceError) as e:
+        sec.conformance(fewer, [frame], names, minimum=1)
+    assert CIK_GE in str(e.value)
+
+
+def test_companies_not_in_the_rows_are_not_tested(names, rows, frame):
+    only_cat = [r for r in rows if r["cik"] == CIK_CAT]
+    tests = sec.conformance(only_cat, [frame], names, minimum=1)
+    assert len(tests) == 1 and CIK_CAT in tests[0]["call"]
+
+
+def synth_world(n):
+    entries = [(1000 + i, f"CO {i}", f"{1000 + i:010d}-24-000001", "2023-12-31", 10_000 + i) for i in range(n)]
+    rows = []
+    for c, name, accn, end, val in entries:
+        rows += sec.parse_companyfacts(synth_company(c, name, accn, end, val))["rows"]
+    return entries, rows
+
+
+def test_twenty_five_pairs_pass_the_default_minimum(names):
+    entries, rows = synth_world(25)
+    tests = sec.conformance(rows, [sec.parse_frames(frames_json(entries))], names)
+    assert len(tests) == 25
+    assert all(t["call"].startswith(fq(names) + '(cik: "') for t in tests)
+    assert len({t["call"] for t in tests}) == 25
+    assert sec.conformance(rows, [sec.parse_frames(frames_json(entries))], names) == tests, "deterministic"
+
+
+def test_nineteen_pairs_are_too_few(names):
+    entries, rows = synth_world(19)
+    with pytest.raises(ConformanceError):
+        sec.conformance(rows, [sec.parse_frames(frames_json(entries))], names)
+
+
+def test_pairs_from_several_frames_add_up_and_duration_frames_use_start_end(names):
+    entries, rows = synth_world(12)
+    assets = sec.parse_frames(frames_json(entries))
+    rev = [(c, n, a, "2023-12-31", 1000) for c, n, a, _, _ in entries]
+    data = frames_json(rev, concept="Revenues", ccp="CY2023")
+    import json
+    d = json.loads(data)
+    for x in d["data"]:
+        x["start"] = "2023-01-01"
+    revenue = sec.parse_frames(json.dumps(d).encode())
+    tests = sec.conformance(rows, [assets, revenue], names)
+    assert len(tests) == 24
+    assert any('concept: "Revenues"' in t["call"] and 'period: "2023-01-01/2023-12-31"' in t["call"] for t in tests)
+
+
+def test_the_comparison_is_numeric_and_expect_is_canonical(names):
+    entries, rows = synth_world(1)
+    c = entries[0]
+    frames = frames_json([(c[0], c[1], c[2], c[3], c[4])])
+    tests = sec.conformance(rows, [sec.parse_frames(frames)], names, minimum=1)
+    assert tests[0]["expect"] == {"type": "number", "value": str(c[4])}
+
+
+def test_conformance_does_not_mutate_rows(names):
+    entries, rows = synth_world(3)
+    before = copy.deepcopy(rows)
+    sec.conformance(rows, [sec.parse_frames(frames_json(entries))], names, minimum=1)
+    assert rows == before
+
+
+# ---------- D38: the test names the function of the unit form ----------
+
+def _mixed_rows(names):
+    from sec_helpers import mixed_company
+    return sec.parse_companyfacts(mixed_company())["rows"]
+
+
+def _frame(concept, unit, end, val, start=None, uom=None):
+    import json
+    d = json.loads(frames_json([(1234, "MIXED CO", "0000001234-24-000001", end, val)], concept=concept, unit=uom or unit,
+                               ccp="CY2023"))
+    if start:
+        d["data"][0]["start"] = start
+    return sec.parse_frames(json.dumps(d).encode())
+
+
+def test_per_share_shares_and_money_tests_call_their_own_function(names):
+    s = names["sec"]
+    ns = s["namespace"]
+    rows = _mixed_rows(names)
+    frames = [
+        _frame("EarningsPerShareDiluted", "USD/shares", "2023-12-31", 1.25, start="2023-01-01", uom="USD-per-shares"),
+        _frame("CommonStockSharesOutstanding", "shares", "2023-12-31", 100),
+        _frame("Assets", "EUR", "2023-12-31", 9),
+        _frame("GrossProfit", "pure", "2023-12-31", 0.5, start="2023-01-01"),
+    ]
+    tests = sec.conformance(rows, frames, names, minimum=1)
+    by = {t["test"]: t for t in tests}
+    assert set(by) == {f"{ns}/{s['per_share_function']}", f"{ns}/{s['shares_function']}", f"{ns}/{s['function']}",
+                       f"{ns}/{s['ratio_function']}"}
+    a = '"0000001234-24-000001"'
+    assert by[f"{ns}/{s['per_share_function']}"]["call"] == (
+        f'{ns}/{s["per_share_function"]}(cik: "0000001234", taxonomy: "us-gaap", concept: "EarningsPerShareDiluted", '
+        f'currency: "USD", accession: {a}, period: "2023-01-01/2023-12-31")')
+    assert by[f"{ns}/{s['shares_function']}"]["call"] == (
+        f'{ns}/{s["shares_function"]}(cik: "0000001234", taxonomy: "us-gaap", concept: "CommonStockSharesOutstanding", '
+        f'accession: {a}, period: "2023-12-31")')
+    assert 'unit: "EUR"' in by[f"{ns}/{s['function']}"]["call"]
+
+
+def test_a_frame_in_a_unit_that_is_not_relayed_is_skipped(names):
+    rows = _mixed_rows(names)
+    odd = _frame("Liabilities", "CAD/EUR", "2023-12-31", 7)
+    good = _frame("Assets", "EUR", "2023-12-31", 9)
+    tests = sec.conformance(rows, [odd, good], names, minimum=1)
+    assert len(tests) == 1
