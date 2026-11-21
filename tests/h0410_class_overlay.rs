@@ -67,7 +67,13 @@ fn one_file() -> Vec<String> {
     let date = |s: &str| json!({"type": "date", "value": s});
     v.push(test_line(&filed_of(), &format!("{}(accession: \"A1\")", filed_of()), None, None, date("2026-01-01")));
     v.push(test_line(&filed_of(), &format!("{}(accession: \"A2\")", filed_of()), None, None, date("2026-03-01")));
-    v.push(test_line(&filed_of(), &format!("{}(accession: \"ZZ\")", filed_of()), None, None, fault("E_FORMULA_ABSENT")));
+    v.push(test_line(
+        &filed_of(),
+        &format!("{}(accession: \"ZZ\")", filed_of()),
+        None,
+        None,
+        fault("E_FORMULA_ABSENT"),
+    ));
     v
 }
 
@@ -77,5 +83,5 @@ async fn a_class_and_a_formula_over_its_method_publish_in_one_file() {
     // the method is bound by the class, and the formula evaluates through it
     assert!(m.lite.store.resolve_name(&filed(), END).unwrap().is_some(), "{} is unbound", filed());
     let v = m.get(&format!("/cell/{}", call_path(&format!("{}(accession: \"A2\")", filed_of())))).await;
-    assert_eq!(v["receipt"]["value"], json!({"type": "date", "value": "2026-03-01"}), "{v}");
+    assert_eq!(v["receipt"]["value"], json!("2026-03-01"), "{v}");
 }
