@@ -1,6 +1,7 @@
 """sec.run on fixtures and synthetic companies, no network: scope, the first pass, the rate, 403, conformance (the frames
-API for company_fact, the submissions API for the filing class, pinned samples of sec/annual_report), the second run
-(K1 to K3, K7, N1 to N3)."""
+API for the relay method company/fact, the submissions API for the filing class, pinned samples of
+<host>/sec/company/annual_report), the second run (K1 to K3, K7, N1 to N3; CONTRACT-sec-classes C1 to C3: two files, the
+relay's and the subclass's)."""
 import json
 import pathlib
 import re
@@ -14,7 +15,7 @@ from sec_helpers import names  # noqa: F401  (the SEC names: sec.names)
 from common import ConformanceError, ShapeError
 from helpers import check_summary
 from sec_helpers import (CIK_CAT, CIK_GE, CIK_JPM, CIKS, FILING_METHODS, FRAMES_ASSETS, IN_SCOPE, NOW, SYNTH_CELLS, TICKERS,
-                         FakeClock, annual_fn, check_order_all, dirs, fact_fn, facts_file, filing_cls, kinds,
+                         FakeClock, annual_fn, check_order_all, company_cls, dirs, fact_fn, facts_file, filing_cls, kinds,
                          max_in_any_second, read_lines, sec_fixture, submissions_file, synth_company, synth_submissions)
 
 BUDGET = 2300  # with the three real companies (rank 0, 57, 108) and synthetic ones of 6 cells: N = 125, 2220 cells
@@ -86,6 +87,11 @@ def jsonl(o):
     return sorted(p for p in o.iterdir() if p.suffix == ".jsonl")
 
 
+def company_path(o, stamp=None):
+    """The second file (C3): sec_company-<stamp>.jsonl, next to the relay file."""
+    return o / f"sec_company-{stamp or STAMP}.jsonl"
+
+
 @pytest.fixture(scope="module")
 def first(names, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("sec_run")
@@ -94,10 +100,11 @@ def first(names, tmp_path_factory):
     return {"path": path, "f": f, "s": s, "o": o, "fc": fc, "lines": read_lines(path), "tmp": tmp}
 
 
-def test_run_writes_one_file_named_by_the_stamp(first):
+def test_run_writes_the_relay_file_and_the_company_file_named_by_the_stamp(first):
     assert first["path"] == first["o"] / f"sec-{STAMP}.jsonl" and first["path"].exists()
-    assert jsonl(first["o"]) == [first["path"]]
+    assert jsonl(first["o"]) == [first["path"], company_path(first["o"])], "C3: the second file, published after the relay"
     check_order_all(first["lines"])
+    check_order_all(read_lines(company_path(first["o"])))
 
 
 def test_scope_chooses_n_125_and_the_cells_are_those_of_the_top_125(names, first):
@@ -129,14 +136,18 @@ def test_the_left_out_report_is_written_next_to_the_cells(first):
     assert rep["n"] == 125 and rep["estimated_cells"] == 2220 and rep["budget"] == BUDGET
     assert rep["left_out"]["below_n"] == 4170 - 125 and rep["left_out"]["no_companyfacts"] == []
     assert rep["left_out"]["listed_without_assets"] == 1854 and rep["left_out"]["not_listed_on_nyse_or_nasdaq"] == 2260
+    assert rep["left_out"]["left_out_period_end"] == {"count": 0, "accessions": []}, "every in-scope filing has a record"
+    assert isinstance(rep["left_out"]["ambiguous_labels"], dict)
 
 
-def test_the_run_writes_one_filing_class_and_the_one_relay_function(names, first):
+def test_the_relay_file_has_the_company_class_and_the_filing_class_and_no_function_line(names, first):
     k = kinds(first["lines"])
-    assert [l["class"] for l in k["class"]] == [filing_cls(names)], "register.py's class lines are not in this file"
-    assert len(k["descriptor"]) == 6
-    assert {l["function"] for l in k["function"]} == {fact_fn(names), annual_fn(names)}
+    assert sorted(l["class"] for l in k["class"]) == sorted([company_cls(names), filing_cls(names)]), (
+        "register.py's class lines are not in this file")
+    assert len(k["descriptor"]) == 7, "fact, and the six methods of the filing class"
+    assert k["function"] == [], "annual_report moved to the company file; company_fact is a method now"
     assert not [l for l in first["lines"] if "catalog" in l and "register/dataset" in l["catalog"]]
+    assert not [l for l in first["lines"] if "/sec/" in (l.get("catalog") or l.get("test") or (l["cell"]["fn"] if "cell" in l else ""))]
 
 
 def test_tests_are_at_least_20_and_come_from_the_frames_the_submissions_and_the_selection(names, first):
@@ -149,8 +160,10 @@ def test_tests_are_at_least_20_and_come_from_the_frames_the_submissions_and_the_
     assert len(cf) >= 20
     methods = [f"{filing_cls(names)}/{m}" for m in FILING_METHODS]
     assert all(len(by[m]) == 18 + 122 * 2 for m in methods), "every filing, from the submissions of the chosen companies"
-    assert len(by[annual_fn(names)]) == 6 + 122 * 2, "the earliest and the latest fiscal year of each company"
-    assert set(by) == {fact_fn(names), annual_fn(names), *methods} | {t for t in by if "register/dataset" in t}
+    ann = [t for t in kinds(read_lines(company_path(first["o"])))["test"] if t["test"] == annual_fn(names)]
+    assert len(ann) == 6 + 122 * 2, "the earliest and the latest fiscal year of each company"
+    assert annual_fn(names) not in by, "its pins are in the company file"
+    assert set(by) == {fact_fn(names), *methods} | {t for t in by if "register/dataset" in t}
     assert len({t["call"] for t in tests}) == len(tests), "no test is written twice"
 
 
@@ -188,7 +201,7 @@ def test_second_run_emits_nothing_new(names, first):
     f = SecFetcher(names, fc.clock)
     again = sec.run(names, fetch=f, now="2026-11-21T12:00:00.000000Z", state_dir=s, out_dir=o, sleep=fc.sleep,
                     clock=fc.clock, budget=BUDGET)
-    assert again is None and jsonl(o) == [first["path"]]
+    assert again is None and jsonl(o) == [first["path"], company_path(o)]
     assert (s / "sec.json").read_text() == before_state
 
 
@@ -211,8 +224,14 @@ def test_a_new_report_in_a_later_run_emits_only_its_cells(names, first, tmp_path
     k = kinds(read_lines(path))
     assert [len(k[x]) for x in ("function", "descriptor", "class", "catalog")] == [0, 0, 0, 0]
     fns = sorted((c["cell"]["fn"], len(c["cell"]["args"])) for c in k["cell"])
-    assert fns == sorted([(fact_fn(names), 6)] + [(f"{filing_cls(names)}/{m}", 1) for m in FILING_METHODS]
-                         + [(annual_fn(names), 2)])
+    assert fns == sorted([(fact_fn(names), 6)] + [(f"{filing_cls(names)}/{m}", 1) for m in FILING_METHODS if m != "period_end"]), (
+        "the new report has no record in the submissions: no period_end cell")
+    rep = json.loads((o / f"sec-scope-{relay._stamp(later)}.json").read_text(encoding="utf-8"))
+    assert rep["left_out"]["left_out_period_end"] == {"count": 1, "accessions": ["0000040545-25-000099"]}
+    ck = kinds(read_lines(company_path(o, relay._stamp(later))))
+    assert [len(ck[x]) for x in ("function", "catalog")] == [0, 0], "nothing new to bind"
+    assert [(c["cell"]["fn"], c["value"]["value"]) for c in ck["cell"]] == [(annual_fn(names), "0000040545-25-000099")], (
+        "the latest report of fiscal 2024 is now the amendment; no label or loaded cell is new")
 
 
 def test_a_company_without_companyfacts_is_left_out_and_reported(names, tmp_path):
@@ -279,7 +298,7 @@ def test_publish_gets_the_file_and_the_state_is_kept_only_after_it_returns(names
         assert p.exists() and not (s / "sec.json").exists(), "state is saved only after publish returns"
     path = sec.run(names, fetch=SecFetcher(names, fc.clock), now=NOW, state_dir=s, out_dir=o, sleep=fc.sleep,
                    clock=fc.clock, budget=BUDGET, publish=publish)
-    assert seen == [path] and (s / "sec.json").exists()
+    assert seen == [path, company_path(o)] and (s / "sec.json").exists(), "the relay first, then the company file"
 
 
 def test_publish_failure_removes_the_file_and_keeps_no_state(names, tmp_path):
@@ -328,3 +347,23 @@ def test_first_run_writes_the_register_cells_of_sec_gov_company_facts(first):
     assert not [l for l in lines if "class" in l and REG_CLASS in l["class"]]
     assert not [l for l in lines if "catalog" in l and REG_CLASS in l["catalog"]]
     check_order_all(lines)
+
+
+# ---------- the company file on the real fixtures (C3) ----------
+
+def test_the_company_file_has_the_annual_report_cells_and_loaded_and_labels_of_the_real_companies(names, first):
+    ck = read_lines(company_path(first["o"]))
+    cells = lambda m: [l for l in ck if "cell" in l and l["cell"]["fn"] == f"{names['meta']['host']}/sec/company/{m}"]
+    ann = {(c["cell"]["args"]["cik"]["value"], c["cell"]["args"]["fiscal_year"]["value"]): c["value"]["value"]
+           for c in cells("annual_report")}
+    assert ann[(CIK_GE, "2023")] == "0000040545-24-000027" and ann[(CIK_CAT, "2019")] == "0000018230-20-000056"
+    assert len(ann) == 18 + 122 * 2
+    loaded = {c["cell"]["args"]["cik"]["value"] for c in cells("loaded")}
+    assert len(loaded) == 125 and {CIK_CAT, CIK_GE, CIK_JPM} <= loaded
+    labels = {c["cell"]["args"]["label"]["value"]: c["value"]["value"] for c in cells("from_label")}
+    enc = lambda cik: f'{names["meta"]["host"]}/sec/company(cik:"{cik}")'
+    for label, cik in (("CATERPILLAR INC", CIK_CAT), ("CAT", CIK_CAT), ("CATERPILLAR", CIK_CAT),
+                       ("JPMORGAN CHASE & CO", CIK_JPM), ("JPM", CIK_JPM), ("JPMORGAN CHASE", CIK_JPM),
+                       ("GENERAL ELECTRIC CO", CIK_GE), ("GE", CIK_GE), ("GENERAL ELECTRIC", CIK_GE)):
+        assert labels[label] == enc(cik), label
+    assert all(re.fullmatch(r".*/sec/company\(cik:\"\d{10}\"\)", v) for v in labels.values())

@@ -1,7 +1,9 @@
-"""K2 / D21 / N1: source-conformance of company_fact against the frames API (the SEC's own second channel for the same
-concept, period and CIK). At least 20 tests a run, and a disagreement stops the run. Each test names company_fact by its
-full name (the one function of every unit); N2: the six methods of the filing class against the submissions API;
-N3: the pinned samples of sec/annual_report."""
+"""K2 / D21 / N1: source-conformance of the relay method company/fact against the frames API (the SEC's own second channel
+for the same concept, period and CIK). At least 20 tests a run, and a disagreement stops the run. Each test names the method
+by its full name <host>/relay/sec.gov/company/fact (CONTRACT-sec-classes C1: the one method of every unit); N2: the six
+methods of the filing class against the submissions API (C2: period_end is the submissions' own reportDate, so it has no
+second copy: its test pins the relayed value; cik, form and filed are still compared); N3: the pinned samples of
+<host>/sec/company/annual_report (C3)."""
 import copy
 import re
 
@@ -163,7 +165,7 @@ def _frame(concept, unit, end, val, start=None, uom=None):
     return sec.parse_frames(json.dumps(d).encode())
 
 
-def test_money_shares_per_share_and_pure_tests_all_call_company_fact_by_its_full_name(names):
+def test_money_shares_per_share_and_pure_tests_all_call_the_fact_method_by_its_full_name(names):
     rows = _mixed_rows(names)
     frames = [
         _frame("EarningsPerShareDiluted", "USD/shares", "2023-12-31", 1.25, start="2023-01-01", uom="USD-per-shares"),
@@ -181,7 +183,8 @@ def test_money_shares_per_share_and_pure_tests_all_call_company_fact_by_its_full
         c("CommonStockSharesOutstanding", "shares", "2023-12-31", "2023-12-31"): {"type": "number", "value": "100"},
         c("Assets", "EUR", "2023-12-31", "2023-12-31"): {"type": "number", "value": "9"},
         c("GrossProfit", "pure", "2023-01-01", "2023-12-31"): {"type": "number", "value": "0.5"}}
-    assert not any(n in str(tests) for n in ("company_fact_shares", "company_fact_per_share", "company_fact_ratio"))
+    assert not any(n in str(tests) for n in ("company_fact", "company_fact_shares", "company_fact_per_share", "company_fact_ratio"))
+    assert all(t["call"].startswith(names["sec"]["namespace"] + "/company/fact(") for t in tests)
 
 
 def test_a_frame_in_a_unit_that_is_not_relayed_is_skipped(names):
@@ -246,8 +249,7 @@ def test_filings_the_submissions_do_not_have_are_skipped_not_failed(names, items
     assert len(tests) == 5 * 6 and not any("0000040545-20-000009" in t["call"] for t in tests)
 
 
-@pytest.mark.parametrize("field,wrong,method", [("form", "10-K/A", "form"), ("filed", "2024-02-03", "filed"),
-                                                ("period_end", "2023-12-30", "period_end")])
+@pytest.mark.parametrize("field,wrong,method", [("form", "10-K/A", "form"), ("filed", "2024-02-03", "filed")])
 def test_a_disagreement_with_the_submissions_stops_the_run(names, items3, field, wrong, method):
     bad = sec.parse_submissions(submissions_file(CIK_GE))
     a = "0000040545-24-000027"
@@ -258,6 +260,34 @@ def test_a_disagreement_with_the_submissions_stops_the_run(names, items3, field,
         sec.filing_conformance(items3, [bad], names, minimum=1)
     m = str(e.value)
     assert a in m and wrong in m and right in m and method in m and "nothing is published" in m
+
+
+def test_a_period_end_that_differs_from_the_companyfacts_is_no_disagreement_and_the_test_pins_the_submissions_value(names, items3):
+    """C2: period_end has no second copy. The relayed value is the submissions' reportDate, whatever companyfacts' periods say."""
+    sub = sec.parse_submissions(submissions_file(CIK_GE))
+    a = "0000040545-24-000027"
+    assert sub["filings"][a]["period_end"] == "2023-12-31"
+    sub["filings"][a]["period_end"] = "2023-12-30"
+    tests = sec.filing_conformance(items3, [sub], names, minimum=1)
+    by = {t["call"]: t["expect"] for t in tests}
+    assert by[mcall(names, "period_end", a)] == {"type": "date", "value": "2023-12-30"}
+    assert by[mcall(names, "form", a)] == {"type": "string", "value": "10-K"}
+
+
+def test_athene_amendment_gets_the_report_date_not_the_latest_one_year_period(names):
+    """The regression of CONTRACT-sec-classes C2: Athene Holding's 10-K/A 0001527469-21-000032 has a one-year period that
+    ends 2021-03-31 in its companyfacts, while its report date is 2020-12-31 (so has the 10-K -21-000025). No error, and
+    2020-12-31 for both."""
+    from sec_class_helpers import ATHENE_10K, ATHENE_10KA, ATHENE_CIK, athene_facts, athene_submissions
+    its = [item(names, ATHENE_CIK, data=athene_facts())]
+    assert {r["period_end"] for r in its[0]["parsed"]["rows"] if r["accession"] == ATHENE_10KA} >= {"2021-03-31"}, (
+        "the fixture has the period that fooled the derivation")
+    tests = sec.filing_conformance(its, [sec.parse_submissions(athene_submissions())], names, minimum=1)
+    by = {t["call"]: t["expect"] for t in tests}
+    for accn in (ATHENE_10K, ATHENE_10KA):
+        assert by[mcall(names, "period_end", accn)] == {"type": "date", "value": "2020-12-31"}
+    assert by[mcall(names, "form", ATHENE_10KA)] == {"type": "string", "value": "10-K/A"}
+    assert by[mcall(names, "filed", ATHENE_10KA)] == {"type": "date", "value": "2021-04-20"}
 
 
 def test_a_different_cik_for_an_accession_is_a_disagreement(names, items3):
@@ -291,7 +321,7 @@ def test_filing_conformance_on_a_synthetic_company(names):
 def test_annual_report_tests_pin_the_earliest_and_latest_fiscal_year_of_each_company(names, items3):
     tests = sec.annual_report_tests(items3, names)
     fn = annual_fn(names)
-    assert fn == names["sec"]["annual_report_namespace"] + "/annual_report"
+    assert fn == "mesh-test.datumesh.com/sec/company/annual_report"
     assert all(set(t) == {"test", "call", "expect"} and t["test"] == fn for t in tests)
     by = {t["call"]: t["expect"] for t in tests}
     pin = lambda cik, fy, accn: by[f'{fn}(cik: "{cik}", fiscal_year: {fy})'] == {"type": "string", "value": accn}

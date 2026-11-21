@@ -241,12 +241,11 @@ def test_same_period_in_two_units_or_two_concepts_is_two_cells():
 def test_filings_of_the_fixtures():
     p = sec.parse_companyfacts(facts_file(CIK_GE))
     f = p["filings"]["0000040545-24-000027"]
-    assert f == {"cik": CIK_GE, "form": "10-K", "filed": "2024-02-02", "fy": "2023", "fp": "FY",
-                 "period_end": "2023-12-31"}
+    assert {k: v for k, v in f.items() if k != "period_end"} == {
+        "cik": CIK_GE, "form": "10-K", "filed": "2024-02-02", "fy": "2023", "fp": "FY"}
     assert set(p["filings"]) == {r["accession"] for r in p["rows"]}, "one filing per accession with cells"
-    pj = sec.parse_companyfacts(facts_file(CIK_JPM))
-    assert pj["filings"]["0000019617-24-000225"]["period_end"] == "2023-12-31", (
-        "the cover-page share count is dated Jan 2024; period_end is the latest period of the statements, not the cover")
+    # CONTRACT-sec-classes C2: the filing class's period_end is the submissions' reportDate, not derived from these periods
+    # (the derivation was wrong on Athene's 10-K/A): nothing here pins a derived period_end
 
 
 def test_filing_for_is_the_latest_filed_annual_report_of_the_fiscal_year():
@@ -264,7 +263,6 @@ def test_filing_for_prefers_the_amendment_filed_later_and_uses_fy_not_the_calend
         rec("2025-01-31", "12", "0000001234-25-000010", 2024, filed="2025-03-20")])])
     assert p["filing_for"] == {"2023": "0000001234-24-000050", "2024": "0000001234-25-000010"}
     assert p["filings"]["0000001234-24-000050"]["form"] == "10-K/A"
-    assert p["filings"]["0000001234-24-000050"]["period_end"] == "2024-01-31"
 
 
 def test_filing_for_same_day_ties_go_to_the_higher_accession():
@@ -343,8 +341,9 @@ def test_parse_submissions_of_the_stubs():
         "an empty reportDate is None")
     assert p["filings"]["0000040545-24-900002"]["form"] == "10-Q"
     cf = sec.parse_companyfacts(facts_file(CIK_GE))["filings"]
-    assert {a: {"form": v["form"], "filed": v["filed"], "period_end": v["period_end"]} for a, v in cf.items()} == {
-        a: v for a, v in p["filings"].items() if a in cf}, "the stub agrees with companyfacts on every in-scope filing"
+    assert {a: {"form": v["form"], "filed": v["filed"]} for a, v in cf.items()} == {
+        a: {"form": v["form"], "filed": v["filed"]} for a, v in p["filings"].items() if a in cf}, (
+        "the stub agrees with companyfacts on the form and filing date of every in-scope filing")
 
 
 def test_parse_submissions_accepts_a_numeric_cik_and_refuses_changed_shapes():

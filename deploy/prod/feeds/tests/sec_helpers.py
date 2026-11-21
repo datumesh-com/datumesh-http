@@ -27,21 +27,28 @@ N1 to N5; decisions D34 to D36, D38 replaced):
   sec.TokenBucket(rate, clock=, sleep=).wait()
   sec.http_get(url)                 bytes; one request, the declared User-Agent, no retry on 403
   sec.emit(items, state, names)     items: [{"parsed": parse_companyfacts(..), "source": {"url", "retrieved", "sha256"}}]
-                                    -> (lines, new_state); first run: function lines (company_fact, annual_report), the
-                                    descriptor lines and the class line of the filing class, catalogue lines, cell lines;
-                                    no tests
-  sec.conformance(rows, frames_list, names, minimum=20)   -> test lines of company_fact (from the frames API)
+                                    -> (lines, new_state); first run: the descriptor lines of the relay classes (company: fact; filing: six
+                                    methods), their two class lines, catalogue lines, cell lines; no tests. It may also
+                                    carry lines named <host>/sec/... (the implementer decides whether run splits them
+                                    into the second file); the emit tests ignore those and period_end cells
+  sec.conformance(rows, frames_list, names, minimum=20)   -> test lines of the relay method company/fact (from the frames API)
   sec.filing_conformance(items, submissions_list, names, minimum=sec.FILING_CONFORMANCE_MINIMUM)
                                     -> test lines of the six filing methods (from the submissions API)
   sec.annual_report_tests(items, names)   -> test lines of sec/annual_report (the earliest and the latest fiscal year of
                                     each company)
   sec.run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=, clock=, budget=, step=) -> Path | None
+  sec.run(...) writes TWO files (CONTRACT-sec-classes C3): sec-<stamp>.jsonl (the relay: the two relay classes, their cells
+                                    and tests; nothing named <host>/sec/...) and sec_company-<stamp>.jsonl (functions
+                                    annual_report, loaded, from_label under <host>/sec/company, their cells, tests and
+                                    catalogue); it returns the first path. The run report (sec-scope-<stamp>.json) has,
+                                    under "left_out": "left_out_period_end" {"count", "accessions"} and
+                                    "ambiguous_labels" {label: [ciks]}.
   sec.names(host), sec.sec_table(host)   mesh-test.datumesh.com and scratch.invalid; datumesh.com refused
   sec.main(argv)                    CLI; --host datumesh.com is refused
 
-The names section `names["sec"]` (sec_names.toml) has: namespace ({host}/relay/sec.gov), function (company_fact),
-filing_class (filing), filing_methods (the six method names, in order), annual_report_namespace ({host}/sec),
-annual_report_function (annual_report), licence ("public:https://www.sec.gov/about/privacy-information"), source_name,
+The names section `names["sec"]` (sec_names.toml) has: namespace ({host}/relay/sec.gov), company_class (company),
+company_methods (["fact"]; CONTRACT-sec-classes C1: no `function` key, no company_fact),
+filing_class (filing), filing_methods (the six method names, in order), licence ("public:https://www.sec.gov/about/privacy-information"), source_name,
 takeover, companyfacts_url, submissions_url, tickers_url, frames_url. The keys shares_function, per_share_function,
 ratio_function, filing_function and filing_for_function no longer exist.
 """
@@ -107,7 +114,7 @@ def facts_json(cik: int, name: str, entries) -> bytes:
 
 
 def mixed_company():
-    """One company holding every kind of unit the one company_fact relays (N1): money in three currencies, shares, per
+    """One company holding every kind of unit the one relay method company/fact relays (N1): money in three currencies, shares, per
     share in two currencies, a pure number, and three units that are not relayed (CAD/EUR, acre, USD-per-gal)."""
     a = "0000001234-24-000001"
     r = lambda v, s="2023-01-01": rec("2023-12-31", v, a, 2023, start=s)
@@ -251,8 +258,24 @@ FACT_ORDER = ["cik", "concept", "unit", "accession", "period_start", "period_end
 
 
 def fact_fn(names):
+    """The relay class's stored method `fact` (CONTRACT-sec-classes C1): <host>/relay/sec.gov/company/fact."""
     s = names["sec"]
-    return f"{s['namespace']}/{s['function']}"
+    return f"{s['namespace']}/{s['company_class']}/fact"
+
+
+def company_cls(names):
+    """The relay class keyed by cik: <host>/relay/sec.gov/company."""
+    s = names["sec"]
+    return f"{s['namespace']}/{s['company_class']}"
+
+
+def host_name(names):
+    return names["meta"]["host"]
+
+
+def sec_company(names):
+    """Our subclass of the relay's company class (CONTRACT-sec-classes C3): <host>/sec/company."""
+    return f"{host_name(names)}/sec/company"
 
 
 def filing_cls(names):
@@ -261,8 +284,8 @@ def filing_cls(names):
 
 
 def annual_fn(names):
-    s = names["sec"]
-    return f"{s['annual_report_namespace']}/{s['annual_report_function']}"
+    """sec/annual_report moved under the subclass (C3): <host>/sec/company/annual_report."""
+    return f"{sec_company(names)}/annual_report"
 
 
 def kinds(lines):
@@ -305,3 +328,18 @@ def names():
     tests import this fixture, so no test reads the sec section from common.names (which has none, K7)."""
     import sec
     return sec.names(REHEARSAL)
+
+
+def line_name(l):
+    """The name a line is about (None for a descriptor line, which has none)."""
+    if "cell" in l:
+        return l["cell"]["fn"]
+    return l.get("function") or l.get("class") or l.get("catalog") or l.get("test")
+
+
+def relay_core(lines, names):
+    """What the emit tests pin of emit's lines: those of the relay namespace (nothing named <host>/sec/...), without the
+    period_end cells of the filing class (their value comes from the submissions: pinned by the run tests)."""
+    own = host_name(names) + "/sec/"
+    return [l for l in lines if not (line_name(l) or "").startswith(own)
+            and not ("cell" in l and l["cell"]["fn"].endswith("/period_end"))]
