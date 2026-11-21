@@ -233,19 +233,29 @@ def test_worked_examples_come_from_the_stub_relay_of_two_companies_and_the_resta
 
 def test_sec_latest_is_exact_on_the_restated_company():
     """N4: the figure for the same period from the latest filing, by filed date, that reports it (last_by); the
-    fiscal-2020 assets are 100, 110, 120 and 130 in four filings, a filing in between reports nothing of them, and the
-    latest is the fourth, three fiscal years on (the old fallback chain looked two ahead and gave 120)."""
-    want = {("sec/company/latest", "us-gaap:Assets", 2020, "instant"): "130", ("sec/company/latest", "us-gaap:Revenues", 2020, "annual"): "70",
-            ("sec/company/reported", "us-gaap:Assets", 2020, "instant"): "110", ("sec/company/reported", "us-gaap:Revenues", 2020, "annual"): "55",
-            ("sec/company/latest", "us-gaap:Assets", 2021, "instant"): "150", ("sec/company/latest", "us-gaap:Assets", 2022, "instant"): "200"}
+    fiscal-2020 assets are 100, 110, 120 and 130 in four filings of the synthetic company, and the latest is the fourth,
+    three fiscal years on (the old fallback chain looked two ahead and gave 120). The views file's tests must hold on a mesh
+    with the real relay, which has no synthetic company: its reported tests supply the cells they read through `inputs`
+    (a test's inputs override cells, not slices, so the latest of the synthetic company is not a test of the file), and
+    its latest tests are on JPMorgan, whose fiscal 2019 figures are restated in a later report."""
+    want = {("sec/company/reported", "us-gaap:Assets", 2020, "instant"): "110", ("sec/company/reported", "us-gaap:Revenues", 2020, "annual"): "55"}
     got = {}
+    latest = {}
     for l in lines():
-        m = re.match(re.escape(HOST) + r'/(sec/company/(?:latest|reported))\(cik: "0000000777", concept: "([^"]+)", unit: "USD", '
+        m = re.match(re.escape(HOST) + r'/(sec/company/(?:latest|reported))\(cik: "(\d+)", concept: "([^"]+)", unit: "USD", '
                      r'fiscal_year: (\d+), period_kind: "(\w+)"\)', l.get("call", ""))
-        if m:
-            got[(m[1], m[2], int(m[3]), m[4])] = l["expect"]["value"]
+        if m and m[1] == "sec/company/reported" and m[2] == "0000000777":
+            got[(m[1], m[3], int(m[4]), m[5])] = l["expect"]["value"]
+            assert l["inputs"], "the synthetic company's cells come through inputs"
+        if m and m[1] == "sec/company/latest":
+            assert "asof" not in l, "a latest test holds at the mesh's own time"
+            assert m[2] != "0000000777", "the synthetic company is not in the views file's tests"
+            latest[(m[2], m[3], int(m[4]), m[5])] = l["expect"].get("value")
     for k, v in want.items():
         assert got.get(k) == v, k
+    # restated: JPMorgan's fiscal 2019 revenue is 115627000000 as reported and 115720000000 as the latest filing has it
+    assert latest[("0000019617", "us-gaap:Revenues", 2019, "annual")] == "115720000000"
+    assert latest[("0000019617", "us-gaap:Assets", 2020, "instant")] == "3384757000000"
 
 
 def test_the_views_read_the_new_relay_and_parse_no_strings():
@@ -416,6 +426,19 @@ def test_the_old_lines_with_the_renames_are_the_new_lines_apart_from_the_overrid
     args and example calls (their prose is the implementer's to adjust for the new names)."""
     want = [json.loads(renamed(l)) for l in old_lines()]
     got = [json.loads(l) for l in new_lines() if not is_override_line(l)]
+    # The tests of fact_in, reported and latest were then rewritten to hold on a mesh with the real relay (the synthetic
+    # company's cells through `inputs` or real ones; no asof; the empty:filed case needs an asof and is not a test of the
+    # file): those lines are compared as sets of what changed, everything else line for line.
+    changed = lambda o: o.get("test", "").startswith(COMPANY) and o["test"][len(COMPANY):] in ("fact_in", "reported", "latest")
+    for o in want:
+        if changed(o):
+            o.pop("asof", None)
+    gone = [o for o in want if changed(o) and o not in got]
+    new = [g for g in got if changed(g) and g not in want]
+    assert all("0000000777" in canonical(o) or o["call"].endswith('fiscal_year: 2019, period_kind: "instant")') for o in gone)
+    assert len(gone) == len(new) + 1, (len(gone), len(new))
+    want = [o for o in want if o not in gone]
+    got = [o for o in got if o not in new]
     assert len(got) == len(want), (len(got), len(want))
     key = lambda o: (("formula" in o, "catalog" in o, "test" in o), o.get("formula") or o.get("catalog") or o.get("test"),
                      o.get("call", ""))
