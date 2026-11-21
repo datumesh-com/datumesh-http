@@ -51,7 +51,7 @@ services:
         limits: {cpus: "1", memory: 1g}
 
   mesh:
-    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:b6a0491e42a7e9cb0d719597458937e6248156359aff26ba42d285fdd5838826}  # datumesh-http 0.4.7, published
+    image: ${DATUMESH_MESH_IMAGE:-ghcr.io/datumesh-com/datumesh-mesh@sha256:5b5c6afe2ca45f98496b006a62518172b7c46cf83ab9f2a491559044e730d155}  # datumesh-http 0.4.8, published
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,6 +82,8 @@ services:
       DATUMESH_PUBLISH_DOMAINS: "*"
       # Part 6: month and year pages of the series the feeds list (series.py).
       DATUMESH_SERIES_FILE: /etc/datumesh/series.json
+      # Hosted key-derived names (user decision, QUESTIONS-build2 D39): mesh-test only.
+      DATUMESH_KEY_NAMES: "1"
       RUST_LOG: info
     volumes:
       - ${DATUMESH_DIR:-/root/datumesh-mesh-test}/secrets:/run/secrets:ro
