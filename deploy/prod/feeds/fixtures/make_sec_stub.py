@@ -36,6 +36,20 @@ def _item(names, cik, data):
             "source": {"url": url, "retrieved": NOW, "sha256": hashlib.sha256(data).hexdigest()}}
 
 
+# The staged fixture (sec/latest's empty case): the filing class's filed() cells are published at a later tx than the
+# other cells, so an asof between the two has annual_report and period_end resolved while filed(accession: *) is empty.
+FILED_TX = "2026-11-16T12:00:00.000000Z"
+
+
+def _stage_filed(lines):
+    out = []
+    for l in lines:
+        if "cell" in l and l["cell"]["fn"].endswith("/filing/filed"):
+            l = dict(l, tx=FILED_TX, asof=FILED_TX)
+        out.append(l)
+    return out
+
+
 def build_views_stub():
     names = sec.names(HOST)
     ciks = (sec_helpers.CIK_CAT, sec_helpers.CIK_JPM)
@@ -45,7 +59,7 @@ def build_views_stub():
     lines, _ = sec.emit(items, {}, names)
     frame = sec.parse_frames((FIXTURES / "sec" / "frames_us-gaap_Assets_USD_CY2023Q4I.json").read_bytes())
     rows = [r for it in items for r in it["parsed"]["rows"]]
-    return [common.dumps_line(l) for l in lines + sec.conformance(rows, [frame], names, minimum=1)]
+    return [common.dumps_line(l) for l in _stage_filed(lines) + sec.conformance(rows, [frame], names, minimum=1)]
 
 
 def build_forms():

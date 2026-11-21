@@ -177,7 +177,7 @@ def test_every_function_has_tests_for_its_derived_cases():
         mine = t.get(name, [])
         assert len(mine) >= 4, name
         for x in mine:
-            assert set(x) <= {"test", "call", "inputs", "expect"}, x
+            assert set(x) <= {"test", "call", "inputs", "expect", "asof"}, x  # asof: the spec test object (SPEC 7.3)
             assert x["call"].startswith(name + "("), x["call"]
             e = x["expect"]
             assert ("fault" in e and e["fault"].startswith("E_FORMULA_")) or e["type"] in ("number", "string", "date")
