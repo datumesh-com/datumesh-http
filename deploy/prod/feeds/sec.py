@@ -1,26 +1,26 @@
-"""SEC company facts (Build 2 Part 7, mesh-test only): fetch with fair access, scope by rule, relay as filed,
-source-conformance against the frames API, and the run.
+"""SEC company facts (SEC rebuild, CONTRACT-sec-rebuild.md; Build 2 Part 7 before it): fetch with fair access, scope by
+rule, relay as filed, source-conformance against second copies, and the run.
 
-The relay (K2): one cell per reported figure per filing, keyed by (cik, taxonomy, concept, unit, accession, period),
-so a figure in one annual report and the same figure restated in a later one are two cells. Nothing is normalised
-under the relay name. Filing metadata (filing) and the accession of the latest annual report per fiscal year
-(filing_for, D36) are stored helpers derived from the same records.
+The relay (N1 to N3), rehearsal hosts only (scratch.invalid, mesh-test.datumesh.com):
+  * `<host>/relay/sec.gov/company_fact(cik, concept, unit, accession, period_start, period_end) -> number`: one cell per
+    reported figure per filing and period. The concept keeps its prefix (us-gaap:Assets); the unit is the unit as filed
+    (a currency code, shares, <CCY>/shares or pure), and the value's unit is {arg: unit}. Units that units.md cannot say
+    are not relayed and are counted in the left-out report. Nothing is normalised under the relay name.
+  * `<host>/relay/sec.gov/filing`, a class keyed by accession, with six stored methods (cik, form, filed, fiscal_year,
+    fiscal_period, period_end), each relaying the submissions record as filed.
+  * `<host>/sec/annual_report(cik, fiscal_year) -> string`: our selection (the latest-filed 10-K or 10-K/A of the fiscal
+    year), stored and signed by the operator with no source.
 
 The scope (K3, D35): 10-K and 10-K/A, fiscal years 2019 to 2024, the listed concepts of sec_concepts.toml, and the
 NYSE or Nasdaq companies ranked by us-gaap:Assets (USD) in the frames API for CY2023Q4I, the top N, where N is the
 largest multiple of 25 whose estimated cells stay within 300,000 (or every company, when they all fit).
 
-Units (D38, spec 7.1: a number declares its unit, from units.md): the relay is split by the unit form of the filed
-unit, every value still exactly as filed. company_fact is money (the unit argument is the filed currency code and the
-return is {"arg": "unit"}), company_fact_shares is `shares` (return unit `count`), company_fact_per_share is
-`<CCY>/shares` (a currency argument, return {"arg": "currency"}: units.md has no money-per-share rate, a gap for the
-production review) and company_fact_ratio is `pure` (return unit `1`). Any other unit is left out and counted in the
-left-out report. filing_for takes the fiscal year as a number (unit `1`).
-
 Fair access (K1, D34): one connection, sequential, at most 5 requests a second (a token bucket), the declared
 User-Agent and nothing else about us, and a 403 stops the run. Standard library only.
 """
+import argparse
 import decimal
+import hashlib
 import http.client
 import json
 import time
@@ -56,9 +56,15 @@ CONFORMANCE_FRAMES = (
     ("us-gaap", "NetIncomeLoss", "USD", "CY2023"),
     ("us-gaap", "Liabilities", "USD", "CY2023Q4I"),
 )
-FILING_FIELDS = ("cik", "form", "filed", "fy", "fp", "period_end")
+FILING_METHODS = ("cik", "form", "filed", "fiscal_year", "fiscal_period", "period_end")
+FILING_RETURNS = {"cik": "string", "form": "string", "filed": "date", "fiscal_year": {"type": "number", "unit": "1"},
+                  "fiscal_period": "string", "period_end": "date"}
+FILING_VALUE_TYPES = {"cik": "string", "form": "string", "filed": "date", "fiscal_year": "number",
+                      "fiscal_period": "string", "period_end": "date"}
+FACT_ORDER = ("cik", "concept", "unit", "accession", "period_start", "period_end")
 ONE_YEAR_DAYS = (350, 380)
 CONFORMANCE_MINIMUM = 20
+FILING_CONFORMANCE_MINIMUM = 20
 
 # The currency codes of units.md 2.1 (ISO 4217 List One of 2026-09-17 without XXX, and the withdrawn codes kept for
 # history): a filed unit is money only if it is one of these, byte for byte.
@@ -74,21 +80,15 @@ CURRENCIES = frozenset("""
 """.split())
 
 
-def unit_form(unit):
-    """The unit form of a filed unit (D38): ("money", None) for a currency code, ("shares", None), ("per_share", CCY)
-    for `<CCY>/shares`, ("ratio", None) for `pure`; None for any other unit (left out and reported)."""
+def relayed_unit(unit) -> bool:
+    """True for a filed unit that units.md can say: a currency code of CURRENCIES (company_fact's unit argument),
+    `shares`, `<CCY>/shares` for a currency in CURRENCIES, and `pure`. Anything else is left out and counted."""
     if not isinstance(unit, str):
-        return None
-    if unit in CURRENCIES:
-        return "money", None
-    if unit == "shares":
-        return "shares", None
-    if unit == "pure":
-        return "ratio", None
+        return False
+    if unit in CURRENCIES or unit in ("shares", "pure"):
+        return True
     ccy, slash, rest = unit.partition("/")
-    if slash and rest == "shares" and ccy in CURRENCIES:
-        return "per_share", ccy
-    return None
+    return bool(slash) and rest == "shares" and ccy in CURRENCIES
 
 
 _CTX = decimal.Context(prec=1000)  # exact: a 34-digit value must not be rounded by the default 28 digits
@@ -168,32 +168,33 @@ def _record(r):
         common.shape(_iso(r["start"]), "fact record start is not a date")
 
 
-def _period(start, end) -> str:
-    return f"{start}/{end}" if start is not None else end
-
-
 def _days(start, end) -> int:
     return (date.fromisoformat(end) - date.fromisoformat(start)).days
+
+
+def _cik10(cik) -> str:
+    """A CIK as the SEC writes it (a number, or a zero-padded string for some companies) -> 10 digits."""
+    if isinstance(cik, str) and 1 <= len(cik) <= 10 and cik.isascii() and cik.isdigit():
+        cik = int(cik)
+    common.shape(_int(cik) and 0 < cik < 10 ** 10, "a CIK is not a CIK")
+    return f"{cik:010d}"
 
 
 # ---------- companyfacts ----------
 
 def parse_companyfacts(data: bytes) -> dict:
-    """One companyfacts file -> the in-scope cells as filed, conflicts, labels, filing metadata and filing_for. A cell
-    whose unit is not one of the four unit forms (D38) is not a row; `left_out_units` counts them by unit."""
+    """One companyfacts file -> the in-scope rows as filed, conflicts, labels, filing metadata and filing_for. A row is
+    one (cik, concept, unit, accession, period_start, period_end) with a relayed unit (relayed_unit); any other unit is
+    counted in `left_out_units` and is not a row. An instant has the same date as period_start and period_end."""
     raw = _load(data)
     common.shape(isinstance(raw, dict), "companyfacts is not an object")
-    cik = raw.get("cik")
     # The SEC writes the CIK as a number for most companies and as a zero-padded string for some
     # (seen: "0001889539", Corebridge Financial); both are read, nothing else is.
-    if isinstance(cik, str) and 1 <= len(cik) <= 10 and cik.isascii() and cik.isdigit():
-        cik = int(cik)
-    common.shape(_int(cik) and 0 < cik < 10 ** 10, "companyfacts cik is not a CIK")
+    cik10 = _cik10(raw.get("cik"))
     entity = raw.get("entityName")
     common.shape(isinstance(entity, str) and entity.strip() != "", "companyfacts entityName is missing")
     facts = raw.get("facts")
     common.shape(isinstance(facts, dict), "companyfacts facts is missing")
-    cik10 = f"{cik:010d}"
     listed = load_concepts()
 
     labels, groups, meta = {}, {}, {}
@@ -218,23 +219,24 @@ def parse_companyfacts(data: bytes) -> dict:
                     _note_filing(meta, cik10, tax, r)
                     if not is_listed:
                         continue
-                    key = (tax, concept, unit, r["accn"], _period(r.get("start"), r["end"]))
+                    start = r.get("start", r["end"])
+                    key = (f"{tax}:{concept}", unit, r["accn"], start, r["end"])
                     g = groups.setdefault(key, {"values": {}, "rec": r})
                     g["values"][canon(r["val"])] = True
 
     rows, conflicts, left_out_units = [], [], {}
-    for (tax, concept, unit, accn, period), g in groups.items():
-        if unit_form(unit) is None:  # D38: a unit units.md cannot express is not relayed, and is counted
+    for (concept, unit, accn, start, end), g in groups.items():
+        if not relayed_unit(unit):  # a unit units.md cannot say is not relayed, and is counted
             left_out_units[unit] = left_out_units.get(unit, 0) + 1
             continue
         values = sorted(g["values"])
         if len(values) > 1:
-            conflicts.append({"cik": cik10, "taxonomy": tax, "concept": concept, "unit": unit, "accession": accn,
-                              "period": period, "values": values})
+            conflicts.append({"cik": cik10, "concept": concept, "unit": unit, "accession": accn,
+                              "period_start": start, "period_end": end, "values": values})
             continue
         r = g["rec"]
-        rows.append({"cik": cik10, "taxonomy": tax, "concept": concept, "unit": unit, "accession": accn,
-                     "period": period, "value": values[0], "form": r["form"], "fy": str(r["fy"]), "fp": r["fp"],
+        rows.append({"cik": cik10, "concept": concept, "unit": unit, "accession": accn, "period_start": start,
+                     "period_end": end, "value": values[0], "form": r["form"], "fy": str(r["fy"]), "fp": r["fp"],
                      "filed": r["filed"]})
 
     filings = {}
@@ -268,10 +270,38 @@ def count_cells(data: bytes) -> int:
     return len(parse_companyfacts(data)["rows"])
 
 
+# ---------- submissions (the second copy of the filing class) ----------
+
+def parse_submissions(data: bytes) -> dict:
+    """One submissions file -> {"cik", "filings": {accession: {"form", "filed", "period_end"}}}, the `filings.recent`
+    block as parallel arrays. An empty reportDate is period_end None (an 8-K has none)."""
+    raw = _load(data)
+    common.shape(isinstance(raw, dict), "submissions is not an object")
+    cik10 = _cik10(raw.get("cik"))
+    filings = raw.get("filings")
+    common.shape(isinstance(filings, dict) and isinstance(filings.get("recent"), dict),
+                 "submissions filings.recent is missing")
+    recent = filings["recent"]
+    cols = ("accessionNumber", "filingDate", "reportDate", "form")
+    for k in cols:
+        common.shape(isinstance(recent.get(k), list), f"submissions recent.{k} is missing")
+    n = len(recent["accessionNumber"])
+    common.shape(all(len(recent[k]) == n for k in cols), "submissions recent arrays differ in length")
+    out = {}
+    for accn, filed, rep, form in zip(*(recent[k] for k in cols)):
+        common.shape(isinstance(accn, str) and isinstance(form, str), "submissions accession or form is not text")
+        common.shape(_iso(filed), f"submissions filing date of {accn} is not a date")
+        common.shape(rep == "" or _iso(rep), f"submissions report date of {accn} is not a date")
+        common.shape(accn not in out, f"submissions lists {accn} twice")
+        out[accn] = {"form": form, "filed": filed, "period_end": rep or None}
+    return {"cik": cik10, "filings": out}
+
+
 # ---------- frames ----------
 
 def parse_frames(data: bytes) -> dict:
-    """A frames file -> its rows (cik, accession, period, value). The unit is spelled as companyfacts spells it."""
+    """A frames file -> its rows (cik, accession, period_start, period_end, value). The unit is spelled as companyfacts
+    spells it, and an instant has the same date as period_start and period_end."""
     raw = _load(data)
     common.shape(isinstance(raw, dict), "frame is not an object")
     for k in ("taxonomy", "tag", "ccp", "uom"):
@@ -285,8 +315,8 @@ def parse_frames(data: bytes) -> dict:
         common.shape(_iso(d.get("end")) and _num(d.get("val")), "frame entry end or val")
         if "start" in d:
             common.shape(_iso(d["start"]), "frame entry start")
-        rows.append({"cik": f"{d['cik']:010d}", "accession": d["accn"],
-                     "period": _period(d.get("start"), d["end"]), "value": canon(d["val"])})
+        rows.append({"cik": f"{d['cik']:010d}", "accession": d["accn"], "period_start": d.get("start", d["end"]),
+                     "period_end": d["end"], "value": canon(d["val"])})
     return {"taxonomy": raw["taxonomy"], "concept": raw["tag"], "unit": raw["uom"].replace("-per-", "/"),
             "ccp": raw["ccp"], "rows": rows}
 
@@ -362,8 +392,8 @@ def scope_report(ranking, choice, *, no_facts=(), unsupported_units=None, budget
             "quarterly_facts": "10-Q and other quarterly facts, and every form other than 10-K and 10-K/A",
             "years_outside_2019_2024": "facts of reports whose fy is before 2019 or after 2024",
             "units_not_in_units_md": {
-                "rule": ("D38: only currency codes (company_fact), shares, <currency>/shares and pure are relayed; a "
-                         "cell in any other unit is left out. Cells by unit, for the chosen companies"),
+                "rule": ("D38: only currency codes (company_fact's unit), shares, <currency>/shares and pure are relayed; "
+                         "a cell in any other unit is left out. Cells by unit, for the chosen companies"),
                 "cells": dict(sorted((unsupported_units or {}).items())),
             },
         },
@@ -423,11 +453,16 @@ def http_get(url: str, *, sleep=time.sleep) -> bytes:
         sleep(waits[attempt])
 
 
+def _sec_hosts() -> dict:
+    with open(SEC_NAMES, "rb") as f:
+        return tomllib.load(f)["hosts"]
+
+
 def sec_table(host) -> dict:
     """The SEC section of sec_names.toml for one host (K7). Production is refused by name; any host the file does not
     list is common.UnknownHost. Names come with {host} spelled for the host."""
     if host == PRODUCTION:
-        raise NotForProduction(f"the SEC names are rehearsal-only (Part 7, K7): {PRODUCTION} is refused")
+        raise NotForProduction(f"the SEC names are rehearsal-only (K7): {PRODUCTION} is refused; use mesh-test.{PRODUCTION}")
     with open(SEC_NAMES, "rb") as f:
         raw = tomllib.load(f)
     if not isinstance(host, str) or host not in raw["hosts"]:
@@ -436,11 +471,23 @@ def sec_table(host) -> dict:
     return common._with_host(body, host)
 
 
+def _base_table(host) -> dict:
+    """common's table for the host. The hosts of names.toml come from common.names; a rehearsal host that only the SEC
+    file lists (scratch.invalid) gets the same table, spelled for it, from names.toml's own text (which names no host)."""
+    if host in common._table()["hosts"]:
+        return dict(common.names(host))
+    status = _sec_hosts()[host]["status"]
+    body = {k: v for k, v in common._table().items() if k != "hosts"}
+    out = common._with_host(body, host)
+    out["meta"] = {"host": host, "status": status, "takeover_base": f"https://{host}/takeover"}
+    return out
+
+
 def names(host) -> dict:
-    """common.names(host) plus the SEC tables: `sec` (the relay), `sec_register` (the register table of names.toml with
+    """common's table plus the SEC tables: `sec` (the relay), `sec_register` (the register table of names.toml with
     the one SEC dataset), `sec_register_entry` and `sec_register_licence` (the licence facts)."""
     raw = sec_table(host)
-    table = dict(common.names(host))
+    table = _base_table(host)
     reg = dict(table["register"])
     reg["datasets"] = raw["sec_register"]["datasets"]
     reg["source_labels"] = {**reg["source_labels"], **raw["sec_register"]["source_labels"]}
@@ -458,18 +505,27 @@ def _cf_url(s, cik) -> str:
     return s["companyfacts_url"].format(cik=cik)
 
 
+def _sub_url(s, cik) -> str:
+    return s["submissions_url"].format(cik=cik)
+
+
 # ---------- lines ----------
 
+S_ARG = {"type": "string", "valid": False}
+D_ARG = {"type": "date", "valid": False}
+N_ARG = {"type": "number", "unit": "1", "valid": False}
+FACT_RETURNS = {"type": "number", "unit": {"arg": "unit"}}
+FILING_STEWARD = "https://{host}/classes/change"  # the mesh's change process for a class (as register/dataset's)
+
+
 def _fq(s):
-    return f"{s['namespace']}/{s['function']}", f"{s['namespace']}/{s['filing_function']}", \
-        f"{s['namespace']}/{s['filing_for_function']}"
+    return f"{s['namespace']}/{s['function']}", f"{s['annual_report_namespace']}/{s['annual_report_function']}", \
+        f"{s['namespace']}/{s['filing_class']}"
 
 
-def _call(fq, argnames, values, numbers=()) -> str:
-    """`fq(a: "x", ...)`: strings are quoted, the arguments named in `numbers` are bare."""
-    def one(a):
-        return f"{a}: {values[a]}" if a in numbers else f"{a}: {chr(34)}{values[a]}{chr(34)}"
-    return f"{fq}({', '.join(one(a) for a in argnames)})"
+def _call(fq, order, vals, bare=()) -> str:
+    """`fq(a: "x", b: 2023-01-01)`: strings are quoted, the arguments named in `bare` (dates, numbers) are not."""
+    return f"{fq}({', '.join(f'{a}: {vals[a]}' if a in bare else f'{a}: {chr(34)}{vals[a]}{chr(34)}' for a in order)})"
 
 
 def _source(s, src) -> dict:
@@ -478,64 +534,214 @@ def _source(s, src) -> dict:
 
 
 def _fact_key(cik, r) -> str:
-    return "|".join((cik, r["taxonomy"], r["concept"], r["unit"], r["accession"], r["period"]))
+    return "|".join((cik, r["concept"], r["unit"], r["accession"], r["period_start"], r["period_end"]))
 
 
-FACT_ARGS = ("cik", "taxonomy", "concept", "unit", "accession", "period")
-FILING_ARGS = ("accession", "field")
-FILING_FOR_ARGS = ("cik", "fiscal_year")
+def _fact_cell(s, entity, cik, r, src):
+    value = canon(r["value"])
+    if r["period_start"] == r["period_end"]:
+        when = f"as at {r['period_end']}"
+    else:
+        when = f"for {r['period_start']} to {r['period_end']}"
+    summary = (f"{entity} {r['form']} filed {r['filed']}, fiscal year {r['fy']}: {r['concept']} {when} is {value} "
+               f"{r['unit']} as filed in accession {r['accession']}{relay.tail(s)}")
+    args = {"cik": cik, "concept": r["concept"], "unit": r["unit"], "accession": r["accession"],
+            "period_start": r["period_start"], "period_end": r["period_end"]}
+    return {"cell": {"fn": f"{s['namespace']}/{s['function']}",
+                     "args": {k: {"type": "date" if k.startswith("period") else "string", "value": args[k]}
+                              for k in FACT_ORDER}},
+            "value": {"type": "number", "value": value}, "licence": s["licence"],
+            "summary": common.nfc(summary), "source": _source(s, src)}
 
-# The relay is split by unit form (D38). For each: the names.toml key of its function, its arguments in order, and the
-# unit its descriptor declares for the value (spec 7.1: a literal, or a reference to a string argument).
-FACT_FORMS = {
-    "money": {"name": "function", "args": FACT_ARGS, "unit": {"arg": "unit"}},
-    "shares": {"name": "shares_function", "args": ("cik", "taxonomy", "concept", "accession", "period"),
-               "unit": "count"},
-    "per_share": {"name": "per_share_function",
-                  "args": ("cik", "taxonomy", "concept", "currency", "accession", "period"), "unit": {"arg": "currency"}},
-    "ratio": {"name": "ratio_function", "args": ("cik", "taxonomy", "concept", "accession", "period"), "unit": "1"},
-}
 
+def _filing_value(f, field):
+    if field == "fiscal_year":
+        return f["fy"]
+    if field == "fiscal_period":
+        return f["fp"]
+    return f[field]
+
+
+def _filing_cell(s, cls, entity, accn, f, field, src):
+    value = _filing_value(f, field)
+    summary = (f"{entity} filing {accn}: {field} is {value} ({f['form']} filed {f['filed']}, fiscal year {f['fy']}, "
+               f"{f['fp']})" + relay.tail(s))
+    return {"cell": {"fn": f"{cls}/{field}", "args": {"accession": {"type": "string", "value": accn}}},
+            "value": {"type": FILING_VALUE_TYPES[field], "value": value}, "licence": s["licence"],
+            "summary": common.nfc(summary), "source": _source(s, src)}
+
+
+def _annual_cell(s, entity, cik, fy, accn, src):
+    summary = (f"the latest-filed annual report (10-K or 10-K/A) of fiscal year {fy} of {entity} (cik {cik}) is accession "
+               f"{accn}: Datumesh's selection over the SEC's filings, not a figure the company reported")
+    return {"cell": {"fn": f"{s['annual_report_namespace']}/{s['annual_report_function']}",
+                     "args": {"cik": {"type": "string", "value": cik},
+                              "fiscal_year": {"type": "number", "value": fy}}},
+            "value": {"type": "string", "value": accn}, "licence": s["licence"],
+            "summary": common.nfc(summary)}
+
+
+def _functions(s):
+    fq, ann, _ = _fq(s)
+    return [
+        {"function": fq, "signature": {
+            "args": {"cik": dict(S_ARG), "concept": dict(S_ARG), "unit": dict(S_ARG), "accession": dict(S_ARG),
+                     "period_start": dict(D_ARG), "period_end": dict(D_ARG)},
+            "order": list(FACT_ORDER), "returns": dict(FACT_RETURNS)}},
+        {"function": ann, "signature": {
+            "args": {"cik": dict(S_ARG), "fiscal_year": dict(N_ARG)}, "order": ["cik", "fiscal_year"],
+            "returns": "string"}},
+    ]
+
+
+def _method_descriptor(m):
+    """The stored method's descriptor, as register.py writes its methods: keyed by accession, no inputs."""
+    return {"code": {"body": "", "lang": "stored"}, "inputs": [],
+            "signature": {"args": {"accession": dict(S_ARG)}, "order": ["accession"], "returns": FILING_RETURNS[m]}}
+
+
+def _host_of(s):
+    """The host a name of the table is spelled for: the first part of the relay's namespace."""
+    return s["namespace"].split("/", 1)[0]
+
+
+def _class_lines(s):
+    """The six method descriptors, then the class line (its keys, steward and the methods' hashes)."""
+    cls = f"{s['namespace']}/{s['filing_class']}"
+    lines, hashes = [], {}
+    for m in FILING_METHODS:
+        d = _method_descriptor(m)
+        lines.append({"descriptor": d})
+        hashes[m] = hashlib.sha256(licence_register.jcs(d)).hexdigest()
+    lines.append({"class": cls, "descriptor": {
+        "keys": {"accession": {"type": "string", "key_normalisation": "none"}}, "order": ["accession"],
+        "methods": hashes, "steward": {"namespace": s["namespace"], "process": FILING_STEWARD.replace("{host}", _host_of(s))}}})
+    return lines
+
+
+def _unit_label(u):
+    if u == "shares":
+        return "a count of shares"
+    if u == "pure":
+        return "a pure number (no unit)"
+    if u.endswith("/shares"):
+        return f"{_currency_label(u[:-7])} per share"
+    return _currency_label(u)
+
+
+CURRENCY_LABELS = {"USD": "US dollars", "EUR": "euros", "USN": "US dollars (next day)"}
 FIELD_LABELS = {
     "cik": "the company's CIK (10 digits)",
     "form": "the form, 10-K or 10-K/A",
     "filed": "the filing date",
-    "fy": "the fiscal year of the report, as filed (not the period's year)",
-    "fp": "the fiscal period of the report (FY)",
+    "fiscal_year": "the fiscal year of the report, as filed (not the period's year)",
+    "fiscal_period": "the fiscal period of the report (FY)",
     "period_end": "the period end of the report's annual statements (not a cover-page date)",
 }
-CURRENCY_LABELS = {"USD": "US dollars", "EUR": "euros", "USN": "US dollars (next day)"}
-TAXONOMY_LABELS = {"us-gaap": "US GAAP taxonomy", "dei": "document and entity information (dei)"}
+FILING_TEXT = {
+    "cik": ("The company's CIK", "the company's CIK, 10 digits with leading zeros"),
+    "form": ("The form of the report", "the form of the report, 10-K or 10-K/A"),
+    "filed": ("The filing date", "the date the report was filed"),
+    "fiscal_year": ("The fiscal year of the report", "the fiscal year of the report (fy), a number in unit 1; it is not "
+                                                     "the year of the period end for a year that ends in another month"),
+    "fiscal_period": ("The fiscal period of the report", "the fiscal period of the report (FY for an annual report)"),
+    "period_end": ("The period end of the report", "the period end of the report's annual statements; not a cover-page "
+                                                   "date, which is later"),
+}
 
 
 def _currency_label(c):
     return CURRENCY_LABELS.get(c, f"{c} (ISO 4217 currency code)")
 
 
-def fact_functions(s) -> dict:
-    """{unit form: the relay function's name} (D38)."""
-    return {k: f"{s['namespace']}/{s[f['name']]}" for k, f in FACT_FORMS.items()}
+def _catalogs(s, cells, rows, labels, entities):
+    fq, ann, cls = _fq(s)
+    src = s["source_name"]
+    out = []
+    fact_cells = cells["fact"]
+    mine = rows
+    used = sorted({r["concept"] for r in mine})
+    concept_dict = []
+    for c in used:
+        tax, _, name = c.partition(":")
+        lab = labels.get((tax, name), {"label": name, "description": None})
+        e = {"value": c, "label": lab["label"]}
+        if lab["description"] is not None:
+            e["description"] = lab["description"]
+        concept_dict.append(e)
+    examples = [{"call": _call(fq, FACT_ORDER, {k: v["value"] for k, v in c["cell"]["args"].items()},
+                               bare=("period_start", "period_end")), "expected": c["value"]} for c in fact_cells[:2]]
+    out.append({"catalog": fq, "kind": "function", "label": "Company figure as filed (XBRL fact, one filing)",
+                "description": (
+                    f"Relayed by datumesh.com from {src}: one figure as the company filed it in one annual report "
+                    "(accession), exactly as filed: no scaling, no sign change, not normalised. A figure restated in a "
+                    "later annual report is a separate cell with that report's accession. The unit is the unit as "
+                    "filed (a currency code such as USD, shares, <currency>/shares or pure) and is returned as the "
+                    "unit of the value. Only 10-K and 10-K/A reports for fiscal years 2019 to 2024, and the listed "
+                    "concepts; each figure is one cell per filing and period. An instant (a balance) has the same date "
+                    "as period_start and period_end."),
+                "args": {
+                    "cik": "the company's CIK, 10 digits with leading zeros",
+                    "concept": "the element as filed with its prefix, such as us-gaap:Assets or dei:EntityCommonStockSharesOutstanding (see the dictionary)",
+                    "unit": "the unit as filed: a currency code such as USD or EUR, shares, <currency>/shares such as USD/shares, or pure",
+                    "accession": "the accession number of the filing, for example 0000320193-23-000106",
+                    "period_start": "YYYY-MM-DD, the start of the period; an instant has the same date as period_end",
+                    "period_end": "YYYY-MM-DD, the end of the period (for an instant, the same date as period_start)",
+                },
+                "open_keys": ["accession"],
+                "examples": examples,
+                "dictionary": {
+                    "concept": concept_dict,
+                    "unit": [{"value": u, "label": _unit_label(u)} for u in sorted({r["unit"] for r in mine})],
+                    "cik": [{"value": c, "label": entities[c]} for c in sorted({r["cik"] for r in mine})],
+                }})
 
+    accn_cells = cells["filing"]
+    filing_cat = {"catalog": cls, "kind": "class", "label": "SEC annual report (filing, as filed)",
+                  "description": (f"Relayed by datumesh.com from {src}: one annual report (10-K or 10-K/A), keyed by its "
+                                  "accession; its six methods are the report's cik, form, filed date, fiscal year, fiscal "
+                                  "period and period end, each as filed in the company's submissions record."),
+                  "args": {"accession": "the accession number of the filing, for example 0000320193-23-000106"},
+                  "open_keys": ["accession"], "examples": [], "dictionary": {}}
+    out.append(filing_cat)
+    for m in FILING_METHODS:
+        mc = [c for c in accn_cells if c["cell"]["fn"] == f"{cls}/{m}"]
+        what, detail = FILING_TEXT[m]
+        out.append({"catalog": f"{cls}/{m}", "kind": "function", "label": f"{what} (filing, as filed)",
+                    "description": (f"Relayed by datumesh.com from {src}: {detail}, of one annual report (accession), "
+                                    "as filed in the company's submissions record; one cell per annual report of the "
+                                    "companies in scope."),
+                    "args": {"accession": "the accession number of the filing, for example 0000320193-23-000106"},
+                    "open_keys": ["accession"],
+                    "examples": [{"call": _call(f"{cls}/{m}", ["accession"], {"accession": c["cell"]["args"]["accession"]["value"]}),
+                                  "expected": c["value"]} for c in mc[:2]],
+                    "dictionary": {}})
 
-def _fact_args(kind, cik, r, ccy):
-    vals = {"cik": cik, "taxonomy": r["taxonomy"], "concept": r["concept"], "unit": r["unit"], "currency": ccy,
-            "accession": r["accession"], "period": r["period"]}
-    return {a: vals[a] for a in FACT_FORMS[kind]["args"]}
+    ann_cells = cells["annual"]
+    out.append({"catalog": ann, "kind": "function", "label": "Latest annual report of a fiscal year (our selection)",
+                "description": ("Datumesh's selection over the SEC's filings, not relayed: the accession of the latest-filed "
+                                "annual report (10-K or 10-K/A) of a company's fiscal year (fy as filed, not the period's "
+                                "year). A later amendment wins; a tie on the filing date goes to the higher accession. A "
+                                "fact about the filings, not a figure; stored by the operator with no source."),
+                "args": {"cik": "the company's CIK, 10 digits with leading zeros",
+                         "fiscal_year": "the fiscal year as filed, a number such as 2023 (unit 1)"},
+                "examples": [{"call": _call(ann, ["cik", "fiscal_year"],
+                                            {k: v["value"] for k, v in c["cell"]["args"].items()}, bare=("fiscal_year",)),
+                              "expected": c["value"]} for c in ann_cells[:2]],
+                "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}})
+    return out
 
 
 def emit(items, state, names):
-    """The lines of the new cells (and, on the first run, the functions and catalogue) and the new state. Nothing is
-    emitted for a fact, filing or filing_for already in the state; with nothing new the state is returned as it was.
-    A unit form (D38) is announced, function and catalogue, when its first cell is emitted."""
+    """The lines of the new cells and, on the first run, the functions, the filing class (its descriptors and class
+    line) and the catalogue, and the new state. Nothing is emitted for a fact, filing or annual report already in the
+    state; with nothing new the state is returned as it was."""
     s = names["sec"]
-    fq, ffq, gfq = _fq(s)
-    fns = fact_functions(s)
     seen_facts = set(state.get("facts", []))
     seen_filings = set(state.get("filings", []))
     filing_for_state = dict(state.get("filing_for", {}))
-    forms_done = set(state.get("forms", []))
-    cells = {"fact": [], "filing": [], "filing_for": []}
-    fact_cells = {k: [] for k in FACT_FORMS}
+    cls = f"{s['namespace']}/{s['filing_class']}"
+    cells = {"fact": [], "filing": [], "annual": []}
     all_rows, labels, entities = [], {}, {}
     for it in items:
         p = it["parsed"]
@@ -549,243 +755,135 @@ def emit(items, state, names):
             if k in seen_facts:
                 continue
             seen_facts.add(k)
-            kind, ccy = unit_form(r["unit"])
-            cell = _fact_cell(s, kind, fns[kind], p["entity"], cik, r, ccy, src)
-            cells["fact"].append(cell)
-            fact_cells[kind].append(cell)
+            cells["fact"].append(_fact_cell(s, p["entity"], cik, r, src))
         for accn, f in p["filings"].items():
             if accn in seen_filings:
                 continue
             seen_filings.add(accn)
-            for field in FILING_FIELDS:
-                cells["filing"].append(_filing_cell(s, ffq, p["entity"], accn, f, field, src))
+            for field in FILING_METHODS:
+                cells["filing"].append(_filing_cell(s, cls, p["entity"], accn, f, field, src))
         for fy, accn in p["filing_for"].items():
             key = f"{cik}|{fy}"
             if filing_for_state.get(key) == accn:
                 continue
             filing_for_state[key] = accn
-            cells["filing_for"].append(_filing_for_cell(s, gfq, p["entity"], cik, fy, accn, src))
+            cells["annual"].append(_annual_cell(s, p["entity"], cik, fy, accn, src))
 
-    lines = []
     if not any(cells.values()):
         return [], state
-    new_forms = [k for k in FACT_FORMS if fact_cells[k] and k not in forms_done]
-    first = not state.get("announced")
-    if first or new_forms:
-        lines += _functions(s, new_forms, first)
-        lines += _catalogs(s, new_forms, first, cells, fact_cells, all_rows, labels, entities)
-    for kind in ("fact", "filing", "filing_for"):
+    lines = []
+    if not state.get("announced"):
+        lines += _functions(s) + _class_lines(s) + _catalogs(s, cells, all_rows, labels, entities)
+    for kind in ("fact", "filing", "annual"):
         lines += cells[kind]
     new = dict(state)
-    new.update({"announced": True, "forms": sorted(forms_done | set(new_forms)), "facts": sorted(seen_facts),
-                "filings": sorted(seen_filings), "filing_for": filing_for_state})
+    new.update({"announced": True, "facts": sorted(seen_facts), "filings": sorted(seen_filings),
+                "filing_for": filing_for_state})
     return lines, new
-
-
-def _fact_cell(s, kind, fq, entity, cik, r, ccy, src):
-    args = _fact_args(kind, cik, r, ccy)
-    summary = (f"{entity} {r['form']} filed {r['filed']}, fiscal year {r['fy']}: {r['concept']} ({r['taxonomy']}) "
-               f"for period {r['period']} is {r['value']} {r['unit']} as filed in accession {r['accession']}"
-               f"{relay.tail(s)}")
-    return {"cell": {"fn": fq, "args": {k: {"type": "string", "value": v} for k, v in args.items()}},
-            "value": {"type": "number", "value": r["value"]}, "licence": s["licence"],
-            "summary": common.nfc(summary), "source": _source(s, src)}
-
-
-def _filing_cell(s, ffq, entity, accn, f, field, src):
-    value = f[field]
-    summary = (f"{entity} filing {accn}: {field} is {value} ({f['form']} filed {f['filed']}, fiscal year {f['fy']}, "
-               f"{f['fp']})" + relay.tail(s))
-    return {"cell": {"fn": ffq, "args": {"accession": {"type": "string", "value": accn},
-                                         "field": {"type": "string", "value": field}}},
-            "value": {"type": "string", "value": value}, "licence": s["licence"],
-            "summary": common.nfc(summary), "source": _source(s, src)}
-
-
-def _filing_for_cell(s, gfq, entity, cik, fy, accn, src):
-    summary = (f"the latest-filed annual report of fiscal year {fy} of {entity} (cik {cik}) is accession {accn}; a "
-               f"fact about the filings, not a figure" + relay.tail(s))
-    return {"cell": {"fn": gfq, "args": {"cik": {"type": "string", "value": cik},
-                                         "fiscal_year": {"type": "number", "value": fy}}},
-            "value": {"type": "string", "value": accn}, "licence": s["licence"],
-            "summary": common.nfc(summary), "source": _source(s, src)}
-
-
-def _functions(s, new_forms, first):
-    """The function lines: each new unit form, then (on the first run) filing and filing_for. Every number declares its
-    unit (spec 7.1), a string return is the bare name (D23) and `fiscal_year` is a number in `1` (D38)."""
-    fns = fact_functions(s)
-    ffq, gfq = (f"{s['namespace']}/{s['filing_function']}", f"{s['namespace']}/{s['filing_for_function']}")
-
-    def sig(args, order, returns, numbers=()):
-        return {"args": {k: ({"type": "number", "unit": "1", "valid": False} if k in numbers
-                             else {"type": "string", "valid": False}) for k in args},
-                "order": order, "returns": returns}
-    out = [{"function": fns[k], "signature": sig(FACT_FORMS[k]["args"], list(FACT_FORMS[k]["args"]),
-                                                  {"type": "number", "unit": FACT_FORMS[k]["unit"]})}
-           for k in new_forms]
-    if first:
-        out += [{"function": ffq, "signature": sig(FILING_ARGS, list(FILING_ARGS), "string")},
-                {"function": gfq, "signature": sig(FILING_FOR_ARGS, list(FILING_FOR_ARGS), "string", ("fiscal_year",))}]
-    return out
-
-
-_FACT_COMMON = ("exactly as filed: no scaling, no sign change, not normalised. A figure restated in a later annual "
-                "report is a separate cell with that report's accession. Only 10-K and 10-K/A reports for fiscal "
-                "years 2019 to 2024, and the listed concepts; each figure is one cell per filing and period.")
-FACT_TEXT = {
-    "money": {
-        "label": "Company figure in money as filed (XBRL fact, one filing)",
-        "description": ("Relayed by datumesh.com from {src}: one amount of money as the company reported it in one annual "
-                        "report (accession), " + _FACT_COMMON + " The unit argument is the filed currency code "
-                        "(USD, EUR) and the figure is in that currency. Share counts are in company_fact_shares, "
-                        "amounts per share in company_fact_per_share, pure numbers in company_fact_ratio."),
-        "args": {"unit": "the filed currency code, such as USD or EUR (the figure is in that currency)"},
-    },
-    "shares": {
-        "label": "Company share count as filed (XBRL fact, one filing)",
-        "description": ("Relayed by datumesh.com from {src}: one number of shares as the company reported it in one "
-                        "annual report (accession), " + _FACT_COMMON + " The filed unit is shares; the unit of the "
-                        "value is count."),
-        "args": {},
-    },
-    "per_share": {
-        "label": "Company amount per share as filed (XBRL fact, one filing)",
-        "description": ("Relayed by datumesh.com from {src}: one amount per share (such as earnings per share), filed "
-                        "in <currency>/shares, as the company reported it in one annual report (accession), "
-                        + _FACT_COMMON + " The currency argument is the currency code and the value is the amount of "
-                        "that currency per share. units.md has no rate whose per side is not a currency, so the "
-                        "declared unit is the currency and the per-share meaning is only this one (a spec gap, for "
-                        "the production review)."),
-        "args": {"currency": "the currency code of the filed <currency>/shares unit, such as USD (the value is the "
-                             "amount of that currency per share)"},
-    },
-    "ratio": {
-        "label": "Company pure number as filed (XBRL fact, one filing)",
-        "description": ("Relayed by datumesh.com from {src}: one pure number (a ratio or a coefficient, filed unit "
-                        "pure) as the company reported it in one annual report (accession), " + _FACT_COMMON +
-                        " The unit of the value is 1."),
-        "args": {},
-    },
-}
-
-
-def _catalogs(s, new_forms, first, cells, fact_cells, rows, labels, entities):
-    src_name = s["source_name"]
-    fns = fact_functions(s)
-    ffq, gfq = (f"{s['namespace']}/{s['filing_function']}", f"{s['namespace']}/{s['filing_for_function']}")
-    out = []
-    for kind in new_forms:
-        out.append(_fact_catalog(s, kind, fns[kind], fact_cells[kind], rows, labels, entities, src_name))
-    if not first:
-        return out
-    cik_dict = [{"value": c, "label": entities[c]} for c in sorted(entities)]
-    filing_examples = [{"call": _call(ffq, FILING_ARGS, dict(zip(FILING_ARGS, _cell_args(c)))),
-                        "expected": c["value"]} for c in cells["filing"][:2]]
-    filing_cat = {"catalog": ffq, "kind": "function", "label": "Filing field (as filed)",
-                  "description": (f"Relayed by datumesh.com from {src_name}: one field of one annual report "
-                                  "(accession), from the same companyfacts records, as filed; the period_end is the "
-                                  "period end of the report's annual statements, not a cover-page date."),
-                  "args": {"accession": "the accession number of the filing", "field": "one of " + ", ".join(FILING_FIELDS)},
-                  "examples": filing_examples,
-                  "dictionary": {"field": [{"value": f, "label": FIELD_LABELS[f]} for f in FILING_FIELDS]}}
-    filing_for_examples = [{"call": _call(gfq, FILING_FOR_ARGS, dict(zip(FILING_FOR_ARGS, _cell_args(c))),
-                                          numbers=("fiscal_year",)),
-                            "expected": c["value"]} for c in cells["filing_for"][:2]]
-    filing_for_cat = {"catalog": gfq, "kind": "function", "label": "Latest annual report of a fiscal year",
-                      "description": (f"Relayed by datumesh.com from {src_name}: the accession of the latest-filed annual "
-                                      "report (10-K or 10-K/A) of a company's fiscal year (fy as filed, not the period's "
-                                      "year); a later amendment wins; a tie on the filing date goes to the higher "
-                                      "accession. A fact about the filings, not a figure."),
-                      "args": {"cik": "the company's CIK, 10 digits with leading zeros",
-                               "fiscal_year": "the fiscal year as filed, a number such as 2023 (unit 1)"},
-                      "examples": filing_for_examples,
-                      "dictionary": {"cik": cik_dict}}
-    return out + [filing_cat, filing_for_cat]
-
-
-def _fact_catalog(s, kind, fq, kind_cells, rows, labels, entities, src_name):
-    """The catalogue entry of one unit form's function, with the dictionaries of the arguments it has."""
-    form = FACT_FORMS[kind]
-    mine = [r for r in rows if unit_form(r["unit"])[0] == kind]
-    used_concepts = sorted({(r["taxonomy"], r["concept"]) for r in mine})
-    concept_dict = []
-    for tax, c in used_concepts:
-        lab = labels.get((tax, c), {"label": c, "description": None})
-        e = {"value": c, "label": lab["label"]}
-        if lab["description"] is not None:
-            e["description"] = lab["description"]
-        concept_dict.append(e)
-    ciks = sorted({r["cik"] for r in mine})
-    text = FACT_TEXT[kind]
-    args = {
-        "cik": "the company's CIK, 10 digits with leading zeros",
-        "taxonomy": "us-gaap or dei",
-        "concept": "the XBRL element name exactly as filed (concept labels are in the dictionary)",
-        "accession": "the accession number of the filing, for example 0000320193-23-000106",
-        "period": "YYYY-MM-DD for an instant, or YYYY-MM-DD/YYYY-MM-DD for a duration",
-        **text["args"],
-    }
-    dictionary = {"concept": concept_dict,
-                  "taxonomy": [{"value": t, "label": TAXONOMY_LABELS[t]} for t in sorted({t for t, _ in used_concepts})],
-                  "cik": [{"value": c, "label": entities[c]} for c in ciks]}
-    if kind == "money":
-        dictionary["unit"] = [{"value": u, "label": _currency_label(u)} for u in sorted({r["unit"] for r in mine})]
-    if kind == "per_share":
-        dictionary["currency"] = [{"value": c, "label": _currency_label(c)}
-                                  for c in sorted({unit_form(r["unit"])[1] for r in mine})]
-    examples = [{"call": _call(fq, form["args"], dict(zip(form["args"], _cell_args(c)))), "expected": c["value"]}
-                for c in kind_cells[:2]]
-    return {"catalog": fq, "kind": "function", "label": text["label"],
-            "description": text["description"].format(src=src_name), "args": args, "examples": examples,
-            "dictionary": dictionary}
-
-
-def _cell_args(cell_line):
-    """The argument values of an emitted cell line, in the order of its call."""
-    return [cell_line["cell"]["args"][k]["value"] for k in cell_line["cell"]["args"]]
 
 
 # ---------- conformance ----------
 
+def _fact_test_call(fq, cik, concept, unit, accession, start, end):
+    return _call(fq, FACT_ORDER, {"cik": cik, "concept": concept, "unit": unit, "accession": accession,
+                                  "period_start": start, "period_end": end}, bare=("period_start", "period_end"))
+
+
 def conformance(rows, frames_list, names, minimum=CONFORMANCE_MINIMUM):
-    """Tests from the frames API (a second channel for the same concept, period and CIK), by the frame's own
-    accession: a frame fact of an in-scope report must be in the rows with the same value; a frame entry whose report
-    is out of scope is skipped, and so is a frame in a unit that is not relayed (D38). Each test calls the function of
-    the frame's unit form. At least `minimum` tests, else ConformanceError."""
+    """Tests of company_fact from the frames API (a second channel for the same concept, period and CIK), by the frame's
+    own accession: a frame fact of an in-scope report must be in the rows with the same value; a frame entry whose
+    report is out of scope is skipped, and so is a frame in a unit that is not relayed. Every test calls company_fact
+    with the frame's unit. At least `minimum` tests, else ConformanceError."""
     s = names["sec"]
-    fns = fact_functions(s)
-    by_key = {(r["cik"], r["taxonomy"], r["concept"], r["unit"], r["accession"], r["period"]): r for r in rows}
+    fq = f"{s['namespace']}/{s['function']}"
+    by_key = {(r["cik"], r["concept"], r["unit"], r["accession"], r["period_start"], r["period_end"]): r for r in rows}
     accessions = {}
     for r in rows:
         accessions.setdefault(r["cik"], set()).add(r["accession"])
     tests = []
     for f in frames_list:
-        form = unit_form(f["unit"])
-        if form is None:
+        if not relayed_unit(f["unit"]):
             continue
-        kind, ccy = form
-        fq = fns[kind]
+        concept = f"{f['taxonomy']}:{f['concept']}"
         for fr in f["rows"]:
-            key = (fr["cik"], f["taxonomy"], f["concept"], f["unit"], fr["accession"], fr["period"])
+            key = (fr["cik"], concept, f["unit"], fr["accession"], fr["period_start"], fr["period_end"])
             row = by_key.get(key)
             if row is None:
                 if fr["accession"] in accessions.get(fr["cik"], ()):
                     raise ConformanceError(
-                        f"{fq} {fr['cik']}: the frame has {f['concept']} for {fr['period']} in {fr['accession']}, "
+                        f"{fq} {fr['cik']}: the frame has {concept} for {fr['period_end']} in {fr['accession']}, "
                         f"and the scope rows of that report do not")
                 continue
             if Decimal(row["value"]) != Decimal(fr["value"]):
                 raise ConformanceError(
-                    f"{fq} {fr['cik']} {fr['accession']} {f['concept']} {fr['period']}: {row['value']} against "
+                    f"{fq} {fr['cik']} {fr['accession']} {concept} {fr['period_end']}: {row['value']} against "
                     f"{fr['value']} in the frame (the frame is the second copy); nothing is published")
-            vals = _fact_args(kind, fr["cik"], {"taxonomy": f["taxonomy"], "concept": f["concept"], "unit": f["unit"],
-                                                "accession": fr["accession"], "period": fr["period"]}, ccy)
-            tests.append({"test": fq, "call": _call(fq, FACT_FORMS[kind]["args"], vals),
+            tests.append({"test": fq, "call": _fact_test_call(fq, fr["cik"], concept, f["unit"], fr["accession"],
+                                                              fr["period_start"], fr["period_end"]),
                           "expect": {"type": "number", "value": fr["value"]}})
     if len(tests) < minimum:
-        raise ConformanceError(f"{fns['money']}: {len(tests)} source-conformance tests, at least {minimum} are needed; "
+        raise ConformanceError(f"{fq}: {len(tests)} source-conformance tests, at least {minimum} are needed; "
                                "nothing is published")
+    return tests
+
+
+def filing_conformance(items, submissions_list, names, minimum=FILING_CONFORMANCE_MINIMUM):
+    """Tests of the six filing methods against the submissions API (the second copy of the filing class), one per
+    method per annual report that both files have. A report the submissions do not list is skipped, not failed. The
+    expected values are the submissions' own: cik, form, filed and period_end. The submissions API has no fiscal-year
+    member, so fiscal_year is derived as the year before the filing year (exact for the annual reports of calendar-year
+    companies filed in the following year, the fixtures' case) and fiscal_period as FY for a 10-K form: a weaker check.
+    A disagreement with the companyfacts file, whichever way it arises, is ConformanceError (the run stops)."""
+    s = names["sec"]
+    cls = f"{s['namespace']}/{s['filing_class']}"
+    mine = {}
+    for it in items:
+        for accn, f in it["parsed"]["filings"].items():
+            mine[accn] = f
+    tests = []
+    for sub in submissions_list:
+        for accn, sf in sub["filings"].items():
+            f = mine.get(accn)
+            if f is None:
+                continue
+            if sub["cik"] != f["cik"]:
+                raise ConformanceError(
+                    f"{cls} {accn}: the submissions say cik {sub['cik']} and the companyfacts file says cik "
+                    f"{f['cik']}; nothing is published")
+            theirs = {
+                "cik": sub["cik"], "form": sf["form"], "filed": sf["filed"],
+                "fiscal_year": str(int(sf["filed"][:4]) - 1),
+                "fiscal_period": "FY" if sf["form"] in FORMS else None,
+                "period_end": sf["period_end"],
+            }
+            for m in FILING_METHODS:
+                mine_v = _filing_value(f, m)
+                if theirs[m] is None or str(mine_v) != str(theirs[m]):
+                    raise ConformanceError(
+                        f"{cls}/{m} {accn}: the companyfacts file says {mine_v} and the submissions API says "
+                        f"{theirs[m]}; nothing is published")
+                tests.append({"test": f"{cls}/{m}", "call": f'{cls}/{m}(accession: "{accn}")',
+                              "expect": {"type": FILING_VALUE_TYPES[m], "value": str(theirs[m])}})
+    if len(tests) < minimum:
+        raise ConformanceError(f"{cls}: {len(tests)} filing tests against the submissions, at least {minimum} are "
+                               "needed; nothing is published")
+    return tests
+
+
+def annual_report_tests(items, names):
+    """Pins of sec/annual_report: the earliest and the latest fiscal year of each company, the accession our selection
+    gives (the filing_for of its companyfacts file)."""
+    fn = f"{names['sec']['annual_report_namespace']}/{names['sec']['annual_report_function']}"
+    tests = []
+    for it in items:
+        fy = it["parsed"]["filing_for"]
+        if not fy:
+            continue
+        cik = it["parsed"]["cik"]
+        for y in sorted({min(fy, key=int), max(fy, key=int)}, key=int):
+            tests.append({"test": fn, "call": _call(fn, ["cik", "fiscal_year"], {"cik": cik, "fiscal_year": y},
+                                                    bare=("fiscal_year",)),
+                          "expect": {"type": "string", "value": fy[y]}})
     return tests
 
 
@@ -818,11 +916,11 @@ class _Counts(Mapping):
 def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep, clock=time.monotonic,
         budget=BUDGET, step=STEP):
     """Fetch the ranking, count the cells in rank order up to the budget, emit the chosen companies' cells, test them
-    against the frames, and write one publish-stored file and the left-out report. Nothing is written when a request
-    is refused, a shape changes or a test disagrees. The state is saved after publish returns."""
+    against the frames and the submissions, and write one publish-stored file and the left-out report. Nothing is
+    written when a request is refused, a shape changes or a test disagrees. The state is saved after publish returns."""
     meta = names.get("meta", {})
     if meta.get("host") == PRODUCTION or meta.get("status") == "production" or "sec" not in names:
-        raise NotForProduction(f"the SEC relay is rehearsal-only (Part 7, K7); host {meta.get('host')!r} is refused")
+        raise NotForProduction(f"the SEC relay is rehearsal-only (K7); host {meta.get('host')!r} is refused")
     s = names["sec"]
     bucket = TokenBucket(MAX_REQUESTS_PER_SECOND, clock=clock, sleep=sleep)
 
@@ -865,9 +963,17 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         items.append({"parsed": parse_companyfacts(data),
                       "source": {"url": url, "retrieved": now, "sha256": common.sha256_hex(data)}})
 
+    submissions = []
+    for it in items:
+        cik = it["parsed"]["cik"]
+        try:
+            submissions.append(parse_submissions(get(_sub_url(s, cik))))
+        except NotPublished:
+            common.warn(f"sec: no submissions for {cik}; its filing tests are not written this run")
+
     lines, st = emit(items, state, names)
-    # the register's six cells of sec.gov / company_facts, on the first run (register.py's emit: a later run emits
-    # nothing unless the licence text changed); the class lines and descriptors are register.py's
+    # the register's cells of sec.gov / company_facts, on the first run (register.py's emit: a later run emits
+    # nothing unless the licence text changed); the register's class lines are register.py's, not this file's
     reg_blobs = {}
     reg_lines, reg_state = licence_register.emit(
         [names["sec_register_entry"]], {"class": True, **state.get("register", {})},
@@ -877,7 +983,8 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         st["register"] = reg_state
     lines = lines + reg_lines
     rows = [r for it in items for r in it["parsed"]["rows"]]
-    tests = conformance(rows, frames, names)
+    tests = (conformance(rows, frames, names) + filing_conformance(items, submissions, names)
+             + annual_report_tests(items, names))
     tested = set(st.get("tested", []))
     new_tests = [t for t in tests if t["call"] not in tested]
     if new_tests:
@@ -885,7 +992,7 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
         st["tested"] = sorted(tested | {t["call"] for t in new_tests})
         lines += new_tests
     cells = sum(1 for l in lines if "cell" in l)
-    common.warn(f"sec: {cells} cells, {len(new_tests)} tests written; {len(tests)} tests from the frames")
+    common.warn(f"sec: {cells} cells, {len(new_tests)} tests written; {len(tests)} tests from the second copies")
     if not lines:
         return None
 
@@ -894,8 +1001,8 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
     report_path = out_dir / f"sec-scope-{stamp}.json"
     left_out_units = {}
     for it in items:
-        for u, n in it["parsed"]["left_out_units"].items():
-            left_out_units[u] = left_out_units.get(u, 0) + n
+        for u, k in it["parsed"]["left_out_units"].items():
+            left_out_units[u] = left_out_units.get(u, 0) + k
     if left_out_units:
         common.warn(f"sec: units not relayed (D38), cells left out: {dict(sorted(left_out_units.items()))}")
     report = scope_report(ranking, choice, no_facts=no_facts, unsupported_units=left_out_units, budget=budget,
@@ -927,12 +1034,22 @@ def run(names, *, fetch, now, state_dir, out_dir, publish=None, sleep=time.sleep
 
 # ---------- the CLI ----------
 
+def _host_arg(value: str) -> str:
+    """The SEC relay's hosts are the hosts of sec_names.toml (rehearsal only); names() refuses anything else."""
+    try:
+        names(value)
+    except (common.UnknownHost, NotForProduction) as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+    return value
+
+
 def main(argv=None):
-    p = common.base_parser()
+    p = argparse.ArgumentParser(description="The SEC company facts relay (rehearsal hosts only).")
+    p.add_argument("--host", required=True, type=_host_arg,
+                   help="a rehearsal host of sec_names.toml, spelled exactly (no default; datumesh.com is refused)")
+    p.add_argument("--state-dir", required=True)
+    p.add_argument("--out-dir", required=True)
     a = p.parse_args(argv)
-    if a.host == PRODUCTION:
-        common.warn(f"sec.py: {PRODUCTION} is refused: the SEC relay is rehearsal-only (Part 7, K7); use mesh-test.{PRODUCTION}")
-        raise SystemExit(2)
     table = names(a.host)
     try:
         path = run(table, fetch=http_get, now=common.now_instant(), state_dir=a.state_dir, out_dir=a.out_dir)

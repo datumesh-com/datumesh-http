@@ -1,26 +1,32 @@
-# The SEC company-facts names (Build 2 Part 7, K7): rehearsal only. This file is not part of names.toml, so common.names
-# (both host tables) has no SEC section. sec.py reads it through sec.sec_table(host), which lists only the rehearsal host
-# below and refuses datumesh.com by name. Names are spelled with {host}, as in names.toml.
-# The names are permanent once published, so they are reviewed before any production table has them.
+# The SEC company-facts names (SEC rebuild, CONTRACT-sec-rebuild.md N1 to N4; Build 2 Part 7, K7): rehearsal only. This
+# file is not part of names.toml, so common.names (both host tables) has no SEC section. sec.py reads it through
+# sec.sec_table(host), which lists only the rehearsal hosts below and refuses datumesh.com by name. Names are spelled
+# with {host}, as in names.toml. The names are permanent once published, so they are reviewed before any production
+# table has them.
 
 [hosts."mesh-test.datumesh.com"]
+status = "rehearsal"
+
+[hosts."scratch.invalid"]
 status = "rehearsal"
 
 [sec]
 namespace = "{host}/relay/sec.gov"
 function = "company_fact"
-shares_function = "company_fact_shares"
-per_share_function = "company_fact_per_share"
-ratio_function = "company_fact_ratio"
-filing_function = "filing"
-filing_for_function = "filing_for"
+filing_class = "filing"
+filing_methods = ["cik", "form", "filed", "fiscal_year", "fiscal_period", "period_end"]
+annual_report_namespace = "{host}/sec"
+annual_report_function = "annual_report"
 source_name = "sec.gov"
 register_source = "sec.gov"
 register_code = "company_facts"
-licence = "https://www.sec.gov/about/privacy-information"
+# the SEC's own terms page: "considered public information and may be copied or further distributed" (spec-0.6.2 P4)
+licence = "public:https://www.sec.gov/about/privacy-information"
 takeover = "https://{host}/takeover/sec.gov"
 # one company's companyfacts file (10 digits with leading zeros)
 companyfacts_url = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+# one company's submissions (the second copy of the filing class, 10 digits with leading zeros)
+submissions_url = "https://data.sec.gov/submissions/CIK{cik}.json"
 # the NYSE and Nasdaq tickers (the scope rule's company list, K3)
 tickers_url = "https://www.sec.gov/files/company_tickers_exchange.json"
 # one frame: the latest value of a concept per company for a calendar period (CY2023Q4I is an instant, CY2023 a year)
