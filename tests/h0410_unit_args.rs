@@ -6,9 +6,9 @@
 //! the receipts verify, and `describe` and the function page show the declared `returns` as the mesh
 //! already shows an argument unit (`{"arg": "unit"}`, as `classes_describe` pins for fx_pair).
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
@@ -28,7 +28,11 @@ fn sig() -> String {
 }
 
 fn cell(unit: &str, value: &str) -> String {
-    cell_line(FN, json!({"concept": {"type": "string", "value": "x"}, "unit": {"type": "string", "value": unit}}), value)
+    cell_line(
+        FN,
+        json!({"concept": {"type": "string", "value": "x"}, "unit": {"type": "string", "value": unit}}),
+        value,
+    )
 }
 
 fn lines() -> Vec<String> {

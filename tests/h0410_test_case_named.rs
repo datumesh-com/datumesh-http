@@ -150,6 +150,8 @@ async fn named_cells_carry_the_function_name_and_verify() {
     let m = serve_lite("h0410-cells", &lines(), Some(test_cells_config()), |_| {}).await;
     let hash = fn_hash(&m, ALPHA);
     assert_eq!(hash, fn_hash(&m, BETA), "one signature, one function hash");
+    // the hash the mesh binds for its named name (the mesh's computing lang, not the vector's stored one)
+    let bound = fn_hash(&m, &format!("{HOST}/test_case"));
     for (name, t) in [(ALPHA, t_alpha()), (BETA, t_beta())] {
         let v = m.get(&format!("/cell/{}", call_path(&named_call(name, &hash, &case_id(&t))))).await;
         assert_eq!(v["outcome"], "ok", "{name}: {v}");
@@ -157,7 +159,7 @@ async fn named_cells_carry_the_function_name_and_verify() {
         assert_eq!(v["receipt"]["value"], json!(true), "{v}");
         assert_eq!(v["receipt"]["cell"]["fn"], "test_case");
         assert_eq!(v["receipt"]["cell"]["ns"], HOST);
-        assert_eq!(v["receipt"]["cell"]["fn_hash"], NAMED_HASH, "{v}");
+        assert_eq!(v["receipt"]["cell"]["fn_hash"], bound.as_str(), "{v}");
         let args = &v["receipt"]["cell"]["args"];
         assert_eq!(args["function"], json!({"type": "string", "value": name}), "{v}");
         assert_eq!(args["function_hash"]["value"], hash.as_str(), "{v}");
@@ -248,7 +250,7 @@ async fn describe_counts_named_cells_by_name_and_two_argument_cells_by_hash() {
         hold(&lite, OTHER, Some(BETA), &h, "00000000000000bb", false); // beta only
         hold(&lite, OTHER, Some(ALPHA), &other_hash, "00000000000000ff", false); // another hash: nobody
         hold(&lite, OTHER, Some("mesh-test.datumesh.com/scratch_h0410/gamma"), &h, "0000000000000011", false); // another name: nobody
-        // OTHER2 publishes the two-argument form: counts by hash, for both
+                                                                                                               // OTHER2 publishes the two-argument form: counts by hash, for both
         hold(&lite, OTHER2, None, &h, "00000000000000cc", false);
         let m = build_served(lite, base, |_| {}).await;
 
@@ -259,7 +261,8 @@ async fn describe_counts_named_cells_by_name_and_two_argument_cells_by_hash() {
         assert_eq!(a["tests"]["count"], 1, "{label}: {a}");
         assert_eq!(b["tests"]["count"], 1, "{label}: {b}");
         // core accepts the count
-        let held = datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{h}")).await.body).unwrap();
+        let held =
+            datumesh_core::FunctionDescriptor::from_json(&m.get_any(&format!("/descriptor/{h}")).await.body).unwrap();
         let ra = m.get_any(&describe_path(ALPHA)).await;
         let got = datumesh_core::check_describe_with(&ra.body, &Default::default(), &[held]).unwrap();
         assert_eq!(got.tests.unwrap().counterexamples, 3, "{label}");

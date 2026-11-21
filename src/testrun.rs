@@ -1092,7 +1092,7 @@ pub fn counts<S: Store + ?Sized>(
     now: &str,
 ) -> Result<(u64, u64, u64, u64), String> {
     let s = summary_of(store, hash, name, unnamed, now)?;
-    let foreign = foreign_counterexamples(store, hash, now)?.len() as u64;
+    let foreign = foreign_counterexamples(store, name, hash, now)?.len() as u64;
     Ok((s.count, s.branches_total as u64, s.branches_covered as u64, s.fail + s.error + foreign))
 }
 
@@ -1134,37 +1134,57 @@ pub fn open_counterexamples<S: Store + ?Sized>(
             true
         })?;
     }
-    out.extend(foreign_counterexamples(store, hash, now)?);
+    out.extend(foreign_counterexamples(store, name, hash, now)?);
     Ok(out)
 }
 
+/// Whether the descriptor `hash` is the named test-case signature (spec 7.3): of the stored kind, with a
+/// `function` argument beside `case` and `function_hash`.
+fn named_form<S: Store + ?Sized>(store: &S, hash: &str) -> bool {
+    store
+        .descriptor(hash)
+        .and_then(|b| FunctionDescriptor::from_json(&b).ok())
+        .is_some_and(|d| d.lang == "stored" && d.signature.args.contains_key(FUNCTION_ARG))
+}
+
 /// The `false` `<host>/test_case` cells of every host this mesh holds for `hash`, as of `now` (see
-/// [`open_counterexamples`]).
+/// [`open_counterexamples`]). A two-argument cell counts for every function of the hash; a named cell
+/// (spec 7.3, 16.8) counts only for the function `name` it names.
 pub(crate) fn foreign_counterexamples<S: Store + ?Sized>(
     store: &S,
+    name: &str,
     hash: &str,
     now: &str,
 ) -> Result<Vec<Counterexample>, String> {
     let mut out = Vec::new();
-    // Spec 7.3 gives a cell the function hash and the case only, so for stored functions of one signature a
-    // foreign counterexample applies to each of them; a later spec round may add the name (D23).
+    // Spec 7.3 gives a two-argument cell the function hash and the case only, so for stored functions of one
+    // signature it applies to each of them; the named form adds the function's name.
     let subject = Scalar::from_lexical(Type::String, hash).map_err(|e| e.to_string())?;
+    let function = Scalar::from_lexical(Type::String, name).map_err(|e| e.to_string())?;
     for ns in store.namespaces().map_err(|e| e.to_string())? {
-        let name = format!("{}/{TEST_CASE_NAME}", ns.host);
-        let Some(binding) = store.resolve_binding(&name, now).map_err(|e| e.to_string())? else { continue };
-        let cell = Cell {
-            ns: ns.host.clone(),
-            fn_name: TEST_CASE_NAME.into(),
-            fn_hash: binding.fn_hash.clone(),
-            args: CoreArgs::from([
+        let tc = format!("{}/{TEST_CASE_NAME}", ns.host);
+        let Some(binding) = store.resolve_binding(&tc, now).map_err(|e| e.to_string())? else { continue };
+        let named = named_form(store, &binding.fn_hash);
+        let args = if named {
+            CoreArgs::from([
                 (TEST_CASE_HASH_ARG.to_string(), Arg::Value(subject.clone())),
                 ("case".to_string(), Arg::Slice),
-            ]),
+                (FUNCTION_ARG.to_string(), Arg::Value(function.clone())),
+            ])
+        } else {
+            CoreArgs::from([
+                (TEST_CASE_HASH_ARG.to_string(), Arg::Value(subject.clone())),
+                ("case".to_string(), Arg::Slice),
+            ])
         };
+        let cell = Cell { ns: ns.host.clone(), fn_name: TEST_CASE_NAME.into(), fn_hash: binding.fn_hash.clone(), args };
         // A binding of another shape (not `function_hash` and `case`) holds no test cell of ours.
         let Ok(slice) = Slice::from_value(&cell.to_value()) else { continue };
         for v in store.slice_values(&slice, now).map_err(|e| e.to_string())? {
             if v.value.lexical() != "false" {
+                continue;
+            }
+            if named && !matches!(v.cell.args.get(FUNCTION_ARG), Some(Arg::Value(f)) if f.lexical() == name) {
                 continue;
             }
             let Some(Arg::Value(case)) = v.cell.args.get("case") else { continue };
@@ -1174,32 +1194,43 @@ pub(crate) fn foreign_counterexamples<S: Store + ?Sized>(
     Ok(out)
 }
 
-/// Puts the test-case function `<host>/test_case(function_hash, case) -> boolean` (E5, mesh-test) in
-/// the store, bound since the start of time, unless it is bound already. Its cells are computed by
-/// [`TestCases`].
-pub fn install_test_cases(store: &dyn Store, host: &str) -> Result<(), String> {
-    let name = format!("{host}/{TEST_CASE_NAME}");
-    if store.resolve_name(&name, "9999-12-31T23:59:59.999999Z").map_err(|e| e.to_string())?.is_some() {
-        return Ok(());
-    }
+/// The function argument of the named test-case cell: the test's function name (spec 7.3).
+const FUNCTION_ARG: &str = "function";
+
+/// The descriptor of `<host>/test_case` (E5, mesh-test; spec 7.3): `case`, `function_hash`, and with
+/// `named`, `function` between them, returns boolean. Its code is the mesh's lane, [`TEST_CASE_LANG`].
+fn test_case_descriptor(named: bool) -> Value {
     let s = |x: &str| Value::String(x.to_string());
     let arg = |t: &str| Value::Object(vec![("type".into(), s(t)), ("valid".into(), Value::Bool(false))]);
-    let v = Value::Object(vec![
+    let mut args = vec![(TEST_CASE_HASH_ARG.into(), arg("string")), ("case".into(), arg("string"))];
+    let mut order = vec![s(TEST_CASE_HASH_ARG), s("case")];
+    if named {
+        args.push((FUNCTION_ARG.into(), arg("string")));
+        order = vec![s("case"), s(FUNCTION_ARG), s(TEST_CASE_HASH_ARG)];
+    }
+    Value::Object(vec![
         ("code".into(), Value::Object(vec![("body".into(), s("")), ("lang".into(), s(TEST_CASE_LANG))])),
         ("inputs".into(), Value::Array(vec![])),
         (
             "signature".into(),
             Value::Object(vec![
-                (
-                    "args".into(),
-                    Value::Object(vec![(TEST_CASE_HASH_ARG.into(), arg("string")), ("case".into(), arg("string"))]),
-                ),
-                ("order".into(), Value::Array(vec![s(TEST_CASE_HASH_ARG), s("case")])),
+                ("args".into(), Value::Object(args)),
+                ("order".into(), Value::Array(order)),
                 ("returns".into(), s("boolean")),
             ]),
         ),
-    ]);
-    let bytes = v.to_jcs();
+    ])
+}
+
+/// Puts the test-case function `<host>/test_case(case, function, function_hash) -> boolean` (spec 7.3,
+/// the named form) in the store, bound since the start of time, unless the name is bound already: a name
+/// bound to the two-argument form keeps it (no rebind). Its cells are computed by [`TestCases`].
+pub fn install_test_cases(store: &dyn Store, host: &str) -> Result<(), String> {
+    let name = format!("{host}/{TEST_CASE_NAME}");
+    if store.resolve_name(&name, "9999-12-31T23:59:59.999999Z").map_err(|e| e.to_string())?.is_some() {
+        return Ok(());
+    }
+    let bytes = test_case_descriptor(true).to_jcs();
     let d = FunctionDescriptor::from_json(&bytes).map_err(|e| e.to_string())?;
     store.put_descriptor(&bytes).map_err(|e| e.to_string())?;
     store.bind_name(&name, &d.hash(), TEST_CASE_SINCE).map_err(|e| e.to_string())
@@ -1209,7 +1240,8 @@ pub fn install_test_cases(store: &dyn Store, host: &str) -> Result<(), String> {
 const TEST_CASE_SINCE: &str = "2000-01-01T00:00:00.000000Z";
 
 /// The test-case runtime (E5, mesh-test): `<host>/test_case(function_hash, case) -> boolean` is
-/// `true` when the function under test, run as the held test says, gives what the test expects.
+/// `true` when the function under test, run as the held test says, gives what the test expects. The
+/// named form (spec 7.3) also takes `function`: only the tests whose function is that name are its tests.
 pub struct TestCases {
     pub store: Arc<dyn Store + Send + Sync>,
 }
@@ -1234,7 +1266,17 @@ impl Runtime for TestCases {
         let hash = text(TEST_CASE_HASH_ARG)?;
         let case = text("case")?;
         let asof = inputs.asof();
-        let held = held_tests(&*self.store, &hash).map_err(EvalError::Runtime)?;
+        let held: Vec<(FunctionTest, TestSpec)> = if cell.args.contains_key(FUNCTION_ARG) {
+            // The named form: the tests of the function `function` names, the name the row's call gives (S1).
+            let function = text(FUNCTION_ARG)?;
+            held_of_name(&*self.store, &hash, &function, &asof)
+                .map_err(EvalError::Runtime)?
+                .into_iter()
+                .map(|(row, spec, _)| (row, spec))
+                .collect()
+        } else {
+            held_tests(&*self.store, &hash).map_err(EvalError::Runtime)?
+        };
         let Some((_, spec)) = held.into_iter().find(|(_, s)| s.case == case) else {
             return Err(EvalError::Runtime(format!("no test {case} of {hash}")));
         };

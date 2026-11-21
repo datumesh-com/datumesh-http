@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.10 (unreleased)
+
+Named test cells (spec-0.6.2 P3, CONTRACT-spec-0.6.2 addendum). Requires datumesh-core 0.3.11 and datumesh-formula 0.5.2 (spec-0.6.2 round): through the libraries, the public items they add (licences, the shares and pure units, `last_by`) reach the mesh, and this crate's public API does not change.
+
+- **The named test cell (spec 7.3, 16.8).** With `DATUMESH_TEST_CELLS` on, a name `<host>/test_case` that is unbound binds the named form `test_case(case, function, function_hash) -> boolean` (`function` the test's function name, the name stored with the row). A name already bound to the two-argument form keeps it (no rebind). `TestCases` computes the cells of whichever form is bound; in the named form only the tests of the function `function` names are its tests.
+- **Counterexamples (spec 7.3).** `describe` and the function page count a foreign `false` two-argument cell for every function of the hash, and a foreign `false` named cell (of the stored kind) only for the function it names.
+- **Tests.** The tests that called the two-argument `test_case` on a fresh mesh call the named form now.
 ## 0.4.9 (unreleased)
 
 Public paths do no work that grows with the data (the sweep of 0.4.8: CONTRACT-0.4.9 H1 to H8, decision D43), and the dictionary rule. Requires datumesh-store 0.5.2 (additive, migration 0011: `function_tests.fn_name`, the table `open_keys`; every existing receipt verifies, no row is rewritten but the new nullable column). Two public items change: `BundleError` and `DeclareError` gain a `Reserved` variant (both are `#[non_exhaustive]`). The rest of the public API is unchanged.

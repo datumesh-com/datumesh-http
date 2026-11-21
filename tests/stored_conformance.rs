@@ -233,7 +233,7 @@ async fn on_mesh_test_each_stored_function_test_is_a_cell() {
     .await;
     let hash = fn_hash(&m, FX);
     for (line, want) in [(&good_tests()[0], true), (&good_tests()[1], true), (&wrong, false)] {
-        let v = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(line))))).await;
+        let v = m.get(&format!("/cell/{}", call_path(&test_case_call(FX, &hash, &case_id(line))))).await;
         assert_eq!(v["outcome"], "ok", "{line}: {v}");
         assert_eq!(v["receipt"]["type"], "boolean", "{v}");
         assert_eq!(v["receipt"]["value"], json!(want), "{line}: {v}");
@@ -395,14 +395,15 @@ async fn test_cells_of_twins_are_unaffected() {
     let m = serve_lite("sc-twins-cells", &twins(), Some(test_cells_config()), |_| {}).await;
     let hash = fn_hash(&m, FX);
     let wrong = yt("GBP", "2024-03-15", "3.5");
+    // the named form names each test's function: FX's tests under FX, FY's under FY (same hash)
     let all = [
-        (good_tests()[0].clone(), true),
-        (good_tests()[1].clone(), true),
-        (yt("USD", "2024-03-15", "2"), true),
-        (wrong, false),
+        (FX, good_tests()[0].clone(), true),
+        (FX, good_tests()[1].clone(), true),
+        (FY, yt("USD", "2024-03-15", "2"), true),
+        (FY, wrong, false),
     ];
-    for (line, want) in &all {
-        let v = m.get(&format!("/cell/{}", call_path(&test_case_call(&hash, &case_id(line))))).await;
+    for (f, line, want) in &all {
+        let v = m.get(&format!("/cell/{}", call_path(&test_case_call(f, &hash, &case_id(line))))).await;
         assert_eq!(v["outcome"], "ok", "{line}: {v}");
         assert_eq!(v["receipt"]["value"], json!(want), "{line}: {v}");
     }

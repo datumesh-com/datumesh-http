@@ -8,9 +8,9 @@
 //! public rule), publishes, and evaluates through `/cell` and `/x/calc`, the member being the one of the
 //! latest filing. A fact whose filing has no `filed` cell is not a candidate (inner join).
 
-mod common;
 #[path = "common/calculus.rs"]
 mod calculus;
+mod common;
 
 use calculus::*;
 use common::lite::*;
@@ -53,8 +53,7 @@ fn fact_sig() -> String {
 
 /// The method's arguments after the class key: none.
 fn filed_sig() -> String {
-    r#"{"args":{"accession":{"type":"string","valid":false}},"order":["accession"],"returns":"date"}"#
-        .to_string()
+    r#"{"args":{"accession":{"type":"string","valid":false}},"order":["accession"],"returns":"date"}"#.to_string()
 }
 
 fn cik_sig() -> String {
@@ -62,7 +61,11 @@ fn cik_sig() -> String {
 }
 
 fn fact_cell(cik: &str, accession: &str, value: &str) -> String {
-    cell_line(&fact(), json!({"cik": {"type": "string", "value": cik}, "accession": {"type": "string", "value": accession}}), value)
+    cell_line(
+        &fact(),
+        json!({"cik": {"type": "string", "value": cik}, "accession": {"type": "string", "value": accession}}),
+        value,
+    )
 }
 
 fn filed_cell(accession: &str, date: &str) -> String {
@@ -115,11 +118,7 @@ fn bare_formulas() -> Vec<String> {
 
 /// The filing dates, a day after the facts (so a test as of the day between sees facts and no dates).
 fn filed_lines() -> Vec<String> {
-    vec![
-        filed_cell("A1", "2026-01-01"),
-        filed_cell("A2", "2026-03-01"),
-        filed_cell("A3", "2026-02-01"),
-    ]
+    vec![filed_cell("A1", "2026-01-01"), filed_cell("A2", "2026-03-01"), filed_cell("A3", "2026-02-01")]
 }
 
 fn formula_lines() -> Vec<String> {
@@ -150,7 +149,8 @@ async fn mesh(label: &str) -> Served {
     let fb = write(&lite, "filed.jsonl", &filed_lines());
     run(&lite, &fb, T0B).unwrap_or_else(|e| panic!("the filing dates publish: {e}"));
     let f2 = write(&lite, "formulas.jsonl", &formula_lines());
-    run_checked(&lite, &f2, T1_).unwrap_or_else(|e| panic!("the formulas define, with their tests, under the public rule: {e}"));
+    run_checked(&lite, &f2, T1_)
+        .unwrap_or_else(|e| panic!("the formulas define, with their tests, under the public rule: {e}"));
     build_served(lite, None, |_| {}).await
 }
 
