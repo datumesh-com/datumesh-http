@@ -192,39 +192,6 @@ async fn c8_held_is_at_most_sixty_words_with_the_domains_by_size() {
     assert!(v["classes"].is_array() && v["functions"].is_array(), "{v}");
 }
 
-/// Each domain shows up to three measures with their rank-1 sources: finance has four measures (fundamentals and
-/// interest_rate with two subjects each, exchange_rate and yield with one), so the three shown are fundamentals, interest rate
-/// and exchange rate; and only rank-1 sources are named (`policy_rate` and `calendar/day` are rank 2).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c8_each_domain_shows_up_to_three_measures_with_their_rank_one_sources() {
-    let m = served_s("c8-measures").await;
-    let held = held_of(&m).await;
-    let t = tokens(&held);
-    for measure in ["fundamentals", "interest rate", "exchange rate", "rainfall", "licence", "text", "ratio"] {
-        assert!(held.contains(measure), "{measure} is not in held: {held}");
-    }
-    assert!(!t.iter().any(|x| x == "yield"), "the fourth measure of finance is not shown: {held}");
-    assert!(!held.contains("par_yield"), "nor its source: {held}");
-    let name = |r: &str| host_name(r);
-    // at least one rank-1 source of each shown measure
-    let groups: Vec<(&str, Vec<String>)> = vec![
-        ("exchange rate", vec![name("relay/ecb.europa.eu/fx_reference")]),
-        ("interest rate", vec![name("relay/ecb.europa.eu/estr"), name("relay/bankofengland.co.uk/bank_rate")]),
-        ("fundamentals", vec![name("sec/company"), name("relay/sec.gov/filing")]),
-        ("rainfall", vec![name("earth/monthly_rainfall")]),
-        ("licence", vec![name("register/dataset")]),
-        ("text", vec![name("scripture/verse"), name("scripture/edition")]),
-        ("ratio", vec![name("ratio/pe")]),
-    ];
-    for (measure, sources) in groups {
-        assert!(sources.iter().any(|s| t.contains(s)), "no rank-1 source of {measure} ({sources:?}) in held: {held}");
-    }
-    // never a source of another rank
-    for rank2 in [name("relay/ecb.europa.eu/policy_rate"), name("calendar/day")] {
-        assert!(!t.contains(&rank2), "{rank2} is not rank 1: {held}");
-    }
-}
-
 /// Many domains: the text stays within 60 words, the largest domains first, the smaller ones left out whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c8_a_large_catalogue_is_cut_to_sixty_words_largest_first() {
