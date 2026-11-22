@@ -297,6 +297,11 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
 /// `GET /fn/<name>`: the JSON form when asked for it, else the HTML page; `not_covered` when no
 /// function of that name is bound on this mesh.
 pub(crate) fn respond(inner: &Inner, name: &str, json_form: bool) -> Reply {
+    // A class's name is its class page (R9), from the catalogue's last build; a function's is the function page.
+    let store: &dyn Store = &*inner.store;
+    if store.resolve_class(name, &inner.now()).ok().flatten().is_some() {
+        return crate::catalog_view::class_page(inner, name, json_form);
+    }
     let Some(d) = data(inner, name) else {
         if json_form {
             return envelope::name_unbound_reply(inner.config.ttl.latest_max_age.as_secs());

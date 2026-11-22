@@ -973,7 +973,16 @@ fn built(inner: &Inner) -> Option<Arc<Built>> {
 /// `GET /find?summary=1` (R2): the catalogue as an operator's summary, for the tool descriptions. `None` before
 /// the first build (`503`).
 pub(crate) fn summary(inner: &Inner) -> Option<Value> {
-    built(inner).map(|b| b.summary.clone())
+    let mut v = built(inner)?.summary.clone();
+    // The `held` text is the catalogue's last build's (R8), read now: the catalogue may have been built after this one (the
+    // find thread does not wait for it).
+    if let Value::Object(members) = &mut v {
+        members.retain(|(k, _)| k != "held");
+        if let Some(held) = crate::catalog_view::held(inner) {
+            members.push(("held".into(), Value::String(held)));
+        }
+    }
+    Some(v)
 }
 
 /// The answer to the empty query: the first `limit` of the last build's listing. `None` before the first build.
@@ -1070,16 +1079,13 @@ fn summary_value(inner: &Inner, ctx: &Ctx<'_>) -> Value {
             _ => functions.push(item),
         }
     }
-    let mut summary = vec![
+    let summary = vec![
         ("summary".into(), Value::Bool(true)),
         ("mesh".into(), Value::String(inner.config.host.clone())),
         ("classes".into(), Value::Array(classes)),
         ("functions".into(), Value::Array(functions)),
     ];
-    // The catalogue's held text (CONTRACT-classes-round C8), from its last build; absent with no facets.
-    if let Some(held) = crate::catalog_view::held(inner) {
-        summary.push(("held".into(), Value::String(held)));
-    }
+    // The catalogue's `held` text is added when the summary is read (see `summary`).
     Value::Object(summary)
 }
 

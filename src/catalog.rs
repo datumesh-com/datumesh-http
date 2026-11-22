@@ -72,6 +72,25 @@ pub(crate) struct Described {
     pub(crate) extends: Option<String>,
     /// The facets (C2): none when the line has none, which removes the entry's facets.
     pub(crate) facets: Facets,
+    /// The plain words a held sentence names the source by (R8), outside every hash; none when the line has none.
+    pub(crate) source_name: Option<String>,
+}
+
+/// The most bytes of a source's name (R8).
+const SOURCE_NAME_BYTES: usize = 48;
+
+/// `source_name` (R8): plain words of 1 to 48 bytes under the string rules (3.5). Absent, none.
+fn parse_source_name(v: Option<&Value>) -> Result<Option<String>, String> {
+    let s = match v {
+        None => return Ok(None),
+        Some(Value::String(s)) => s,
+        Some(_) => return Err("source_name is not a string".into()),
+    };
+    if s.is_empty() || s.len() > SOURCE_NAME_BYTES {
+        return Err(format!("source_name has 1 to {SOURCE_NAME_BYTES} bytes"));
+    }
+    datumesh_core::lexical::check_string(s, "source_name").map_err(|e| format!("source_name: {e}"))?;
+    Ok(Some(s.clone()))
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -181,7 +200,20 @@ pub(crate) fn parse(v: &Value, name_key: &str) -> Result<Described, String> {
         Some(_) => return Err("extends is a class's full name".into()),
     };
     let facets = parse_facets(v.get("facets")).map_err(|e| format!("facets: {e}"))?;
-    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys, extends, facets })
+    let source_name = parse_source_name(v.get("source_name"))?;
+    Ok(Described {
+        kind,
+        name,
+        label,
+        description,
+        args,
+        examples,
+        dictionary,
+        open_keys,
+        extends,
+        facets,
+        source_name,
+    })
 }
 
 impl Described {

@@ -459,6 +459,34 @@ impl datumesh_formula::call::CallEnv for Env<'_> {
     }
 }
 
+/// The most methods a chained call names (R11): its links after the first call.
+const MAX_CHAIN_LINKS: usize = 8;
+
+/// The links of a call's chain: the `.` at the top level after its first bracketed group (a name's own dots come before it;
+/// a quoted label or an argument's text has none that count).
+fn chain_links(text: &str) -> usize {
+    let (mut depth, mut quoted, mut seen_group, mut links) = (0i32, false, false, 0usize);
+    for c in text.chars() {
+        if quoted {
+            quoted = c != '"';
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '(' | '[' => depth += 1,
+            ')' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    seen_group = true;
+                }
+            }
+            '.' if depth == 0 && seen_group => links += 1,
+            _ => {}
+        }
+    }
+    links
+}
+
 /// Resolves a call (SPEC 5.8).
 pub fn resolve_call(
     rest: &str,
@@ -475,6 +503,10 @@ pub fn resolve_call(
     if let Some(q) = query {
         text.push('?');
         text.push_str(q);
+    }
+    // At most 8 methods in a chain (R11): each link is a `.` after the first call's own brackets.
+    if chain_links(&text) > MAX_CHAIN_LINKS {
+        return Err(Rejection::BadRequest(ErrorCode::ParseUri));
     }
     let env = Env { bindings, aliases, now };
     CALL_FAULT.with(|f| f.set(None));

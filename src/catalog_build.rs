@@ -4,8 +4,12 @@
 //!
 //! The job reads the store's catalogue entries that have facets (as of its clock). A rerun over an unchanged catalogue writes
 //! nothing: each cell line has no `tx`, so publish's skip rule keeps a cell whose latest version states the same thing. A subject
-//! that disappears gets `exists()` false, its `label()` and `sources()` zero or empty, and its labels withdrawn (`""`, K8); a
-//! facet value that disappears gets `exists()` false.
+//! that disappears has every method cell withdrawn with the reason "the subject is no longer in the catalogue" (R1, R10), its
+//! labels too, and so does a facet value that disappears; `source(rank)` past the count of sources is withdrawn ("rank past the
+//! count of sources"). A withdrawal is a cell's null version, never `false` or `""`. A cell never stored and not wanted has no line,
+//! so a label that names two subjects is absent, not withdrawn.
+//!
+//! At most [`SUBJECTS_PER_ENTRY`] subjects come from one entry, and a subject keeps at most [`SOURCES_PER_SUBJECT`] sources (R11).
 //!
 //! # The rank (C5)
 //!
@@ -18,8 +22,9 @@
 //!   sub-domain of one; when the subject has no source domain, every such entry is level 1 (its own host is its source domain);
 //! * otherwise level 3.
 //!
-//! Within a level: the instant the name was first bound (a class's own class binding), then the name, ascending. The rank one
-//! source is the first of that order, and `source(k)` is the k-th.
+//! Within a level (R5): a source whose class is a subclass of another source's class (at any depth) comes before it; the rest
+//! by the instant the name was first bound (a class's own class binding), then the name, ascending. The rank one source is the
+//! first of that order, and `source(k)` is the k-th.
 //!
 //! # What is written, and what it is called
 //!
@@ -40,21 +45,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use datumesh_core::{fold_label, Arg, ClassDescriptor, FunctionDescriptor, Receipt, SigningKey};
-use datumesh_store::{Facets, Store};
+use datumesh_core::{fold_label, Arg, ClassDescriptor, FunctionDescriptor, Receipt, SigningKey, Withdrawal};
+use datumesh_store::{CatalogKind, Facets, Store};
 use serde_json::{json, Value};
 
 use crate::publish::{publish_job, PublishError, PublishOptions};
 
-/// The rule of the catalogue (C5): the text of the page `/catalog/rule` and of the blob `catalog/rule()`.
+/// The rule of the catalogue (C5, R5, R7): the text of the page `/catalog/rule` and of the blob `catalog/rule()`.
 pub(crate) const RULE: &str = "How the catalogue ranks the sources of a subject. \
 A source is level one when it is published under the domain of the data: its publisher host is that domain or one of its parent \
 domains. A source is level two when it is a relay of the data, a name under the relay path of the domain of the data and trusted \
 as relayed, or a view built on such a relay: a function or a class whose inputs read a relay, directly or through other views. \
-Every other source is level three. Within a level the source whose name was first bound comes first. A tie on the time of the \
-first binding is broken by the name, in ascending order. The rank one source of a subject is the first source in this order, and \
-source of rank k is the k-th. A subject with no relay and no view has no source domain, so its sources are level one under their \
-own hosts. The job that writes the catalogue applies this rule to the facets the publishers give.";
+Every other source is level three. Within a level, a source whose class is a subclass of the class of another source, at any depth, \
+ranks above that parent class. Then the source whose name was first bound comes first, and a tie on the time of the first binding \
+is broken by the name, in ascending order. The rank one source of a subject is the first source in this order, and source of \
+rank k is the k-th; a subject keeps at most twenty sources. A subject with no relay and no view has no source domain, so its sources \
+are level one under their own hosts. The job that writes the catalogue applies this rule to the facets the publishers give. \
+Addresses: a cell address and a class name carry no facet value and no rank; a page path may carry a facet value, as \
+the domain pages of the catalogue do.";
 
 /// The file name of the rule text in the job's blobs.
 const RULE_FILE: &str = "rule.txt";
@@ -310,6 +318,23 @@ impl<S: Store + ?Sized> Graph<'_, S> {
     }
 }
 
+/// The most subjects one catalogue entry gives (R11): its facet product is cut to the first of this many, in the order of the
+/// product (domain, thing, measure, region).
+pub(crate) const SUBJECTS_PER_ENTRY: usize = 256;
+
+/// The most sources a subject keeps (R11): `sources()` is at most this, and the ranks past it have no cell.
+pub(crate) const SOURCES_PER_SUBJECT: usize = 20;
+
+/// The most stored cells of one method the job and the view read (the receipts of the latest versions, lowest cell id first).
+pub(crate) const STORED_CELLS_READ: usize = 1 << 20;
+
+/// The reason of a withdrawal of a subject or facet value that is gone (R10).
+pub(crate) const GONE: &str = "the subject is no longer in the catalogue";
+/// The reason of a withdrawal of a rank past the count of sources (R10).
+pub(crate) const PAST: &str = "rank past the count of sources";
+/// The reason of a withdrawal of a label that names no single subject any more (R10).
+pub(crate) const LABEL_NO_SUBJECT: &str = "the label names no single subject";
+
 /// An entry of the catalogue with a binding, as the rank sees it.
 struct Entry {
     name: String,
@@ -317,6 +342,10 @@ struct Entry {
     relay: bool,
     view: bool,
     reach: BTreeSet<String>,
+    /// The class hash of a class entry.
+    class: Option<String>,
+    /// The hashes of the classes the entry's class extends, at any depth (R5).
+    ancestors: BTreeSet<String>,
 }
 
 /// The live part of the catalogue: its subjects with their sources in rank order, and the facet objects with their subjects.
@@ -325,11 +354,69 @@ struct Model {
     facets: BTreeMap<(String, String), BTreeSet<SubjectKey>>,
 }
 
+/// The parent classes of a class, at any depth (R5): the hashes its `parent` chain names.
+fn ancestors<S: Store + ?Sized>(store: &S, class_hash: &str) -> Result<BTreeSet<String>, PublishError> {
+    let mut out = BTreeSet::new();
+    let mut cur = class_hash.to_string();
+    // a class chain is acyclic (a parent is stored before its child); the bound is a guard
+    for _ in 0..64 {
+        let Some(bytes) = store.class(&cur).map_err(err)? else { break };
+        let cd = ClassDescriptor::from_json(&bytes).map_err(err)?;
+        let Some(p) = cd.parent else { break };
+        if !out.insert(p.clone()) {
+            break;
+        }
+        cur = p;
+    }
+    Ok(out)
+}
+
+/// The order of a subject's entries (R5): `base` is sorted by level, first binding and name; then an entry whose class is a
+/// subclass of another entry's class in the same level comes before it, the rest keeping the base order (a topological order
+/// with the base order as the priority, so an unrelated entry keeps its place). Returns the entries' indices.
+fn subclass_order(base: &[(u8, &str, &str, usize)], entries: &[Entry]) -> Vec<usize> {
+    let n = base.len();
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut left = vec![0usize; n];
+    for i in 0..n {
+        let (li, _, _, ei) = base[i];
+        let anc = &entries[ei].ancestors;
+        if anc.is_empty() {
+            continue;
+        }
+        for j in 0..n {
+            let (lj, _, _, ej) = base[j];
+            if i == j || lj != li {
+                continue;
+            }
+            if entries[ej].class.as_ref().is_some_and(|c| anc.contains(c)) {
+                succ[i].push(j);
+                left[j] += 1;
+            }
+        }
+    }
+    let mut avail: BTreeSet<usize> = (0..n).filter(|&i| left[i] == 0).collect();
+    let mut done = vec![false; n];
+    let mut out = Vec::with_capacity(n);
+    while let Some(i) = avail.pop_first() {
+        done[i] = true;
+        out.push(base[i].3);
+        for &j in &succ[i] {
+            left[j] -= 1;
+            if left[j] == 0 && !done[j] {
+                avail.insert(j);
+            }
+        }
+    }
+    // a class chain is acyclic, so every entry is placed; the guard keeps any left in base order
+    out.extend((0..n).filter(|&i| !done[i]).map(|i| base[i].3));
+    out
+}
+
 fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, PublishError> {
     let mut g = Graph { store, host, now, reads: BTreeMap::new(), reach: BTreeMap::new(), visiting: BTreeSet::new() };
     let listed = store.catalog_entries_with_facets().map_err(err)?;
     let mut entries: Vec<Entry> = Vec::new();
-    let mut subjects_of: Vec<Vec<SubjectKey>> = Vec::new();
     let mut facets: BTreeMap<(String, String), BTreeSet<SubjectKey>> = BTreeMap::new();
     let mut members: BTreeMap<SubjectKey, Vec<usize>> = BTreeMap::new();
     for e in &listed {
@@ -337,6 +424,11 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, P
         let relay = relay_domain(host, &e.name).is_some();
         let reach = if e.first_bound.is_some() { g.reach(&e.name)? } else { BTreeSet::new() };
         let view = !relay && !reach.is_empty();
+        let class = if matches!(e.kind, CatalogKind::Class) { e.hash.clone() } else { None };
+        let ancestors = match &class {
+            Some(h) => ancestors(store, h)?,
+            None => BTreeSet::new(),
+        };
         let idx = entries.len();
         entries.push(Entry {
             name: e.name.clone(),
@@ -344,6 +436,8 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, P
             relay,
             view,
             reach,
+            class,
+            ancestors,
         });
         let bound = e.first_bound.is_some();
         // A facet value's subjects: those of the entry that have the value under its facet (a frequency is no key, so every
@@ -359,7 +453,6 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, P
                 members.entry(k.clone()).or_default().push(idx);
             }
         }
-        subjects_of.push(keys);
     }
     let mut subjects = BTreeMap::new();
     for (k, idxs) in &members {
@@ -370,27 +463,27 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, P
                 domains.extend(e.reach.iter().cloned());
             }
         }
-        let mut ranked: Vec<(u8, &str, &str)> = idxs
-            .iter()
-            .map(|&i| {
-                let e = &entries[i];
-                let level = if e.relay || e.view {
-                    2
-                } else if domains.is_empty() {
+        let level = |i: usize| -> u8 {
+            let e = &entries[i];
+            if e.relay || e.view {
+                2
+            } else if domains.is_empty() {
+                1
+            } else {
+                let h = e.name.split('/').next().unwrap_or("");
+                if domains.iter().any(|d| h == d || h.ends_with(&format!(".{d}"))) {
                     1
                 } else {
-                    let h = e.name.split('/').next().unwrap_or("");
-                    if domains.iter().any(|d| h == d || h.ends_with(&format!(".{d}"))) {
-                        1
-                    } else {
-                        3
-                    }
-                };
-                (level, e.first.as_str(), e.name.as_str())
-            })
-            .collect();
-        ranked.sort();
-        subjects.insert(k.clone(), ranked.into_iter().map(|(_, _, n)| n.to_string()).collect());
+                    3
+                }
+            }
+        };
+        let mut base: Vec<(u8, &str, &str, usize)> =
+            idxs.iter().map(|&i| (level(i), entries[i].first.as_str(), entries[i].name.as_str(), i)).collect();
+        base.sort();
+        let order = subclass_order(&base, &entries);
+        let names: Vec<String> = order.iter().take(SOURCES_PER_SUBJECT).map(|&i| entries[i].name.clone()).collect();
+        subjects.insert(k.clone(), names);
     }
     // Facet objects count only the subjects that exist (every subject of an entry is one of `members` when it is bound).
     facets.retain(|_, set| {
@@ -412,15 +505,19 @@ fn key_has(facet: &str, v: &str, k: &SubjectKey) -> bool {
     }
 }
 
-/// The subjects of an entry's facets: the cross product of its domain, thing, measure and region names (C3).
+/// The subjects of an entry's facets: the cross product of its domain, thing, measure and region names (C3), the first
+/// [`SUBJECTS_PER_ENTRY`] of it (R11).
 fn subject_keys(facets: &Facets) -> Vec<SubjectKey> {
     let get = |k: &str| facets.get(k).cloned().unwrap_or_default();
     let (d, t, m, r) = (get("domain"), get("thing"), get("measure"), get("region"));
     let mut out = Vec::new();
-    for dd in &d {
+    'all: for dd in &d {
         for tt in &t {
             for mm in &m {
                 for rr in &r {
+                    if out.len() == SUBJECTS_PER_ENTRY {
+                        break 'all;
+                    }
                     out.push((dd.clone(), tt.clone(), mm.clone(), rr.clone()));
                 }
             }
@@ -429,10 +526,16 @@ fn subject_keys(facets: &Facets) -> Vec<SubjectKey> {
     out
 }
 
-/// One stored cell of a catalogue method: its args' lexical values, and the value's lexical form.
-pub(crate) type CellRow = (BTreeMap<String, String>, String);
+/// One stored cell of a catalogue method: its args' lexical values, and the value's lexical form; `None` for a withdrawal
+/// (R1), the cell having no value from its `asof` on.
+pub(crate) type CellRow = (BTreeMap<String, String>, Option<String>);
 
-/// The receipts of a method's stored cells, as the args' lexical values and the value's lexical form.
+/// Whether stored receipt bytes are a withdrawal (a `withdrawn` member, R1).
+fn is_withdrawal(bytes: &[u8]) -> bool {
+    datumesh_core::json::parse(bytes).is_ok_and(|v| v.get("withdrawn").is_some())
+}
+
+/// The receipts of a method's stored cells, as the args' lexical values and the value's lexical form (`None` when withdrawn).
 pub(crate) fn cells_of<S: Store + ?Sized>(
     store: &S,
     class: &str,
@@ -444,17 +547,23 @@ pub(crate) fn cells_of<S: Store + ?Sized>(
     let cd = ClassDescriptor::from_json(&bytes).map_err(err)?;
     let Some(fh) = cd.methods.get(method) else { return Ok(Vec::new()) };
     let ns = class.to_string();
-    let rows = store.stored_receipts_of(&ns, method, fh, usize::MAX).map_err(err)?;
+    let rows = store.stored_receipts_of(&ns, method, fh, STORED_CELLS_READ).map_err(err)?;
     let mut out = Vec::with_capacity(rows.len());
     for bytes in rows {
-        let r = Receipt::from_json(&bytes).map_err(err)?;
+        let (cell, value) = if is_withdrawal(&bytes) {
+            let w = Withdrawal::from_json(&bytes).map_err(err)?;
+            (w.cell().clone(), None)
+        } else {
+            let r = Receipt::from_json(&bytes).map_err(err)?;
+            (r.cell().clone(), Some(r.value().lexical().to_string()))
+        };
         let mut args = BTreeMap::new();
-        for (k, a) in &r.cell().args {
+        for (k, a) in &cell.args {
             if let Arg::Value(s) = a {
                 args.insert(k.clone(), s.lexical().to_string());
             }
         }
-        out.push((args, r.value().lexical().to_string()));
+        out.push((args, value));
     }
     Ok(out)
 }
@@ -468,148 +577,210 @@ pub(crate) fn subject_of_args(args: &BTreeMap<String, String>) -> Option<Subject
     ))
 }
 
-/// What the store holds from earlier runs: the subjects, their highest rank, the labels and the facet objects.
+/// A cell of the catalogue: its method's full name and its arguments' lexical values.
+type CellKey = (String, BTreeMap<String, String>);
+
+/// What the store holds now: the valued cells of the catalogue's methods, with their values (R10: the ones the job must
+/// withdraw when it no longer wants them).
 #[derive(Default)]
 struct Known {
-    subjects: BTreeSet<SubjectKey>,
-    ranks: BTreeMap<SubjectKey, u64>,
-    labels: BTreeSet<String>,
-    facets: BTreeSet<(String, String)>,
+    valued: BTreeMap<CellKey, String>,
 }
 
 fn known<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Known, PublishError> {
     let subject_hash = store.resolve_class(&subject_class(host), now).map_err(err)?;
     let facet_hash = store.resolve_class(&facet_class(host), now).map_err(err)?;
     let mut k = Known::default();
-    for (args, _) in cells_of(store, &subject_class(host), subject_hash.as_deref(), "exists")? {
-        if let Some(s) = subject_of_args(&args) {
-            k.subjects.insert(s);
+    let class = subject_class(host);
+    for method in ["exists", "label", "sources", "source", "from_label"] {
+        for (args, value) in cells_of(store, &class, subject_hash.as_deref(), method)? {
+            if let Some(v) = value {
+                k.valued.insert((format!("{class}/{method}"), args), v);
+            }
         }
     }
-    for (args, _) in cells_of(store, &subject_class(host), subject_hash.as_deref(), "source")? {
-        if let (Some(s), Some(r)) = (subject_of_args(&args), args.get("rank").and_then(|r| r.parse::<u64>().ok())) {
-            let top = k.ranks.entry(s).or_insert(0);
-            *top = (*top).max(r);
-        }
-    }
-    for (args, _) in cells_of(store, &subject_class(host), subject_hash.as_deref(), "from_label")? {
-        if let Some(l) = args.get("label") {
-            k.labels.insert(l.clone());
-        }
-    }
-    for (args, _) in cells_of(store, &facet_class(host), facet_hash.as_deref(), "exists")? {
-        if let (Some(f), Some(v)) = (args.get("facet"), args.get("value")) {
-            k.facets.insert((f.clone(), v.clone()));
+    let fclass = facet_class(host);
+    for method in ["exists", "label", "subjects"] {
+        for (args, value) in cells_of(store, &fclass, facet_hash.as_deref(), method)? {
+            if let Some(v) = value {
+                k.valued.insert((format!("{fclass}/{method}"), args), v);
+            }
         }
     }
     Ok(k)
 }
 
-/// The cell lines of the catalogue as the store should hold them now (C3, C4).
+/// A cell the job wants with a value: its method, its arguments, its value and its summary.
+struct Want {
+    fn_name: String,
+    args: BTreeMap<String, String>,
+    typ: &'static str,
+    value: String,
+    summary: &'static str,
+}
+
+impl Want {
+    fn key(&self) -> CellKey {
+        (self.fn_name.clone(), self.args.clone())
+    }
+
+    fn line(&self, licence: &str) -> String {
+        let args: Vec<(&str, &str, Value)> = self
+            .args
+            .iter()
+            .map(|(k, v)| (k.as_str(), if k == "rank" { "number" } else { "string" }, json!(v)))
+            .collect();
+        let value = if self.typ == "boolean" { json!(self.value == "true") } else { json!(self.value) };
+        cell_line(&self.fn_name, args, (self.typ, value), licence, self.summary)
+    }
+}
+
+fn subject_args(s: &SubjectKey) -> BTreeMap<String, String> {
+    [("domain", &s.0), ("thing", &s.1), ("measure", &s.2), ("region", &s.3)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect()
+}
+
+/// The line that withdraws a cell (R1): its address and the reason; no value.
+fn withdrawal_line(fn_name: &str, args: &BTreeMap<String, String>, reason: &str, licence: &str) -> String {
+    let a: serde_json::Map<String, Value> = args
+        .iter()
+        .map(|(k, v)| {
+            let t = if k == "rank" { "number" } else { "string" };
+            (k.clone(), json!({"type": t, "value": v}))
+        })
+        .collect();
+    json!({"cell": {"fn": fn_name, "args": a}, "withdrawn": reason, "licence": licence,
+        "summary": "A catalogue cell that no longer has a value."})
+    .to_string()
+}
+
+/// The reason a valued cell the job no longer wants is withdrawn for (R10).
+fn withdrawal_reason(class: &str, fclass: &str, key: &CellKey, prior: &str, m: &Model) -> &'static str {
+    let (fn_name, args) = key;
+    let live = |s: &SubjectKey| m.subjects.contains_key(s);
+    if fn_name == &format!("{class}/from_label") {
+        return match parse_subject_key_any(prior) {
+            Some(s) if live(&s) => LABEL_NO_SUBJECT,
+            _ => GONE,
+        };
+    }
+    if fn_name == &format!("{class}/source") {
+        let s = subject_of_args(args);
+        return match s {
+            Some(s) if live(&s) => PAST,
+            _ => GONE,
+        };
+    }
+    let _ = fclass;
+    GONE
+}
+
+/// The subject a key encoding of any host's subject class names (a label's prior value).
+fn parse_subject_key_any(text: &str) -> Option<SubjectKey> {
+    let open = text.find('(')?;
+    let host = text[..open].strip_suffix("/catalog/subject")?;
+    parse_subject_key(host, text)
+}
+
+/// The cell lines of the catalogue as the store should hold them now (C3, C4, R10): every cell the job wants with its value, and
+/// a withdrawal for each valued cell it no longer wants. A cell that is not stored and is not wanted has no line.
 fn cell_lines(host: &str, licence: &str, m: &Model, k: &Known) -> Vec<String> {
     let class = subject_class(host);
     let fclass = facet_class(host);
-    let mut out = Vec::new();
-    let keys = |s: &SubjectKey| {
-        vec![
-            ("domain", "string", json!(s.0)),
-            ("thing", "string", json!(s.1)),
-            ("measure", "string", json!(s.2)),
-            ("region", "string", json!(s.3)),
-        ]
-    };
-    // Every subject that exists now, or existed before: the live ones with their values, the others withdrawn.
-    let all: BTreeSet<SubjectKey> = m.subjects.keys().chain(k.subjects.iter()).cloned().collect();
-    for s in &all {
-        let live = m.subjects.get(s);
-        let count = live.map_or(0, |v| v.len());
-        out.push(cell_line(
-            &format!("{class}/exists"),
-            keys(s),
-            ("boolean", json!(live.is_some())),
-            licence,
-            "Whether a catalogue subject exists.",
-        ));
-        let label = live.map(|_| subject_label(s)).unwrap_or_default();
-        out.push(cell_line(
-            &format!("{class}/label"),
-            keys(s),
-            ("string", json!(label)),
-            licence,
-            "The label of a catalogue subject.",
-        ));
-        out.push(cell_line(
-            &format!("{class}/sources"),
-            keys(s),
-            ("number", json!(count.to_string())),
-            licence,
-            "The number of sources of a catalogue subject.",
-        ));
-        let top = (count as u64).max(k.ranks.get(s).copied().unwrap_or(0));
-        for rank in 1..=top {
-            let value = live.and_then(|v| v.get(rank as usize - 1)).cloned().unwrap_or_default();
-            let mut args = keys(s);
-            args.push(("rank", "number", json!(rank.to_string())));
-            out.push(cell_line(
-                &format!("{class}/source"),
+    let mut wants: Vec<Want> = Vec::new();
+    for (s, sources) in &m.subjects {
+        let count = sources.len();
+        let key = |method: &str| format!("{class}/{method}");
+        wants.push(Want {
+            fn_name: key("exists"),
+            args: subject_args(s),
+            typ: "boolean",
+            value: "true".into(),
+            summary: "Whether a catalogue subject exists.",
+        });
+        wants.push(Want {
+            fn_name: key("label"),
+            args: subject_args(s),
+            typ: "string",
+            value: subject_label(s),
+            summary: "The label of a catalogue subject.",
+        });
+        wants.push(Want {
+            fn_name: key("sources"),
+            args: subject_args(s),
+            typ: "number",
+            value: count.to_string(),
+            summary: "The number of sources of a catalogue subject.",
+        });
+        for (i, src) in sources.iter().enumerate() {
+            let mut args = subject_args(s);
+            args.insert("rank".into(), (i + 1).to_string());
+            wants.push(Want {
+                fn_name: key("source"),
                 args,
-                ("string", json!(value)),
-                licence,
-                "The source of a rank of a catalogue subject.",
-            ));
+                typ: "string",
+                value: src.clone(),
+                summary: "The source of a rank of a catalogue subject.",
+            });
         }
     }
-    // The lookup: each label of a live subject that names only it, and each label stored before, withdrawn when not so now.
+    // The lookup: each label of a live subject that names only it. A label that names two is not stored (C3).
     let mut by_label: BTreeMap<String, Vec<&SubjectKey>> = BTreeMap::new();
     for s in m.subjects.keys() {
         for l in lookup_labels(s) {
             by_label.entry(l).or_default().push(s);
         }
     }
-    let labels: BTreeSet<String> = by_label.keys().cloned().chain(k.labels.iter().cloned()).collect();
-    for l in labels {
-        let value = match by_label.get(&l) {
-            Some(v) if v.len() == 1 => subject_key_text(host, v[0]),
-            _ => String::new(),
-        };
-        out.push(cell_line(
-            &format!("{class}/from_label"),
-            vec![("label", "string", json!(l))],
-            ("string", json!(value)),
-            licence,
-            "The subject a label names.",
-        ));
+    for (l, subjects) in &by_label {
+        if let [s] = subjects.as_slice() {
+            wants.push(Want {
+                fn_name: format!("{class}/from_label"),
+                args: [("label".to_string(), l.clone())].into_iter().collect(),
+                typ: "string",
+                value: subject_key_text(host, s),
+                summary: "The subject a label names.",
+            });
+        }
     }
-    // The facet objects: each value of an entry, and each stored before.
-    let all_facets: BTreeSet<(String, String)> = m.facets.keys().cloned().chain(k.facets.iter().cloned()).collect();
-    for (facet, value) in all_facets {
-        let subjects = m.facets.get(&(facet.clone(), value.clone()));
-        let live = subjects.is_some();
-        let fargs = || vec![("facet", "string", json!(facet)), ("value", "string", json!(value))];
-        out.push(cell_line(
-            &format!("{fclass}/exists"),
-            fargs(),
-            ("boolean", json!(live)),
-            licence,
-            "Whether a facet value exists.",
-        ));
-        out.push(cell_line(
-            &format!("{fclass}/label"),
-            fargs(),
-            ("string", json!(facet_label(&facet, &value))),
-            licence,
-            "The label of a facet value.",
-        ));
-        let n = subjects.map_or(0, |s| s.len());
-        out.push(cell_line(
-            &format!("{fclass}/subjects"),
-            fargs(),
-            ("number", json!(n.to_string())),
-            licence,
-            "The number of subjects that have a facet value.",
-        ));
+    // The facet objects: each value of an entry.
+    for (facet, value) in m.facets.keys() {
+        let subjects = &m.facets[&(facet.clone(), value.clone())];
+        let fargs: BTreeMap<String, String> =
+            [("facet".to_string(), facet.clone()), ("value".to_string(), value.clone())].into_iter().collect();
+        wants.push(Want {
+            fn_name: format!("{fclass}/exists"),
+            args: fargs.clone(),
+            typ: "boolean",
+            value: "true".into(),
+            summary: "Whether a facet value exists.",
+        });
+        wants.push(Want {
+            fn_name: format!("{fclass}/label"),
+            args: fargs.clone(),
+            typ: "string",
+            value: facet_label(facet, value),
+            summary: "The label of a facet value.",
+        });
+        wants.push(Want {
+            fn_name: format!("{fclass}/subjects"),
+            args: fargs,
+            typ: "number",
+            value: subjects.len().to_string(),
+            summary: "The number of subjects that have a facet value.",
+        });
     }
-    out
+    let mut lines: Vec<String> = wants.iter().map(|w| w.line(licence)).collect();
+    let wanted: BTreeSet<CellKey> = wants.iter().map(Want::key).collect();
+    for (key, prior) in &k.valued {
+        if wanted.contains(key) {
+            continue;
+        }
+        let reason = withdrawal_reason(&class, &fclass, key, prior, m);
+        lines.push(withdrawal_line(&key.0, &key.1, reason, licence));
+    }
+    lines
 }
 
 /// Runs the catalogue job (C5): reads the store's faceted entries as of the clock, and writes the classes, the cells and the rule

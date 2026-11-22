@@ -46,6 +46,9 @@ use crate::envelope::{self, Cache, Reply};
 use crate::mesh::Inner;
 
 /// How often the index thread looks at the index (it builds one when it is due).
+/// The most extension methods `describe` of a class lists (R11).
+pub(crate) const EXTENSIONS_SHOWN: usize = 100;
+
 pub(crate) const INDEX_TICK: Duration = Duration::from_millis(500);
 
 /// The objects one page of a class's declared list reads from the store (`slice_values_page`).
@@ -579,7 +582,8 @@ impl Inner {
     /// The extension methods of the class `class` (K9): `{fn, fn_hash, publisher}` for each function whose catalogue entry
     /// extends it, by name, with the function hash it is bound to now. Empty when none does, or the store cannot say.
     fn extensions(&self, class: &str) -> Vec<Value> {
-        let Ok(list) = self.store.extensions_of(class) else { return Vec::new() };
+        // At most 100, the first by name (R11): the store reads that many.
+        let Ok(list) = self.store.extensions_of_limit(class, EXTENSIONS_SHOWN) else { return Vec::new() };
         let now = self.now();
         let mut out = Vec::new();
         for e in list {

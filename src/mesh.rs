@@ -262,15 +262,10 @@ impl MeshBuilder {
         // The catalogue (CONTRACT-classes-round C7 to C9): its root, its `held` text and its pages, built after the catalogue's
         // first delay (at start when there is none), then every refresh interval, on a thread of its own. Requests read the
         // last build. Before the find answers, which take the `held` text from it.
+        // The first build is the thread's, never start's (R11): the thread builds at once when there is no delay.
         let (delay, refresh) = (mesh.inner.config.catalog_first_build_delay, mesh.inner.config.catalog_refresh);
-        if delay.is_zero() {
-            std::thread::scope(|s| {
-                let inner = mesh.inner.clone();
-                let _ = s.spawn(move || crate::catalog_view::rebuild(&inner, "background")).join();
-            });
-        }
         let weak = Arc::downgrade(&mesh.inner);
-        let mut wait = if delay.is_zero() { refresh } else { delay };
+        let mut wait = delay;
         let spawned = std::thread::Builder::new().name("datumesh-catalog".into()).spawn(move || loop {
             std::thread::sleep(wait);
             let Some(inner) = weak.upgrade() else { break };
