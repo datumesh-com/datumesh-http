@@ -152,6 +152,25 @@ async fn k8_describe_by_label() {
     }
 }
 
+/// K8 on the wire as clients send it: the brackets RAW (legal in a URL path), an unquoted label, no method. The
+/// test above percent-encodes them; this one does not. It was `400 E_CANON_NAME`. `/describe/` is the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn k8_raw_brackets_unquoted_label_with_no_method_answers_describe() {
+    let m = shop("cr-k8-raw", false).await;
+    let n = product();
+    let by_key = ask(&m, &format!("/describe/{}", call_path(&pk("A1")))).await;
+    for verb in ["cell", "describe"] {
+        for label in ["[apple]", "[APPLE]", "[%20Apple%20]"] {
+            let p = format!("/{verb}/{n}{label}");
+            let a = ask(&m, &p).await;
+            assert_eq!((a.status, a.kind()), (200, Some("object")), "{p}: {}", a.text);
+            assert_eq!(a.v["object_id"], by_key.v["object_id"], "{p}");
+            assert_eq!(a.resolution_kinds(), ["lookup"], "{p}: {}", a.text);
+            assert_eq!(a.resolutions()[0].2, pk("A1"), "{p}");
+        }
+    }
+}
+
 /// A request of `N[label]` with no method, at `/cell`, answers that object's `describe` with HTTP 200 and `kind` `"object"`,
 /// `resolved` saying the lookup was made. It was `E_PARSE_URI`. An unknown label is `E_NAME_UNBOUND`; a class without lookup
 /// has no labels.
