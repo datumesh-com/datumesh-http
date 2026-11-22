@@ -10,6 +10,9 @@
 //!   with the query of those first 8 words alone: the long query may not cost more than one pass over the
 //!   table beyond it.
 //! * The find thread's first build (the summary) reads no cell for its counts: the counts are counters.
+//!   Coordinator decision: `refresh_value_counts` is not part of that build; it runs on its own schedule, first
+//!   `DATUMESH_VALUE_COUNTS_SECS` after the start. The test sets that knob to an hour to keep it out of the
+//!   window (0.4.9 ignores the variable).
 
 mod common;
 #[path = "common/h0410.rs"]
@@ -102,7 +105,9 @@ async fn the_summary_counts_cells_from_the_counters_not_by_reading_them() {
     catalogue(&fx, 2, 1_500);
     fx.probe().arm();
     // the find thread builds the summary; the others are held
-    let w = fx.serve(config(&held(&["find"]), &[])).await;
+    let mut vars = held(&["find"]);
+    vars.push(("DATUMESH_VALUE_COUNTS_SECS", "3600"));
+    let w = fx.serve(config(&vars, &[])).await;
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let r = loop {
         let r = w.get("/find?summary=1").await;
