@@ -329,19 +329,29 @@ fn k3_the_three_loaded_tests_publish() {
     assert!(rows.iter().all(|r| r.last_result.as_deref() == Some("pass")), "{rows:?}");
 }
 
-/// A boolean expectation that does not match is a failing test (E_TESTS_FAILING, with the case and what came out), for a
-/// stored value and for a fault.
-#[test]
-fn k3_a_boolean_that_does_not_match_is_a_failing_test() {
+/// A boolean expectation that does not match is a failing test. `loaded` is a stored function, and the failing test of a
+/// stored function is an open counterexample, never a refusal (tests/stored_conformance.rs; coordinator decision on K3):
+/// the file is published, the mismatching case is `fail`, the others `pass`, and `describe` counts one counterexample.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn k3_a_boolean_that_does_not_match_is_a_failing_test() {
     let wrong = loaded_test(CIKS[0], boolean(false));
     let mut tests = vec![wrong.clone()];
     tests.extend(CIKS[1..].iter().map(|c| loaded_test(c, boolean(true))));
-    let e = refused_at("cr-k3-wrong", &loaded_file(tests), 5);
-    assert!(
-        matches!(e.kind, datumesh_http::publish::PublishErrorKind::TestsFailing(_)),
-        "a failing test, not a malformed one: {e}"
-    );
-    assert!(e.detail.contains(&case_id(&wrong)) && e.detail.contains("false") && e.detail.contains("true"), "{e}");
+    let (lite, r) = checked("cr-k3-wrong", &loaded_file(tests));
+    let p = r.unwrap_or_else(|e| panic!("a stored function's failing test never refuses the publish: {e}"));
+    assert_eq!((p.functions, p.cells), (1, 3), "{p:?}");
+    let hash = lite.store.resolve_binding(LOADED, END).unwrap().unwrap().fn_hash;
+    let rows = lite.store.function_tests(&hash).unwrap();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for r in &rows {
+        let want = if r.case == case_id(&wrong) { "fail" } else { "pass" };
+        assert_eq!(r.last_result.as_deref(), Some(want), "{rows:?}");
+    }
+    // the counterexample is open in `describe`
+    let m = common::readpath::build_served(lite, None, |_| {}).await;
+    let d = m.get(&format!("/describe/{}", common::world::call_path(LOADED))).await;
+    assert_eq!(d["tests"]["count"], 3, "{d}");
+    assert_eq!(d["tests"]["counterexamples"], 1, "{d}");
 }
 
 /// The string `"true"` (or `"false"`) is refused as the value of a boolean typed scalar, in `expect` and in `inputs`, as a
