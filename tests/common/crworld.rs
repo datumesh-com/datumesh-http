@@ -342,7 +342,7 @@ pub fn shop_classes(lite: &Lite) -> Vec<String> {
     let (p, c) = (product(), crate_class());
     let h = |n: &str| fn_hash(lite, n);
     let pc = class_json(
-        &format!(r#"{{"sku":{{"key_normalisation":"upper_ascii","type":"string"}}}}"#),
+        r#"{"sku":{"key_normalisation":"upper_ascii","type":"string"}}"#,
         &["sku"],
         &[
             ("from_label", &h(&format!("{p}/from_label"))),
