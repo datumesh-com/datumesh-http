@@ -577,6 +577,7 @@ async fn c5_the_rule_is_a_page_and_a_cell_with_the_same_words() {
     let lite = vocab("c5-rule");
     build(&lite, T3);
     let m = serve(lite, &[]).await;
+    until_built(&m, "/catalog/rule").await; // the first catalogue build is on the thread (R11)
     let a = cell(&m, &format!("{}()", rule_fn())).await;
     assert_eq!((a.status, a.outcome()), (200, "ok"), "{}", a.text);
     let lexical = a.value().unwrap_or_else(|| panic!("no value: {}", a.text)).to_string();

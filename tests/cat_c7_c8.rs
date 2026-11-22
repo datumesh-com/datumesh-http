@@ -40,7 +40,9 @@ use serde_json::Value;
 async fn served_s(label: &str) -> Served {
     let lite = scratch(label);
     build(&lite, T3);
-    serve(lite, &[]).await
+    let m = serve(lite, &[]).await;
+    until_built(&m, "/catalog").await; // the first build is on the thread (R11)
+    m
 }
 
 /// The expected domains of world S: `(domain, subjects, names)` in the order C7 says.
@@ -170,10 +172,18 @@ fn tokens(held: &str) -> Vec<String> {
 }
 
 async fn held_of(m: &Served) -> String {
-    let r = until_built(m, "/find?summary=1").await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let v = r.json();
-    v["held"].as_str().unwrap_or_else(|| panic!("no held in {v}")).to_string()
+    // The first catalogue build is on the thread (R11): the summary is 200 before it, without `held`; wait for it.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let r = until_built(m, "/find?summary=1").await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v = r.json();
+        if let Some(h) = v["held"].as_str() {
+            return h.to_string();
+        }
+        assert!(std::time::Instant::now() < end, "no held in {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// `held`: at most 60 words, the domains by size (finance 6, scripture 2, then earth, registry, tools by name), and the rest of
