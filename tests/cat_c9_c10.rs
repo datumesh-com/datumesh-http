@@ -5,8 +5,9 @@
 //! or the class's page). They are cached with the overview rule: built by a background thread from the catalogue's cells, so a
 //! cold request is `503` with `Retry-After` and `no-store`, and no work grows with the data on a request.
 //!
-//! C10: no mesh name, page path or link contains a facet value or a rank as a path segment that is not part of a stable name;
-//! a subject's page addresses its subject by its key encoding, in the query; every link to a source is by its full name; and
+//! C10, as R7 of CONTRACT-round-0.7.md changes it: the rule against facet values and ranks covers cell addresses and class names;
+//! a page path may carry a facet value (`/catalog/<domain>` stays), but no segment of a page path is a rank. A subject's page
+//! addresses its subject by its key encoding, in the query; every link to a source is by its full name; and
 //! `catalog/subject(...).source(1)` is a stable full name.
 //!
 //! Interfaces pinned here (the implementer follows them; the report lists them):
@@ -229,8 +230,8 @@ async fn c9_every_page_is_at_most_three_steps_deep() {
 }
 
 /// Links are to stable names only: `/fn/<name>` and `/describe/<class>` of a bound full name exactly as bound, the catalogue's
-/// own pages, and nothing else of this host. C10: no segment of a catalogue link is a rank, and none but the domain is a facet
-/// value; the subject is addressed by its key encoding in the query, and only by it.
+/// own pages, and nothing else of this host. C10 under R7: no segment of a catalogue link is a rank (a page path may carry a facet
+/// value: the domain); the subject is addressed by its key encoding in the query, and only by it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c10_links_are_to_stable_names_and_a_subject_is_addressed_by_its_key_in_the_query() {
     let m = served_s("c10-links", &[]).await;
@@ -240,8 +241,6 @@ async fn c10_links_are_to_stable_names_and_a_subject_is_addressed_by_its_key_in_
     let mut paths = vec!["/catalog".to_string(), "/catalog/rule".to_string()];
     paths.extend(domains().into_iter().map(|d| format!("/catalog/{d}")));
     paths.extend(s_subjects().iter().map(|s| subject_page(s.domain, s.thing, s.measure, s.region)));
-    let facet_values: BTreeSet<&str> =
-        s_subjects().iter().flat_map(|s| [s.thing, s.measure, s.region]).filter(|v| *v != "none").collect();
     let mut seen_fn = 0;
     for p in paths {
         let r = page(&m, &p).await;
@@ -268,7 +267,6 @@ async fn c10_links_are_to_stable_names_and_a_subject_is_addressed_by_its_key_in_
             );
             for seg in &segs {
                 assert!(!seg.bytes().all(|b| b.is_ascii_digit()), "{p}: {l}: a rank is not a path segment");
-                assert!(!facet_values.contains(seg.as_str()), "{p}: {l}: {seg} is a facet value, not a stable segment");
             }
             if segs.len() == 3 {
                 assert_eq!((segs[0].as_str(), segs[2].as_str()), ("catalog", "subject"), "{p}: {l}");
