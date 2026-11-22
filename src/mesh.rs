@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{keys_from_response, verify, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt, SigningKey};
+use datumesh_core::{
+    keys_from_response, verify, CellRef, ClassDescriptor, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt,
+    SigningKey,
+};
 use datumesh_engine::{Answer, Clock, Engine, EngineError, Runtime, SystemClock};
 use datumesh_formula::runtime::FormulaRuntime;
 use datumesh_store::Store;
@@ -45,6 +48,29 @@ impl std::fmt::Display for BuildError {
 }
 
 impl std::error::Error for BuildError {}
+
+/// The store as the formula runtime's callees (K5, the classes round): every answer of the store, and the name a class hash
+/// is bound to (`class_name`), which the runtime needs to name the class that defines an inherited method.
+/// `FormulaRuntime::new` does not give that name.
+struct MeshCallees(Arc<dyn Store + Send + Sync>);
+
+impl datumesh_formula::definition::Callees for MeshCallees {
+    fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
+        datumesh_formula::definition::Callees::callee(&*self.0, name, at)
+    }
+    fn bound_class(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::ClassCallee>, String> {
+        datumesh_formula::definition::Callees::bound_class(&*self.0, name, at)
+    }
+    fn class_descriptor(&self, class_hash: &str) -> Result<Option<datumesh_core::ClassDescriptor>, String> {
+        datumesh_formula::definition::Callees::class_descriptor(&*self.0, class_hash)
+    }
+    fn class_name(&self, class_hash: &str) -> Result<Option<String>, String> {
+        datumesh_formula::definition::Callees::class_name(&*self.0, class_hash)
+    }
+    fn function_descriptor(&self, fn_hash: &str) -> Result<Option<datumesh_core::json::Value>, String> {
+        datumesh_formula::definition::Callees::function_descriptor(&*self.0, fn_hash)
+    }
+}
 
 /// Builds a [`Mesh`].
 pub struct MeshBuilder {
@@ -146,7 +172,7 @@ impl MeshBuilder {
         };
         let mut runtimes = self.runtimes;
         if self.formula {
-            runtimes.push(Arc::new(FormulaRuntime::new(self.store.clone())));
+            runtimes.push(Arc::new(FormulaRuntime::with_callees(Arc::new(MeshCallees(self.store.clone())))));
         }
         if self.config.test_cells {
             crate::testrun::install_test_cases(&*self.store, &self.config.host)
@@ -548,6 +574,18 @@ impl Bindings for Memo<'_> {
         Bindings::lookup(self.inner, class, label, asof)
     }
 
+    fn class_name_of(&self, class_hash: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        Bindings::class_name_of(self.inner, class_hash, asof)
+    }
+
+    fn class_by_hash(&self, class_hash: &str) -> Result<Option<ClassDescriptor>, ErrorCode> {
+        Bindings::class_by_hash(self.inner, class_hash)
+    }
+
+    fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, ErrorCode> {
+        Bindings::chain(self.inner, cell, asof)
+    }
+
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
         self.inner.targets.get(fn_hash, rest)
     }
@@ -585,6 +623,42 @@ impl Bindings for Inner {
     /// The mesh's configured alias map has no snapshot.
     fn aliases_tx(&self) -> Option<String> {
         None
+    }
+
+    fn class_name_of(&self, class_hash: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        match self.store.class_names_bound_to(class_hash, asof) {
+            Ok(names) => Ok(names.into_iter().next()),
+            Err(_) => Err(ErrorCode::InputUnavailable),
+        }
+    }
+
+    fn class_by_hash(&self, class_hash: &str) -> Result<Option<ClassDescriptor>, ErrorCode> {
+        match self.store.class(class_hash) {
+            Ok(Some(bytes)) => ClassDescriptor::from_json(&bytes).map(Some).map_err(|_| ErrorCode::InputUnavailable),
+            Ok(None) => Ok(None),
+            Err(_) => Err(ErrorCode::InputUnavailable),
+        }
+    }
+
+    /// A chain's link: the cell read as of `asof` through the engine, computed or stored (K10). Its value is a key
+    /// encoding; a cell with no value is `None`.
+    fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, ErrorCode> {
+        let name = format!("{}/{}", cell.ns, cell.fn_name);
+        let Some(b) = Bindings::binding(self, &name, asof)? else { return Ok(None) };
+        let c = datumesh_core::Cell {
+            ns: cell.ns.clone(),
+            fn_name: cell.fn_name.clone(),
+            fn_hash: b.fn_hash.clone(),
+            args: cell.args.clone(),
+        };
+        match self.engine.get_cell(&c, Some(asof)) {
+            Ok(Answer::Receipt(bytes)) => match Receipt::from_json(&bytes).map(|r| r.value().clone()) {
+                Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
+                _ => Ok(None),
+            },
+            Err(EngineError::Store(_)) => Err(ErrorCode::InputUnavailable),
+            _ => Ok(None),
+        }
     }
 
     fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
@@ -895,7 +969,8 @@ impl Inner {
             Rejection::BadRequest(c) => envelope::bad_request_reply(c),
             Rejection::NotCovered => {
                 let _ = asof;
-                Reply::json(404, envelope::not_covered(None), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
+                let fault = crate::call::take_fault();
+                Reply::json(404, envelope::not_covered(fault), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
             }
             Rejection::Error(ErrorCode::NameUnbound) => {
                 envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs())
@@ -961,6 +1036,16 @@ impl Inner {
     ) -> Reply {
         let target = match call::resolve(rest, now, &self.config.aliases, bindings, false) {
             Ok(t) => t,
+            // `N[label]` with no method is the object's describe (K8, the classes round).
+            Err(Rejection::BadRequest(ErrorCode::ParseUri))
+                if crate::call::url_decode(rest).is_some_and(|d| crate::describe::label_form(&d).is_some()) =>
+            {
+                let text = crate::call::url_decode(rest).unwrap_or_default();
+                if let Some(reply) = self.describe_label(bindings, &text, now) {
+                    return reply;
+                }
+                return self.rejection(Rejection::BadRequest(ErrorCode::ParseUri), None);
+            }
             Err(r) => return self.rejection(r, None),
         };
         on_target(&target);

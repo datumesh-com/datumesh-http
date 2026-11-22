@@ -136,7 +136,10 @@ pub fn datumesh_http::call::Bindings::alias(&self, &str) -> core::option::Option
 pub fn datumesh_http::call::Bindings::aliases_tx(&self) -> core::option::Option<alloc::string::String>
 pub fn datumesh_http::call::Bindings::binding(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::cached(&self, &str, &str) -> core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Target>>
+pub fn datumesh_http::call::Bindings::chain(&self, &datumesh_core::model::CellRef, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::class(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::BoundClass>>, datumesh_core::error::ErrorCode>
+pub fn datumesh_http::call::Bindings::class_by_hash(&self, &str) -> core::result::Result<core::option::Option<datumesh_core::class::ClassDescriptor>, datumesh_core::error::ErrorCode>
+pub fn datumesh_http::call::Bindings::class_name_of(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::lookup(&self, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::pinned(&self, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::remember(&self, &str, &alloc::rcs::arc::Arc<datumesh_http::call::Target>)

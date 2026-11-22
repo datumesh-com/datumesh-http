@@ -66,8 +66,8 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{
-    sha256_hex, Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, Receipt, ReceiptBuilder, Scalar, SigningKey,
-    Source, Type,
+    sha256_hex, Arg, Args, Cell, ClassDescriptor, FunctionDescriptor, KeyNormalisation, Receipt, ReceiptBuilder,
+    Scalar, SigningKey, Source, Type,
 };
 use datumesh_engine::{Clock, SystemClock};
 use datumesh_formula::definition::{Callee, Callees, ClassCallee};
@@ -293,6 +293,21 @@ impl<S: Store + ?Sized> Callers<'_, S> {
 }
 
 impl<S: Store + ?Sized> Callees for Callers<'_, S> {
+    /// The name a class hash is bound to, for a body's `super` and an inherited method's definer (K5): the store's
+    /// names as of now, else the file's own class binds.
+    fn class_name(&self, class_hash: &str) -> Result<Option<String>, String> {
+        let names = self
+            .store
+            .class_names_bound_to(class_hash, datumesh_formula::definition::LATEST)
+            .map_err(|e| e.to_string())?;
+        if let Some(n) = names.into_iter().next() {
+            return Ok(Some(n));
+        }
+        Ok(self.sim.and_then(|s| {
+            s.classes.iter().find(|(_, v)| v.iter().any(|(_, h)| h == class_hash)).map(|(n, _)| n.clone())
+        }))
+    }
+
     fn callee(&self, name: &str, at: &str) -> Result<Option<Callee>, String> {
         let stored = self.store.resolve_binding(name, at).map_err(|e| e.to_string())?;
         let simmed = self.sim.and_then(|s| Simulation::latest(&s.functions, name, at));
@@ -467,6 +482,20 @@ fn current_class<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str) -> 
     store.resolve_class(name, END).map_err(|e| e.to_string())
 }
 
+/// Whether the key `k` of a class is an argument of the function `fd` of its type (K9): a scalar key's type, or a class-typed
+/// key's `string` argument that holds the class's keys.
+fn key_matches(cd: &ClassDescriptor, fd: &FunctionDescriptor, k: &str) -> bool {
+    let (Some(ck), Some(arg)) = (cd.keys.get(k), fd.signature.args.get(k)) else { return false };
+    match ck {
+        datumesh_core::ClassKey::Scalar { ty, .. } => arg.ty == *ty,
+        datumesh_core::ClassKey::Class(c) => {
+            arg.ty == Type::String
+                && fd.arg_extras.get(k).and_then(|x| x.classes.as_ref()).is_some_and(|cs| cs.iter().any(|x| x == c))
+        }
+        _ => false,
+    }
+}
+
 /// The function hash `name` means as of `at`, counting the file's earlier binds.
 fn function_at<S: Store + ?Sized>(
     reads: &mut Reads,
@@ -618,6 +647,7 @@ enum Op {
         entry: datumesh_store::CatalogEntry,
         dictionaries: Vec<(String, Vec<datumesh_store::KeyValue>)>,
         open_keys: Vec<String>,
+        extends: Option<String>,
     },
 }
 
@@ -923,8 +953,11 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         if hash.is_none() {
             return Err(err(format!("{} is bound nowhere", d.name)));
         }
+        if let (Some(class), Some(fh)) = (&d.extends, &hash) {
+            self.check_extension(class, fh).map_err(err)?;
+        }
         let entry = d.entry(hash, datumesh_store::CatalogSource::Publisher, Some(self.key.key_id().to_string()));
-        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary, open_keys: d.open_keys });
+        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary, open_keys: d.open_keys, extends: d.extends });
         Ok(())
     }
 
@@ -963,10 +996,221 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         Ok(())
     }
 
+    /// The methods of a class line written inline (CONTRACT-classes-round K7): `{"stored": <signature>}` and
+    /// `{"formula": <source>, "signature": <signature>}`, each defined as the function `<class>/<m>` (a formula's `this` is the
+    /// class, checked against the class's draft). Returns the class descriptor with each inline method's function hash in
+    /// place of what was written; a function hash is kept as it is. The functions are planned here and bound by the class
+    /// (`bind_class`, one transaction), not by themselves. The formula methods' reads of each other with `this` must not form
+    /// a cycle (16.3): a cycle is refused at the class line.
+    fn inline_methods(
+        &mut self,
+        n: usize,
+        class: &str,
+        descriptor: &Value,
+        start: &str,
+    ) -> Result<Value, PublishError> {
+        let err = |d: String| PublishError::at(n, d);
+        let Some(Value::Object(written)) = descriptor.get("methods") else { return Ok(descriptor.clone()) };
+        if !written.iter().any(|(_, v)| matches!(v, Value::Object(_))) {
+            return Ok(descriptor.clone());
+        }
+        let mut hashes: BTreeMap<String, String> = BTreeMap::new();
+        let mut sigs: Vec<(String, Value)> = Vec::new();
+        let mut formulas: Vec<(String, String, Value)> = Vec::new();
+        let mut stored: Vec<(String, String, Vec<u8>)> = Vec::new();
+        for (m, v) in written {
+            let fq = format!("{class}/{m}");
+            match v {
+                Value::String(h) => {
+                    let bytes = function_bytes_of(&mut self.reads, self.store, &self.sim, h)
+                        .map_err(err)?
+                        .ok_or_else(|| err(format!("{fq}: no descriptor {h}")))?;
+                    let d = json::parse(&bytes).map_err(|e| err(e.to_string()))?;
+                    sigs.push((m.clone(), d.get("signature").cloned().unwrap_or(Value::Null)));
+                    hashes.insert(m.clone(), h.clone());
+                }
+                Value::Object(o) => {
+                    let get = |k: &str| o.iter().find(|(x, _)| x == k).map(|(_, y)| y);
+                    match (get("stored"), get("formula"), get("signature")) {
+                        (Some(sig), None, None) => {
+                            let fd = FunctionDescriptor::from_value(&stored_value(sig)).map_err(|e| err(format!("{fq}: {e}")))?;
+                            hashes.insert(m.clone(), fd.hash());
+                            sigs.push((m.clone(), sig.clone()));
+                            stored.push((fq, fd.hash(), fd.canonical()));
+                        }
+                        (None, Some(Value::String(src)), Some(sig)) => {
+                            sigs.push((m.clone(), sig.clone()));
+                            formulas.push((m.clone(), src.clone(), sig.clone()));
+                        }
+                        _ => {
+                            return Err(err(format!(
+                                "{fq}: a method is a function hash, {{\"stored\": <signature>}} or {{\"formula\": <source>, \"signature\": <signature>}}"
+                            )))
+                        }
+                    }
+                }
+                _ => return Err(err(format!("{fq}: a method is a function hash or an inline definition"))),
+            }
+        }
+        for (fq, hash, bytes) in stored {
+            self.sim.descriptors.insert(hash.clone(), bytes.clone());
+            self.ops.push(Op::Function { name: fq, start: start.to_string(), hash, bytes, bind: false });
+        }
+        // The class's keys are the flattened ones (16.2): the parent's first, then the class's own.
+        let mut keys: Vec<(String, Value)> = Vec::new();
+        let mut order: Vec<Value> = Vec::new();
+        if let Some(p) = descriptor.get("parent").and_then(Value::as_str) {
+            let bytes = self
+                .callers()
+                .class_bytes(p)
+                .map_err(err)?
+                .ok_or_else(|| err(format!("{class}: the parent {p} is not stored")))?;
+            let pv = json::parse(&bytes).map_err(|e| err(e.to_string()))?;
+            if let Some(Value::Object(ks)) = pv.get("keys") {
+                keys.extend(ks.iter().cloned());
+            }
+            if let Some(Value::Array(os)) = pv.get("order") {
+                order.extend(os.iter().cloned());
+            }
+        }
+        if let Some(Value::Object(ks)) = descriptor.get("keys") {
+            for (k, v) in ks {
+                if !keys.iter().any(|(x, _)| x == k) {
+                    keys.push((k.clone(), v.clone()));
+                }
+            }
+        }
+        if let Some(Value::Array(os)) = descriptor.get("order") {
+            for o in os {
+                if !order.iter().any(|x| x.as_str() == o.as_str()) {
+                    order.push(o.clone());
+                }
+            }
+        }
+        let mut draft_members = vec![
+            ("keys".to_string(), Value::Object(keys)),
+            ("order".to_string(), Value::Array(order)),
+            ("methods".to_string(), Value::Object(sigs)),
+        ];
+        if let Some(p) = descriptor.get("parent") {
+            draft_members.push(("parent".to_string(), p.clone()));
+        }
+        let draft = datumesh_formula::definition::ClassDraft::from_value(&Value::Object(draft_members))
+            .map_err(|e| err(format!("{class}: {e}")))?;
+        let defined = {
+            let callers = self.callers();
+            let mut defined = Vec::with_capacity(formulas.len());
+            for (m, src, sig) in &formulas {
+                let fq = format!("{class}/{m}");
+                let def =
+                    datumesh_formula::definition::define_method_in_draft(class, &draft, &fq, src, sig, &callers, start)
+                        .map_err(|e| err(format!("define {fq}: {e}")))?;
+                defined.push((m.clone(), def));
+            }
+            defined
+        };
+        // Each formula method after the formula methods it reads with `this` (16.3): a cycle is refused.
+        let names: BTreeSet<String> = defined.iter().map(|(m, _)| m.clone()).collect();
+        let reads: BTreeMap<String, BTreeSet<String>> = defined
+            .iter()
+            .map(|(m, d)| {
+                let prefix = format!("{class}/");
+                let rs = d
+                    .callees
+                    .keys()
+                    .filter_map(|c| c.strip_prefix(prefix.as_str()))
+                    .filter(|x| names.contains(*x))
+                    .map(str::to_string)
+                    .collect();
+                (m.clone(), rs)
+            })
+            .collect();
+        let mut done: BTreeSet<String> = BTreeSet::new();
+        let mut order: Vec<String> = Vec::new();
+        while order.len() < defined.len() {
+            let next = defined
+                .iter()
+                .map(|(m, _)| m)
+                .find(|m| !done.contains(*m) && reads.get(*m).is_none_or(|rs| rs.iter().all(|r| done.contains(r))));
+            match next {
+                Some(m) => {
+                    done.insert(m.clone());
+                    order.push(m.clone());
+                }
+                None => {
+                    let left: Vec<&str> =
+                        defined.iter().map(|(m, _)| m.as_str()).filter(|m| !done.contains(*m)).collect();
+                    return Err(err(format!(
+                        "{class}: methods read each other with this ({}): refused (16.3)",
+                        left.join(", ")
+                    )));
+                }
+            }
+        }
+        let mut defined: BTreeMap<String, datumesh_formula::definition::Definition> = defined.into_iter().collect();
+        for m in order {
+            let def = defined.remove(&m).ok_or_else(|| err(format!("{class}/{m}: not defined")))?;
+            let fq = format!("{class}/{m}");
+            self.sim.descriptors.insert(def.fn_hash.clone(), def.bytes.clone());
+            self.ops.push(Op::Function {
+                name: fq.clone(),
+                start: start.to_string(),
+                hash: def.fn_hash.clone(),
+                bytes: def.bytes.clone(),
+                bind: false,
+            });
+            self.formulas.push((n, fq, def.fn_hash.clone()));
+            hashes.insert(m, def.fn_hash);
+        }
+        let methods: Vec<(String, Value)> = written
+            .iter()
+            .map(|(m, _)| (m.clone(), Value::String(hashes.get(m).cloned().unwrap_or_default())))
+            .collect();
+        let mut out = descriptor.clone();
+        if let Value::Object(members) = &mut out {
+            for (k, v) in members.iter_mut() {
+                if k == "methods" {
+                    *v = Value::Object(methods.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `extends` of a function's catalogue entry (K9, the classes round): the class is bound, and the function takes its keys
+    /// first, in class order, with their types (the extension-method rule of 16.3). Else refused.
+    fn check_extension(&mut self, class: &str, fn_hash: &str) -> Result<(), String> {
+        let chash = current_class(self.store, &self.sim, class)?
+            .ok_or_else(|| format!("extends {class}: no class of that name is bound on this mesh"))?;
+        let cbytes = match self.sim.class_bytes.get(&chash) {
+            Some(b) => b.clone(),
+            None => self
+                .store
+                .class(&chash)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("class {chash} is not stored"))?,
+        };
+        let cd = ClassDescriptor::from_json(&cbytes).map_err(|e| e.to_string())?;
+        let fbytes = function_bytes_of(&mut self.reads, self.store, &self.sim, fn_hash)?
+            .ok_or_else(|| format!("no descriptor {fn_hash}"))?;
+        let fd = FunctionDescriptor::from_json(&fbytes).map_err(|e| e.to_string())?;
+        let order = fd.order.clone().unwrap_or_default();
+        let keys_match = order.len() >= cd.order.len()
+            && order[..cd.order.len()] == cd.order[..]
+            && cd.order.iter().all(|k| key_matches(&cd, &fd, k));
+        if !keys_match {
+            return Err(format!(
+                "extends {class}: the function does not take the keys of {class} first, with their types"
+            ));
+        }
+        Ok(())
+    }
+
     fn class_line(&mut self, n: usize, name: &str, v: &Value) -> Result<(), PublishError> {
         let err = |d: String| PublishError::at(n, d);
-        let descriptor = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
+        let written = v.get("descriptor").ok_or_else(|| err("a class without descriptor".into()))?;
         let start = bound_of(v, n, self.ctx.now)?;
+        let descriptor = &self.inline_methods(n, name, written, &start)?;
         let def = datumesh_formula::definition::define_class(
             name,
             &descriptor.to_jcs(),
@@ -1094,6 +1338,15 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         let mut args = Args::new();
         for (k, a) in cell_v.get("args").and_then(Value::as_object).ok_or_else(|| err("a cell without args".into()))? {
             args.insert(k.clone(), Arg::Value(Scalar::from_json(&a.to_jcs()).map_err(|e| err(format!("{k}: {e}")))?));
+        }
+        // A label argument (`label_fold`, K8) is stored folded: a value that is not its own folding is refused.
+        for (k, a) in &args {
+            let rule = d.arg_extras.get(k).and_then(|x| x.key_normalisation);
+            if let (true, Arg::Value(Scalar::String(text))) = (matches!(rule, Some(KeyNormalisation::LabelFold)), a) {
+                if datumesh_core::fold_label(text) != *text {
+                    return Err(err(format!("E_KEY_NORMALISATION: {k}: {text:?} is not folded (label_fold)")));
+                }
+            }
         }
         let valid: Args = args
             .iter()
@@ -1259,8 +1512,9 @@ fn write<S: Store + ?Sized>(
                     }
                 }
             }
-            Op::Catalog { entry, dictionaries, open_keys } => {
-                crate::catalog::store_publisher(store, entry, dictionaries, open_keys).map_err(err)?;
+            Op::Catalog { entry, dictionaries, open_keys, extends } => {
+                crate::catalog::store_publisher(store, entry, dictionaries, open_keys, extends.as_deref())
+                    .map_err(err)?;
             }
             Op::Cell { .. } => {
                 let mut j = i;
@@ -1582,7 +1836,8 @@ pub(crate) fn check_tests<S: Store + ?Sized>(
         }
         let ran: Vec<Ran> = specs.iter().map(|(_, s)| run_test(store, overlay, now, s)).collect();
         let Some(compiled) = built.compiled.as_ref() else {
-            // A stored function: its tests are stored and counted; it has no branch arms.
+            // A stored function: its tests are stored and counted; it has no branch arms, and its failing tests are
+            // counterexamples, never a refusal (stored functions stay exempt from the public rule).
             for ((own_n, spec), r) in specs.iter().zip(&ran) {
                 let (result, detail) = testrun::result_of(spec, r);
                 rows.push(RowWrite {

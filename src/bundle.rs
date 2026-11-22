@@ -459,6 +459,13 @@ fn import_with<S: Store + ?Sized>(
     if let Some(Value::Array(items)) = &catalog_doc {
         for item in items {
             let d = crate::catalog::parse(item, "name").map_err(|e| BundleError::Format(format!("catalog: {e}")))?;
+            if d.extends.is_some() {
+                // `extends` is checked by publish (K9); a bundle's catalogue does not take it yet.
+                return Err(BundleError::Format(format!(
+                    "catalog: {} extends a class: not accepted in a bundle",
+                    d.name
+                )));
+            }
             let hash =
                 match d.kind {
                     datumesh_store::CatalogKind::Class => None,
@@ -701,7 +708,8 @@ fn import_with<S: Store + ?Sized>(
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));
-        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys).map_err(BundleError::Store)?;
+        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys, None)
+            .map_err(BundleError::Store)?;
     }
     let mut cell_values = BTreeSet::new();
     for (_, r) in &receipts {

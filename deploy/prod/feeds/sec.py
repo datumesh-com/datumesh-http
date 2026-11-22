@@ -526,7 +526,15 @@ S_ARG = {"type": "string", "valid": False}
 D_ARG = {"type": "date", "valid": False}
 N_ARG = {"type": "number", "unit": "1", "valid": False}
 FACT_RETURNS = {"type": "number", "unit": {"arg": "unit"}}
-FILING_STEWARD = "https://{host}/classes/change"  # the mesh's change process for a class (as register/dataset's)
+# The steward's change process of a class (CONTRACT-classes-round K12): the page the site serves for production, which
+# check_stewards.py fetches before any production publish. The rehearsal host's address is NOT a real page (rehearsal
+# only; check_stewards.py exempts it and lists it).
+PRODUCTION_PROCESS = "https://datumesh.com/classes/change"
+
+
+def _steward_process(host: str) -> str:
+    """The process address of a class of `host`: production's real page, else the rehearsal host's address (not a real page)."""
+    return PRODUCTION_PROCESS if host == PRODUCTION else f"https://{host}/classes/change"
 
 
 def _call(fq, order, vals, bare=()) -> str:
@@ -618,7 +626,7 @@ def _class_lines(s):
     """The stored descriptors, then the class lines that name their hashes (a method's descriptor comes before the class
     line that names its hash): the company class with its one method fact (C1), then the filing class with its six."""
     company, _, cls, _ = _names(s)
-    steward = {"namespace": s["namespace"], "process": FILING_STEWARD.replace("{host}", _host_of(s))}
+    steward = {"namespace": s["namespace"], "process": _steward_process(_host_of(s))}
     fact = _fact_descriptor()
     lines = [{"descriptor": fact}]
     hashes = {}

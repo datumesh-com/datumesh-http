@@ -125,6 +125,26 @@ pub trait Bindings {
         let _ = (class, label, asof);
         Ok(None)
     }
+
+    /// The first name the class hash is bound to as of `asof` (K5, the classes round): the name that
+    /// names the defining class of an inherited method, as `super` names its parent (16.3). Provided: none.
+    fn class_name_of(&self, class_hash: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        let _ = (class_hash, asof);
+        Ok(None)
+    }
+
+    /// The flattened class descriptor held under this class hash, bound or not (K5). Provided: none.
+    fn class_by_hash(&self, class_hash: &str) -> Result<Option<ClassDescriptor>, ErrorCode> {
+        let _ = class_hash;
+        Ok(None)
+    }
+
+    /// The key encoding a chain's cell holds as of `asof` (K10, the classes round): the value of the cell
+    /// `cell` (computed or stored), `None` when it has no value then. Provided: none.
+    fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, ErrorCode> {
+        let _ = (cell, asof);
+        Ok(None)
+    }
 }
 
 /// A request resolved to its cell (or slice, at `/slice`).
@@ -211,6 +231,18 @@ pub enum Rejection {
     /// for an unbound name, answered `not_covered` with that code (spec-0.4.2; this enum is
     /// exhaustive, so 0.1.1 gives that case no variant of its own).
     Error(ErrorCode),
+}
+
+thread_local! {
+    /// The fault of the last request on this thread that was `not_covered` with one (K10, the classes round): a
+    /// chained request's link read a key the method's classes do not hold (`E_FORMULA_DISPATCH_KEY`). [`Rejection`] is
+    /// `not_covered` without it; the mesh takes it with [`take_fault`] when it answers the rejection.
+    static CALL_FAULT: std::cell::Cell<Option<datumesh_core::Fault>> = const { std::cell::Cell::new(None) };
+}
+
+/// The fault the last `not_covered` rejection of this thread carries, if any (taken: it is given once).
+pub(crate) fn take_fault() -> Option<datumesh_core::Fault> {
+    CALL_FAULT.with(|f| f.take())
 }
 
 /// Whether `rest` (the text after `/cell/`, query included, as received) is a call rather
@@ -416,6 +448,15 @@ impl datumesh_formula::call::CallEnv for Env<'_> {
     fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, String> {
         self.bindings.lookup(class, label, asof).map_err(|c| c.as_str().to_string())
     }
+    fn class_name_of(&self, class_hash: &str, asof: Option<&str>) -> Result<Option<String>, String> {
+        self.bindings.class_name_of(class_hash, asof.unwrap_or(self.now)).map_err(|c| c.as_str().to_string())
+    }
+    fn class_descriptor_of(&self, class_hash: &str, _asof: Option<&str>) -> Result<Option<ClassDescriptor>, String> {
+        self.bindings.class_by_hash(class_hash).map_err(|c| c.as_str().to_string())
+    }
+    fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, String> {
+        self.bindings.chain(cell, asof).map_err(|c| c.as_str().to_string())
+    }
 }
 
 /// Resolves a call (SPEC 5.8).
@@ -436,7 +477,12 @@ pub fn resolve_call(
         text.push_str(q);
     }
     let env = Env { bindings, aliases, now };
+    CALL_FAULT.with(|f| f.set(None));
     let call = datumesh_formula::call::parse_call(text.trim_start(), &env).map_err(|e| match e {
+        datumesh_formula::call::CallError::Code("E_FORMULA_DISPATCH_KEY", _) => {
+            CALL_FAULT.with(|f| f.set(Some(datumesh_core::Fault::DispatchKey)));
+            Rejection::NotCovered
+        }
         datumesh_formula::call::CallError::Code(c, _) => match ErrorCode::from_code(c) {
             Some(ErrorCode::NameUnbound) => Rejection::Error(ErrorCode::NameUnbound),
             Some(ErrorCode::FnUnavailable) => Rejection::NotCovered,

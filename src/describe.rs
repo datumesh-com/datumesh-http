@@ -313,6 +313,10 @@ impl Inner {
                 Err(code) => envelope::error_reply(code),
             };
         }
+        // An object by a label (K8, the classes round): `N[label]` answers the object's describe, with `resolved`.
+        if label_form(id).is_some() {
+            return self.describe_label(self, id, &now).unwrap_or_else(not_found);
+        }
         // An object's key encoding.
         if id.contains('(') {
             return match parse_object_key(id) {
@@ -416,7 +420,7 @@ impl Inner {
             {
                 members.push(("description".into(), Value::String(text.clone())));
             }
-            members.push(("fn".into(), Value::String(format!("{name}/{m}"))));
+            members.push(("fn".into(), Value::String(self.method_fn(name, c, m))));
             members.push(("fn_hash".into(), Value::String(hash.clone())));
             members.push(("returns".into(), returns));
             methods.push((m.clone(), Value::Object(members)));
@@ -432,8 +436,51 @@ impl Inner {
         Reply::json(200, doc.to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
     }
 
+    /// The object a label `N[label]` names (K8, 16.7): through `N`'s lookup, read as of `asof` (the request's, or `now`).
+    /// The answer is the object's describe with `resolved` (the lookup). `None` when `id` is not the label form. An unknown
+    /// or withdrawn label, and a class with no lookup, are `E_NAME_UNBOUND`.
+    pub(crate) fn describe_label(&self, bindings: &dyn Bindings, id: &str, now: &str) -> Option<Reply> {
+        let (class, written, asof) = label_form(id)?;
+        let at = asof.unwrap_or_else(|| now.to_string());
+        let unbound = || Some(envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs()));
+        let c = match bindings.class(&class, &at) {
+            Ok(Some(c)) => c,
+            Ok(None) => return unbound(),
+            Err(code) => return Some(envelope::error_reply(code)),
+        };
+        let Some(lookup) = c.descriptor.lookup.clone() else { return unbound() };
+        let folded = match bindings.binding(&format!("{class}/{lookup}"), &at) {
+            Ok(Some(b))
+                if matches!(
+                    b.descriptor.arg_extras.get("label").and_then(|x| x.key_normalisation),
+                    Some(datumesh_core::KeyNormalisation::LabelFold)
+                ) =>
+            {
+                datumesh_core::fold_label(&written)
+            }
+            Ok(_) => written.clone(),
+            Err(code) => return Some(envelope::error_reply(code)),
+        };
+        let enc = match bindings.lookup(&class, &folded, &at) {
+            Ok(Some(enc)) if !enc.is_empty() => enc,
+            Ok(_) => return unbound(),
+            Err(code) => return Some(envelope::error_reply(code)),
+        };
+        let Ok(key) = datumesh_core::parse_object_key(&enc) else { return Some(bad_key()) };
+        let Ok(resolution) = datumesh_core::Resolution::lookup(&written, &enc, &at) else { return Some(bad_key()) };
+        let Ok(resolved) = datumesh_core::Resolved::new(&key.call_form(), vec![resolution]) else {
+            return Some(envelope::error_reply(ErrorCode::InputUnavailable));
+        };
+        Some(self.object_by_key_with(key, &at, Some(resolved)))
+    }
+
     /// The object answer for a key encoding: the class bound now, the keys checked against it.
     fn object_by_key(&self, key: ObjectKey, now: &str) -> Reply {
+        self.object_by_key_with(key, now, None)
+    }
+
+    /// [`Inner::object_by_key`], with the request's `resolved` (a label's lookup) when there is one.
+    fn object_by_key_with(&self, key: ObjectKey, now: &str, resolved: Option<datumesh_core::Resolved>) -> Reply {
         let c = match Bindings::class(self, &key.class, now) {
             Ok(Some(c)) => c,
             Ok(None) => return not_found(),
@@ -458,11 +505,43 @@ impl Inner {
                 _ => return bad(ErrorCode::KeyEncoding),
             }
         }
-        self.object_answer(&key, &c.class_hash)
+        self.object_answer_with(&key, &c.class_hash, resolved)
+    }
+
+    /// The function a method `m` of the class `name` (bound as `c`) denotes (K5, 16.8): `D/m` when the method is inherited
+    /// from the class D that defines it (found through the parent hashes, D named as of now), else `name/m`.
+    fn method_fn(&self, name: &str, c: &BoundClass, m: &str) -> String {
+        let Some(h) = c.descriptor.methods.get(m) else { return format!("{name}/{m}") };
+        let mut cur: ClassDescriptor = (*c.descriptor).clone();
+        let mut defining: Option<String> = None;
+        while let Some(ph) = cur.parent.clone() {
+            let Ok(Some(p)) = Bindings::class_by_hash(self, &ph) else { break };
+            if p.methods.get(m) != Some(h) {
+                break;
+            }
+            defining = Some(ph);
+            cur = p;
+        }
+        if let Some(dh) = defining {
+            if let Ok(Some(dn)) = Bindings::class_name_of(self, &dh, &self.now()) {
+                return format!("{dn}/{m}");
+            }
+        }
+        format!("{name}/{m}")
     }
 
     /// The object answer (16.8) for `key` of the class with hash `class_hash`.
     fn object_answer(&self, key: &ObjectKey, class_hash: &str) -> Reply {
+        self.object_answer_with(key, class_hash, None)
+    }
+
+    /// [`Inner::object_answer`], with the request's `resolved` member when there is one.
+    fn object_answer_with(
+        &self,
+        key: &ObjectKey,
+        class_hash: &str,
+        resolved: Option<datumesh_core::Resolved>,
+    ) -> Reply {
         let class: Option<Arc<ClassDescriptor>> =
             self.store.class(class_hash).ok().flatten().and_then(|b| ClassDescriptor::from_json(&b).ok()).map(Arc::new);
         let Some(class) = class else { return envelope::error_reply(ErrorCode::InputUnavailable) };
@@ -470,16 +549,73 @@ impl Inner {
             return bad_key();
         };
         let Ok(short) = short_id(&id) else { return bad_key() };
-        let doc = Value::Object(vec![
+        let mut members = vec![
             ("call".into(), Value::String(key.call_form())),
             ("kind".into(), Value::String("object".into())),
             ("methods".into(), Value::Array(class.methods.keys().map(|m| Value::String(m.clone())).collect())),
             ("object".into(), object),
             ("object_id".into(), Value::String(id)),
             ("short_id".into(), Value::String(short)),
-        ]);
+        ];
+        // The functions that extend the object's class (K9, 16.8), by name; an answer with none has no member.
+        let extensions = self.extensions(&key.class);
+        if !extensions.is_empty() {
+            members.push(("extensions".into(), Value::Array(extensions)));
+        }
+        if let Some(r) = resolved {
+            // `resolved` as an answer writes it (16.7): core's member, which the envelope takes for any answer.
+            let member = datumesh_core::Answer::not_covered()
+                .with_resolved(r)
+                .ok()
+                .and_then(|a| a.to_value().get("resolved").cloned());
+            if let Some(m) = member {
+                members.push(("resolved".into(), m));
+            }
+        }
+        let doc = Value::Object(members);
         Reply::json(200, doc.to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
     }
+}
+
+impl Inner {
+    /// The extension methods of the class `class` (K9): `{fn, fn_hash, publisher}` for each function whose catalogue entry
+    /// extends it, by name, with the function hash it is bound to now. Empty when none does, or the store cannot say.
+    fn extensions(&self, class: &str) -> Vec<Value> {
+        let Ok(list) = self.store.extensions_of(class) else { return Vec::new() };
+        let now = self.now();
+        let mut out = Vec::new();
+        for e in list {
+            let f = e.entry.name.clone();
+            let Ok(Some(b)) = self.store.resolve_binding(&f, &now) else { continue };
+            out.push(Value::Object(vec![
+                ("fn".into(), Value::String(f.clone())),
+                ("fn_hash".into(), Value::String(b.fn_hash)),
+                ("publisher".into(), Value::String(publisher_of(&f).into())),
+            ]));
+        }
+        out
+    }
+}
+
+/// The label form `N[label]` (K8): the class name, the label as written (a quoted label unquoted), and the `asof` of a query
+/// `?asof=<instant>`, when the id is one; `None` otherwise (a call with a method ends with `)`).
+pub(crate) fn label_form(id: &str) -> Option<(String, String, Option<String>)> {
+    let (path, query) = match id.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (id, None),
+    };
+    let open = path.find('[')?;
+    let inner = path[open + 1..].strip_suffix(']')?;
+    let class = &path[..open];
+    if class.is_empty() || inner.is_empty() {
+        return None;
+    }
+    let written = match inner.strip_prefix('"') {
+        Some(q) => q.strip_suffix('"')?.replace("\"\"", "\""),
+        None => inner.to_string(),
+    };
+    let asof = query.and_then(|q| q.strip_prefix("asof=")).map(str::to_string);
+    Some((class.to_string(), written, asof))
 }
 
 /// The publisher of a name: the host of its namespace, its first segment (spec-0.6.1, 2.3, 16.8).

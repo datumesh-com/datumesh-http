@@ -20,6 +20,13 @@ from pathlib import Path
 FEEDS = Path(__file__).resolve().parent
 SEC_NAMES = FEEDS / "sec_names.toml"
 PRODUCTION = "datumesh.com"
+# The steward's change process (CONTRACT-classes-round K12): production's real page, which check_stewards.py fetches
+# before any production publish. A rehearsal host's address is NOT a real page (rehearsal only; check_stewards.py exempts it).
+PRODUCTION_PROCESS = "https://datumesh.com/classes/change"
+
+
+def _steward_process(host: str) -> str:
+    return PRODUCTION_PROCESS if host == PRODUCTION else f"https://{host}/classes/change"
 TIMEOUT = 30
 
 # the methods of the subclass that are stored (C3) and the formulas of the views (C4), in the order of the views file
@@ -80,7 +87,7 @@ def build(host: str, mesh: str) -> list:
     cls = {"class": sub, "descriptor": {
         "keys": {}, "order": [], "parent": parent_hash, "methods": hashes, "lookup": "from_label",
         "extent": {"keys": hashes["loaded"]},
-        "steward": {"namespace": f"{host}/sec", "process": f"https://{host}/classes/change"}}}
+        "steward": {"namespace": f"{host}/sec", "process": _steward_process(host)}}}
     catalog = {
         "catalog": sub, "kind": "class", "label": "SEC company (Datumesh views over the SEC relay)",
         "description": ("A subclass of the SEC relay's company class, one company per cik: its figures as filed, the "

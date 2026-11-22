@@ -27,6 +27,8 @@ pub(crate) struct Described {
     pub(crate) dictionary: Vec<(String, Vec<KeyValue>)>,
     /// The keys open from the first cell (`open_keys`, CONTRACT-0.4.9 H7): no automatic values for them.
     pub(crate) open_keys: Vec<String>,
+    /// The class a function extends (`extends`, K9, the classes round): a function's entry only.
+    pub(crate) extends: Option<String>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -124,7 +126,18 @@ pub(crate) fn parse(v: &Value, name_key: &str) -> Result<Described, String> {
         }
         Some(_) => return Err("open_keys is not an array".into()),
     }
-    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys })
+    let extends = match v.get("extends") {
+        None => None,
+        Some(Value::String(c)) => {
+            if !matches!(kind, CatalogKind::Function) {
+                return Err("extends is for a function's entry".into());
+            }
+            datumesh_core::lexical::check_function_name(c, "extends").map_err(|e| format!("extends: {e}"))?;
+            Some(c.clone())
+        }
+        Some(_) => return Err("extends is a class's full name".into()),
+    };
+    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys, extends })
 }
 
 impl Described {
@@ -151,19 +164,26 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
     entry: &CatalogEntry,
     dictionaries: &[(String, Vec<KeyValue>)],
     open_keys: &[String],
+    extends: Option<&str>,
 ) -> Result<(), String> {
-    let same = crate::find::entry_by_name(store, &entry.name).is_some_and(|old| {
-        old.kind == entry.kind
-            && old.hash == entry.hash
-            && old.label == entry.label
-            && old.description == entry.description
-            && old.args == entry.args
-            && old.examples == entry.examples
-            && old.source == entry.source
-            && old.signed_by == entry.signed_by
+    // The row's facets are kept (the publisher does not set them): the extension is written with them as they are.
+    let old = store.catalog_entry_ext(entry.kind, &entry.name).map_err(|e| e.to_string())?;
+    let same = old.as_ref().is_some_and(|old| {
+        old.entry.kind == entry.kind
+            && old.entry.hash == entry.hash
+            && old.entry.label == entry.label
+            && old.entry.description == entry.description
+            && old.entry.args == entry.args
+            && old.entry.examples == entry.examples
+            && old.entry.source == entry.source
+            && old.entry.signed_by == entry.signed_by
+            && old.extends.as_deref() == extends
     });
     if !same {
-        store.upsert_catalog(std::slice::from_ref(entry)).map_err(|e| e.to_string())?;
+        let mut ext = datumesh_store::CatalogEntryExt::new(entry.clone());
+        ext.facets = old.map(|o| o.facets).unwrap_or_default();
+        ext.extends = extends.map(str::to_string);
+        store.upsert_catalog_ext(std::slice::from_ref(&ext)).map_err(|e| e.to_string())?;
     }
     // The keys the entry names are open from now: no automatic values for them (CONTRACT-0.4.9 H7).
     for key in open_keys {

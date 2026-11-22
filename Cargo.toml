@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.4.10"
+version = "0.5.0"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -23,12 +23,12 @@ path = "src/bin/datumesh-mesh.rs"
 [dependencies]
 # Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
 # `sign` for the keys the binary generates.
-datumesh-core = { version = "0.3.11", features = ["sign"] }
+datumesh-core = { version = "0.3.12", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
-datumesh-store = { version = "0.5.2", default-features = false }
+datumesh-store = { version = "0.5.3", default-features = false }
 datumesh-engine = "0.5.0"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
-datumesh-formula = "0.5.2"
+datumesh-formula = "0.6.0"
 # The manifest signature of bundle 1 (src/bundle.rs, CONTRACT-1.8b H2): Ed25519 signing by
 # ed25519-dalek, over the curve25519-dalek and sha2 versions core uses; verification is core's.
 ed25519-dalek = { version = "3.0.0", default-features = false }
@@ -57,7 +57,7 @@ unicode-normalization = "0.1"
 reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
 jsonschema = { version = "0.33.0", default-features = false }
 # SQLite stores for the 0.3.0 tests (CONTRACT-1.8b H1, H2); the library itself is PostgreSQL only.
-datumesh-store = { version = "0.5.2", features = ["sqlite"] }
+datumesh-store = { version = "0.5.3", features = ["sqlite"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
 
 # The engine signs and the store verifies many receipts in the tests: curve25519 and sha2

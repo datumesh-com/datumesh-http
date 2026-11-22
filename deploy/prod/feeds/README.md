@@ -25,6 +25,7 @@ ecb_fx.py estr.py policy_rates.py treasury.py boe.py   relay sources: parsers, T
 chirps.py                     CHIRPS regional means and their stored cells (computed, not relayed)
 register.py                   the licence register (run by hand from register.json)
 run_feed.sh                   one source's job: fetch, check, write, publish, keep state (docker, cron)
+check_stewards.py             before a production publish of a class: each class line's steward.process must be a real page (200, text/html); rehearsal hosts are exempt and listed (CONTRACT-classes-round K12). Run: `python check_stewards.py FILE ...`
 install_cron.sh               prints the crontab lines; installs nothing
 fixtures/                     real samples (SOURCES.md), register.json, a synthetic raster, a region polygon
 tests/                        pytest; read the names from names.toml, never hard-code them
