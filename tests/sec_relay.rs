@@ -28,11 +28,20 @@ use datumesh_http::publish::publish_stored_checked;
 use datumesh_store::Store;
 use serde_json::{json, Value};
 
+/// The publish clock: the stub's `filed()` cells are staged at 2026-11-16T12:00 (make_sec_stub.py `FILED_TX`), and the company
+/// methods' tests (`latest`) read them at the publish clock, so it is exactly that (as in sec_views.rs).
+const PUBLISH_NOW: &str = "2026-11-16T12:00:00.000000Z";
+
 const PUBLIC: &str = "public:https://www.sec.gov/about/privacy-information";
 const METHODS: [&str; 6] = ["cik", "form", "filed", "fiscal_year", "fiscal_period", "period_end"];
 
 fn feeds() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/prod/feeds")
+}
+
+fn lines_of(name: &str) -> Vec<String> {
+    let p = feeds().join(name);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())).lines().map(str::to_string).collect()
 }
 
 fn lines(name: &str) -> Vec<String> {
@@ -59,6 +68,34 @@ fn fact() -> String {
     relay("company/fact")
 }
 
+/// The test lines of the `sec/company` methods (R13: the company formulas are inline methods of the class line in the stub, and
+/// their tests are in `sec_views.jsonl`). The public rule asks for them at the class line, so a file that holds the stub's class
+/// must hold them too.
+fn method_tests() -> Vec<String> {
+    let prefix = format!("{HOST}/sec/company/");
+    lines_of("sec_views.jsonl")
+        .into_iter()
+        .filter(|l| json_of(l).get("test").and_then(Value::as_str).is_some_and(|t| t.starts_with(&prefix)))
+        .collect()
+}
+
+/// The stub with the tests of the company class's methods.
+fn stub_with_tests() -> Vec<String> {
+    let mut v = lines("sec_views_stub_relay.jsonl");
+    v.extend(method_tests());
+    v
+}
+
+/// The inline stored method `annual_report` of the stub's `sec/company` class line.
+fn annual_signature(stub: &[String]) -> Value {
+    let class = stub
+        .iter()
+        .map(|l| json_of(l))
+        .find(|v| v["class"] == format!("{HOST}/sec/company").as_str())
+        .expect("the sec/company class line");
+    class["descriptor"]["methods"]["annual_report"]["stored"].clone()
+}
+
 fn count(ls: &[String], key: &str) -> usize {
     ls.iter().filter(|l| json_of(l).get(key).is_some()).count()
 }
@@ -68,18 +105,18 @@ fn publish(
     ls: &[String],
 ) -> Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError> {
     let f = write(lite, "relay.jsonl", ls);
-    publish_stored_checked(&*lite.store, &lite.key, HOST, &[HOST.to_string()], &f, &opts(NOW))
+    publish_stored_checked(&*lite.store, &lite.key, HOST, &[HOST.to_string()], &f, &opts(PUBLISH_NOW))
 }
 
 #[test]
 fn the_stub_relay_publishes_under_the_public_rule_and_a_second_run_changes_nothing() {
-    let ls = lines("sec_views_stub_relay.jsonl");
+    let ls = stub_with_tests();
     let lite = Lite::new("sr-stub");
     let p = publish(&lite, &ls).unwrap_or_else(|e| panic!("{e}"));
-    // 98100ab: the stub holds the three stored functions of sec/company (annual_report, loaded, from_label), and two classes,
-    // relay/sec.gov/company (its method fact) and the filing class (its six methods); the methods are descriptor lines
-    assert_eq!(p.functions, 3, "annual_report, loaded and from_label of sec/company: {p:?}");
-    assert_eq!(p.classes, 2, "the company class and the filing class: {p:?}");
+    // R13 (one step): the stub holds no function line. sec/company is one class line with its methods inline (the stored
+    // annual_report, loaded and from_label, and the formula methods), beside the relay's company class (its method fact) and the
+    // filing class (its six methods, descriptor lines)
+    assert_eq!(p.classes, 3, "the relay's company class, the filing class and sec/company: {p:?}");
     assert_eq!(p.cells, count(&ls, "cell"), "{p:?}");
     assert!(p.cells > 800, "{p:?}");
     let again = publish(&lite, &ls).unwrap_or_else(|e| panic!("{e}"));
@@ -134,10 +171,6 @@ fn every_kind_of_unit_publishes_through_the_one_function() {
     assert!(ann.iter().all(|a| a.get("source").is_none() && a["licence"] == PUBLIC), "{}", ann[0]);
 }
 
-fn signature_of(ls: &[String], name: &str) -> Value {
-    ls.iter().map(|l| json_of(l)).find(|v| v["function"] == name).unwrap()["signature"].clone()
-}
-
 /// The descriptor line of the company class's method `fact` (98100ab: the old function `company_fact`, now with the class key
 /// `cik` first): the one descriptor line with a `concept` argument.
 fn is_fact_descriptor(v: &Value) -> bool {
@@ -155,9 +188,9 @@ fn the_descriptors_are_the_ones_the_rebuild_names() {
     assert_eq!(fact_sig["args"]["period_end"], json!({"type": "date", "valid": false}));
     assert_eq!(fact_sig["args"]["accession"], json!({"type": "string", "valid": false}));
     assert!(fact_sig["args"].get("taxonomy").is_none() && fact_sig["args"].get("period").is_none());
-    // sec/company/annual_report is in the stub file's function lines
+    // sec/company/annual_report is an inline stored method of the class line in the stub file
     let stub = lines("sec_views_stub_relay.jsonl");
-    let ar = signature_of(&stub, &annual());
+    let ar = annual_signature(&stub);
     assert_eq!(ar["returns"], json!("string"));
     assert_eq!(ar["order"], json!(["cik", "fiscal_year"]));
     assert_eq!(ar["args"]["fiscal_year"], json!({"type": "number", "unit": "1", "valid": false}));
@@ -218,9 +251,12 @@ fn refused_with(label: &str, change: impl Fn(&mut Value), want: &[&str]) {
 /// forms file has descriptor lines only).
 fn refused_in(file: &str, label: &str, change: impl Fn(&mut Value), want: &[&str]) {
     let mut ls = lines(file);
+    if file == "sec_views_stub_relay.jsonl" {
+        ls.extend(method_tests());
+    }
     for l in ls.iter_mut() {
         let mut v = json_of(l);
-        if v.get("function").is_some() || (v.get("descriptor").is_some() && v.get("class").is_none()) {
+        if v.get("function").is_some() || v.get("class").is_some() || v.get("descriptor").is_some() {
             change(&mut v);
             *l = v.to_string();
         }
@@ -263,8 +299,8 @@ fn a_string_return_written_as_an_object_and_a_string_fiscal_year_are_not_what_th
         "sec_views_stub_relay.jsonl",
         "sr-strobj",
         |v| {
-            if v["function"] == annual().as_str() {
-                v["signature"]["returns"] = json!({"type": "string"});
+            if v["class"] == format!("{HOST}/sec/company").as_str() {
+                v["descriptor"]["methods"]["annual_report"]["stored"]["returns"] = json!({"type": "string"});
             }
         },
         &["E_CANON_UNIT"],
@@ -274,8 +310,9 @@ fn a_string_return_written_as_an_object_and_a_string_fiscal_year_are_not_what_th
         "sec_views_stub_relay.jsonl",
         "sr-strunit",
         |v| {
-            if v["function"] == annual().as_str() {
-                v["signature"]["args"]["cik"] = json!({"type": "string", "unit": "1", "valid": false});
+            if v["class"] == format!("{HOST}/sec/company").as_str() {
+                v["descriptor"]["methods"]["annual_report"]["stored"]["args"]["cik"] =
+                    json!({"type": "string", "unit": "1", "valid": false});
             }
         },
         &["E_CANON_UNIT"],

@@ -69,22 +69,6 @@ fn latest() -> String {
     format!("{HOST}/sec/company/latest")
 }
 
-/// The views file without `sec/company/latest` (its formula, tests and catalogue line). K4 finding: since fbd8adf that
-/// formula's tests hold on the real relay, where every filing has a filed() cell, so no test reaches the derived case
-/// `empty(relay/sec.gov/filing/filed)` (the staged filed() cells of the stub are visible only at an asof before them, and
-/// the tests no longer carry one), and the public rule refuses the file with E_TESTS_MISSING at any clock. The tests that
-/// are not about that finding use this file; `latest_publishes_under_the_public_rule` is the one that pins it.
-fn views_without_latest() -> Vec<String> {
-    let l = latest();
-    views()
-        .into_iter()
-        .filter(|x| {
-            let v = json(x);
-            ![v.get("formula"), v.get("test"), v.get("catalog")].iter().flatten().any(|n| *n == l.as_str())
-        })
-        .collect()
-}
-
 fn publish_all(
     store: &dyn Store,
     key: &datumesh_core::SigningKey,
@@ -146,15 +130,16 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     common::bl(|| store.put_namespace(HOST, &key_doc(HOST, &key), BIND_TX).unwrap());
     let mut lines = stub();
     let stub_lines = lines.len();
-    lines.extend(views_without_latest());
+    lines.extend(views());
     let dir = tmp("pg");
     let p = common::bl(|| publish_all(&*store, &key, &dir, &lines)).unwrap_or_else(|e| panic!("{e}"));
     let formula_names = formulas(&lines);
-    // the three stored functions of the stub's sec/company file (annual_report, loaded, from_label: 98100ab), the two
-    // relay classes (relay/sec.gov/company with its method fact, and the filing class with its six stored methods, whose
-    // descriptors are descriptor lines, not functions) and the formulas
-    assert_eq!(p.functions, 3 + formula_names.len(), "{p:?}");
-    assert_eq!(p.classes, 2, "{p:?}");
+    // R13 (one step): sec/company is one class line of the stub with its methods inline (the stored annual_report, loaded and
+    // from_label, and the 22 formula methods: they are not function lines), so the functions published are the views file's
+    // formulas (`ratio/` and `calendar/`); the classes are the two relay classes (relay/sec.gov/company with its method fact,
+    // and the filing class with its six stored methods, whose descriptors are descriptor lines) and sec/company
+    assert_eq!(p.functions, formula_names.len(), "{p:?}");
+    assert_eq!(p.classes, 3, "{p:?}");
     assert!(
         formula_names.contains(&format!("{HOST}/calendar/age_at"))
             && formula_names.contains(&format!("{HOST}/calendar/days_between"))
@@ -163,7 +148,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
         !formula_names.contains(&format!("{HOST}/ratio/age_at"))
             && !formula_names.contains(&format!("{HOST}/ratio/days_between"))
     );
-    assert!(formula_names.len() >= 28, "the K4 views and the K5 ratios: {}", formula_names.len());
+    assert_eq!(formula_names.len(), 6, "the four ratio formulas and the two calendar ones: {formula_names:?}");
     assert!(p.cells > 300 && stub_lines > 300, "{p:?}");
 
     // a second run changes nothing
@@ -171,10 +156,15 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     assert_eq!((again.functions, again.classes, again.versions), (0, 0, 0), "{again:?}");
 
     // one stored row for each test line, each a pass
-    let tests: Vec<Value> =
-        views_without_latest().iter().map(|l| json(l)).filter(|v| v.get("test").is_some()).collect();
+    let tests: Vec<Value> = views().iter().map(|l| json(l)).filter(|v| v.get("test").is_some()).collect();
     let mut total = 0;
-    for f in &formula_names {
+    // the functions under test: the file's formulas and, since R13, the inline methods of the sec/company class, each bound
+    // under its `N/m` name to the hash of its own descriptor
+    let targets: std::collections::BTreeSet<String> =
+        tests.iter().map(|t| t["test"].as_str().unwrap().to_string()).collect();
+    assert!(formula_names.iter().all(|f| targets.contains(f)), "every formula has tests");
+    assert!(targets.contains(&latest()), "the class's methods have tests: {targets:?}");
+    for f in &targets {
         let hash =
             common::bl(|| store.resolve_binding(f, END).unwrap().unwrap_or_else(|| panic!("{f} unbound")).fn_hash);
         let want = tests.iter().filter(|t| t["test"] == f.as_str()).count();
@@ -201,7 +191,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     assert!(kd.get("declarations").is_none(), "the views need no declaration: {kd}");
     // the examples of the catalogue lines; a view of sec/ answers with the public licence
     let mut examples = 0;
-    for l in views_without_latest() {
+    for l in views() {
         let v = json(&l);
         if v.get("catalog").is_none() {
             continue;
@@ -267,7 +257,7 @@ fn the_public_rule_refuses_the_views_without_their_tests() {
     let mut all = stub();
     all.extend(views());
     let mut without = stub();
-    without.extend(views_without_latest());
+    without.extend(views());
     // no test lines at all: the first formula without tests
     let no_tests: Vec<String> = all.iter().filter(|l| json(l).get("test").is_none()).cloned().collect();
     let lite = Lite::new("sv-none");
