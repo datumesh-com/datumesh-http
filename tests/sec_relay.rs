@@ -63,7 +63,10 @@ fn count(ls: &[String], key: &str) -> usize {
     ls.iter().filter(|l| json_of(l).get(key).is_some()).count()
 }
 
-fn publish(lite: &Lite, ls: &[String]) -> Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError> {
+fn publish(
+    lite: &Lite,
+    ls: &[String],
+) -> Result<datumesh_http::publish::Published, datumesh_http::publish::PublishError> {
     let f = write(lite, "relay.jsonl", ls);
     publish_stored_checked(&*lite.store, &lite.key, HOST, &[HOST.to_string()], &f, &opts(NOW))
 }
@@ -91,8 +94,12 @@ fn every_kind_of_unit_publishes_through_the_one_function() {
     // 98100ab: no function lines; the methods are descriptor lines bound by their classes (company: fact; filing: six)
     assert_eq!((p.functions, p.classes), (0, 2), "the company class and the filing class: {p:?}");
     assert_eq!(p.cells, count(&ls, "cell"), "{p:?}");
-    let fns: Vec<String> = ls.iter().filter_map(|l| json_of(l).get("function").map(|f| f.as_str().unwrap().to_string())).collect();
-    assert!(fns.is_empty(), "every method is a descriptor line, and sec/annual_report is in the sec/company file: {fns:?}");
+    let fns: Vec<String> =
+        ls.iter().filter_map(|l| json_of(l).get("function").map(|f| f.as_str().unwrap().to_string())).collect();
+    assert!(
+        fns.is_empty(),
+        "every method is a descriptor line, and sec/annual_report is in the sec/company file: {fns:?}"
+    );
     assert!(lite.bound_tx(&fact()).is_some(), "company/fact unbound");
     for m in METHODS {
         assert!(lite.bound_tx(&relay(&format!("filing/{m}"))).is_some(), "filing/{m} unbound");
@@ -102,21 +109,27 @@ fn every_kind_of_unit_publishes_through_the_one_function() {
     }
     // the cells of the three left-out units (Liabilities in CAD/EUR, Revenues in acre, NetIncomeLoss in USD-per-gal)
     // are not in the file: seven cells are, one for each filed unit that units.md can say
-    let facts: Vec<Value> = ls.iter().map(|l| json_of(l)).filter(|v| v.pointer("/cell/fn") == Some(&json!(fact()))).collect();
+    let facts: Vec<Value> =
+        ls.iter().map(|l| json_of(l)).filter(|v| v.pointer("/cell/fn") == Some(&json!(fact()))).collect();
     assert_eq!(facts.len(), 7);
-    let mut units: Vec<&str> = facts.iter().map(|v| v.pointer("/cell/args/unit/value").unwrap().as_str().unwrap()).collect();
+    let mut units: Vec<&str> =
+        facts.iter().map(|v| v.pointer("/cell/args/unit/value").unwrap().as_str().unwrap()).collect();
     units.sort();
     assert_eq!(units, ["EUR", "EUR/shares", "USD", "USD/shares", "USN", "pure", "shares"]);
     assert!(facts.iter().all(|v| v["licence"] == PUBLIC && v["source"]["name"] == "sec.gov"));
     // the filing class's methods carry the source and the same licence (four of the six have a cell in the forms file:
     // `filed` and `period_end` come from the submissions record, C2b)
-    let filing_cells: Vec<Value> =
-        ls.iter().map(|l| json_of(l)).filter(|v| v.pointer("/cell/fn").is_some_and(|f| f.as_str().unwrap().contains("/filing/"))).collect();
+    let filing_cells: Vec<Value> = ls
+        .iter()
+        .map(|l| json_of(l))
+        .filter(|v| v.pointer("/cell/fn").is_some_and(|f| f.as_str().unwrap().contains("/filing/")))
+        .collect();
     assert_eq!(filing_cells.len(), 4);
     assert!(filing_cells.iter().all(|v| v["licence"] == PUBLIC && v["source"]["name"] == "sec.gov"));
     // sec/company/annual_report: stored, signed by the operator, no source; it is in the stub file
     let stub = lines("sec_views_stub_relay.jsonl");
-    let ann: Vec<Value> = stub.iter().map(|l| json_of(l)).filter(|v| v.pointer("/cell/fn") == Some(&json!(annual()))).collect();
+    let ann: Vec<Value> =
+        stub.iter().map(|l| json_of(l)).filter(|v| v.pointer("/cell/fn") == Some(&json!(annual()))).collect();
     assert_eq!(ann.len(), 16);
     assert!(ann.iter().all(|a| a.get("source").is_none() && a["licence"] == PUBLIC), "{}", ann[0]);
 }
@@ -156,7 +169,14 @@ fn the_descriptors_are_the_ones_the_rebuild_names() {
         .map(|v| v["descriptor"].clone())
         .collect();
     assert_eq!(ds.len(), 6);
-    let returns = [json!("string"), json!("string"), json!("date"), json!({"type": "number", "unit": "1"}), json!("string"), json!("date")];
+    let returns = [
+        json!("string"),
+        json!("string"),
+        json!("date"),
+        json!({"type": "number", "unit": "1"}),
+        json!("string"),
+        json!("date"),
+    ];
     for (d, r) in ds.iter().zip(returns) {
         assert_eq!(d["code"], json!({"body": "", "lang": "stored"}));
         assert_eq!(d["signature"]["order"], json!(["accession"]));
@@ -164,7 +184,10 @@ fn the_descriptors_are_the_ones_the_rebuild_names() {
     }
     let class: Vec<Value> = ls.iter().map(|l| json_of(l)).filter(|v| v.get("class").is_some()).collect();
     assert_eq!(class.len(), 2);
-    assert_eq!((class[0]["class"].as_str(), class[1]["class"].as_str()), (Some(relay("company").as_str()), Some(relay("filing").as_str())));
+    assert_eq!(
+        (class[0]["class"].as_str(), class[1]["class"].as_str()),
+        (Some(relay("company").as_str()), Some(relay("filing").as_str()))
+    );
     assert_eq!(class[0]["descriptor"]["order"], json!(["cik"]));
     assert_eq!(class[0]["descriptor"]["methods"].as_object().unwrap().keys().collect::<Vec<_>>(), ["fact"]);
     assert_eq!(class[1]["descriptor"]["order"], json!(["accession"]));
@@ -173,7 +196,10 @@ fn the_descriptors_are_the_ones_the_rebuild_names() {
     }
     // the catalogue: the company class's open key is cik, accession is open for its method fact, the filing class and each
     // of its methods (H7 of CONTRACT-0.4.9)
-    let open = |name: &str| ls.iter().map(|l| json_of(l)).find(|v| v["catalog"] == name).unwrap_or_else(|| panic!("{name}"))["open_keys"].clone();
+    let open = |name: &str| {
+        ls.iter().map(|l| json_of(l)).find(|v| v["catalog"] == name).unwrap_or_else(|| panic!("{name}"))["open_keys"]
+            .clone()
+    };
     assert_eq!(open(&relay("company")), json!(["cik"]));
     for name in [fact(), relay("filing")].into_iter().chain(METHODS.iter().map(|m| relay(&format!("filing/{m}")))) {
         assert_eq!(open(&name), json!(["accession"]), "{name}");
@@ -221,7 +247,9 @@ fn a_number_return_without_a_unit_is_refused_as_it_was_on_mesh_test() {
     refused_with(
         "sr-fy-nounit",
         |v| {
-            if v.get("descriptor").is_some() && v["descriptor"]["signature"]["returns"] == json!({"type": "number", "unit": "1"}) {
+            if v.get("descriptor").is_some()
+                && v["descriptor"]["signature"]["returns"] == json!({"type": "number", "unit": "1"})
+            {
                 v["descriptor"]["signature"]["returns"] = json!({"type": "number"});
             }
         },
@@ -316,7 +344,8 @@ async fn the_live_mesh_answers_every_kind_of_cell() {
     let ls = lines("sec_relay_forms.jsonl");
     let p = dir.join("forms.jsonl");
     std::fs::write(&p, ls.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
-    common::bl(|| publish_stored_checked(&*store, &key, HOST, &[HOST.to_string()], &p, &opts(NOW))).unwrap_or_else(|e| panic!("{e}"));
+    common::bl(|| publish_stored_checked(&*store, &key, HOST, &[HOST.to_string()], &p, &opts(NOW)))
+        .unwrap_or_else(|e| panic!("{e}"));
     let node = Node::start_with(Setup { db: Some(db.clone()), ..Setup::new(HOST) }, |_| {}, |b| b).await;
 
     let (mut facts, mut filings) = (0, 0);
@@ -355,5 +384,8 @@ async fn the_live_mesh_answers_every_kind_of_cell() {
             seen += 1;
         }
     }
-    assert!(seen >= 6, "two examples of company/fact and one of each of the four filing methods that have a cell here: {seen}");
+    assert!(
+        seen >= 6,
+        "two examples of company/fact and one of each of the four filing methods that have a cell here: {seen}"
+    );
 }

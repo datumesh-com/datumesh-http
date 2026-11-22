@@ -558,7 +558,8 @@ async fn c5_the_rule_is_a_page_and_a_cell_with_the_same_words() {
         sha.len() == 64 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
         "a blob's value starts with its SHA-256 in lowercase hex: {lexical}"
     );
-    let len: usize = len.and_then(|l| l.parse().ok()).unwrap_or_else(|| panic!("a blob's value has its length: {lexical}"));
+    let len: usize =
+        len.and_then(|l| l.parse().ok()).unwrap_or_else(|| panic!("a blob's value has its length: {lexical}"));
     assert!(media.is_some_and(|m| m.contains('/')), "a blob's value ends with its media type: {lexical}");
     let (status, bytes) = m.raw(&format!("/blob/{sha}")).await;
     assert_eq!(status, 200);

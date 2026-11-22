@@ -37,7 +37,10 @@ async fn k10_a_two_link_chain() {
         assert_eq!(rs[0].0, "successor", "{c}: from is the method as written");
         assert_eq!(rs[0].2, pk("P1"), "{c}: to is the key encoding the cell held");
         assert_eq!(rs[1], (format!("{n}(...).price"), "method".to_string(), format!("{n}/price")), "{c}");
-        assert!(a.v["resolved"]["resolutions"][0]["asof"].as_str().is_some_and(|t| t.len() == 27), "{c}: the link's asof");
+        assert!(
+            a.v["resolved"]["resolutions"][0]["asof"].as_str().is_some_and(|t| t.len() == 27),
+            "{c}: the link's asof"
+        );
         assert_eq!(a.v["resolved"]["call"], format!("{n}/price(date: {SHOP_DAY}, sku: \"P1\")"), "{c}");
     }
     // the link is read as of the request's asof

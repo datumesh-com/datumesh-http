@@ -50,7 +50,8 @@ fn cells(f: &str) -> Vec<String> {
 
 async fn world(label: &str, formulas: bool) -> Served {
     let lite = Lite::new(label);
-    publish(&lite, "functions.jsonl", &functions(), BEFORE).unwrap_or_else(|e| panic!("functions (a literal default): {e}"));
+    publish(&lite, "functions.jsonl", &functions(), BEFORE)
+        .unwrap_or_else(|e| panic!("functions (a literal default): {e}"));
     let class = crate::common::world::class_json(
         &format!(r#"{{"subject":{NONE_STR}}}"#),
         &["subject"],
@@ -66,7 +67,8 @@ async fn world(label: &str, formulas: bool) -> Served {
         let sig = format!(r#"{{"args":{{"subject":{STR}}},"order":["subject"],"returns":"string"}}"#);
         let a = formula_line(&format!("{HOST}/dflt/top_a"), &format!("{}(subject: subject)", pick()), &sig);
         let b = formula_line(&format!("{HOST}/dflt/top_b"), &format!("{}(subject: subject, rank: 1)", pick()), &sig);
-        publish(&lite, "formulas.jsonl", &[a, b], NOW).unwrap_or_else(|e| panic!("a body that leaves the argument out: {e}"));
+        publish(&lite, "formulas.jsonl", &[a, b], NOW)
+            .unwrap_or_else(|e| panic!("a body that leaves the argument out: {e}"));
     }
     build_served(lite, None, |_| {}).await
 }
@@ -168,9 +170,8 @@ fn k13_the_default_is_hashed() {
 /// it keeps the check from being lost on the way through publish.)
 #[test]
 fn k13_a_default_of_the_wrong_type_is_refused() {
-    let with = |arg: &str, ty: &str| {
-        format!(r#"{{"args":{{"a":{arg},"k":{STR}}},"order":["k","a"],"returns":"{ty}"}}"#)
-    };
+    let with =
+        |arg: &str, ty: &str| format!(r#"{{"args":{{"a":{arg},"k":{STR}}},"order":["k","a"],"returns":"{ty}"}}"#);
     let ok = [
         (r#"{"default":"1","type":"number","unit":"1","valid":false}"#, "string"),
         (r#"{"default":"-2.5","type":"number","unit":"1","valid":false}"#, "string"),
@@ -206,7 +207,11 @@ fn k13_a_default_of_the_wrong_type_is_refused() {
     }
     // a formula's signature goes through the same check
     let lite = Lite::new("cr-k13-formula");
-    let f = formula_line(&format!("{HOST}/dflt/fbad"), "k", &with(r#"{"default":"abc","type":"number","unit":"1","valid":false}"#, "string"));
+    let f = formula_line(
+        &format!("{HOST}/dflt/fbad"),
+        "k",
+        &with(r#"{"default":"abc","type":"number","unit":"1","valid":false}"#, "string"),
+    );
     let e = publish(&lite, "f.jsonl", &[f], NOW).expect_err("a formula with a bad default");
     assert!(e.detail.contains("E_SCHEMA"), "{e}");
     let _ = json!(null);

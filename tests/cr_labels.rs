@@ -40,7 +40,14 @@ async fn k8_labels_are_folded_in_a_request() {
     assert_eq!(a.resolutions()[0].0, "APPLE", "the lookup's from is the label as written");
     // a label with spaces: a run of white space (spaces and NBSP) is one space, ends trimmed, case folded
     let green = ask(&m, &format!("/cell/{n}/price?date={SHOP_DAY}&sku=A2")).await;
-    for label in [r#""green apple""#, r#""Green   APPLE""#, r#""  green  apple ""#, "\"GREEN\u{a0}APPLE\"", "\"green \u{a0} \u{a0}apple\"", "\"\u{a0}Green\u{a0}\u{a0}apple  \""] {
+    for label in [
+        r#""green apple""#,
+        r#""Green   APPLE""#,
+        r#""  green  apple ""#,
+        "\"GREEN\u{a0}APPLE\"",
+        "\"green \u{a0} \u{a0}apple\"",
+        "\"\u{a0}Green\u{a0}\u{a0}apple  \"",
+    ] {
         let a = ask(&m, &path(&price_call(label), None)).await;
         assert_eq!((a.outcome(), a.value()), ("ok", Some("2.5")), "[{label}]: {}", a.text);
         assert_eq!(a.cell_id(), green.cell_id(), "[{label}]");
@@ -63,14 +70,17 @@ async fn k8_labels_are_folded_in_a_request() {
 /// line, and nothing is written; the folded one is accepted.
 #[test]
 fn k8_a_stored_unfolded_label_is_refused() {
-    for (i, bad) in ["Apple", "green  apple", " apple", "apple ", "Stra\u{df}e", "APPLE\u{a0}PIE"].into_iter().enumerate() {
+    for (i, bad) in
+        ["Apple", "green  apple", " apple", "apple ", "Stra\u{df}e", "APPLE\u{a0}PIE"].into_iter().enumerate()
+    {
         let lite = Lite::new(&format!("cr-k8-stored-{i}"));
         publish(&lite, "functions.jsonl", &shop_functions(), BEFORE).unwrap_or_else(|e| panic!("functions: {e}"));
         let mut v = shop_classes(&lite);
         v.push(label_cell("apple", &pk("A1")));
         publish(&lite, "classes.jsonl", &v, NOW).unwrap_or_else(|e| panic!("a folded label: {e}"));
         let before = snapshot(&lite);
-        let e = publish(&lite, "bad.jsonl", &[label_cell(bad, &pk("A1"))], NOW).expect_err("an unfolded label is refused");
+        let e =
+            publish(&lite, "bad.jsonl", &[label_cell(bad, &pk("A1"))], NOW).expect_err("an unfolded label is refused");
         assert_eq!(e.line, 1, "{bad:?}: {e}");
         assert!(e.detail.contains("E_KEY_NORMALISATION"), "{bad:?}: {e}");
         assert_eq!(snapshot(&lite), before, "{bad:?}: nothing written");
@@ -89,7 +99,12 @@ async fn k8_keys_are_not_folded() {
         path(&format!("{n}/price(a1, {SHOP_DAY})"), None),
     ] {
         let a = ask(&m, &path).await;
-        assert_eq!((a.status, a.outcome(), a.error()), (400, "bad_request", Some("E_KEY_NORMALISATION")), "{path}: {}", a.text);
+        assert_eq!(
+            (a.status, a.outcome(), a.error()),
+            (400, "bad_request", Some("E_KEY_NORMALISATION")),
+            "{path}: {}",
+            a.text
+        );
     }
     // and the control: the folded key is a key
     let ok = ask(&m, &path(&format!("{n}(A1).price({SHOP_DAY})"), None)).await;
@@ -110,7 +125,12 @@ async fn k8_a_withdrawn_label_is_e_name_unbound() {
     assert_eq!((was.outcome(), was.value()), ("ok", Some("7")), "as of {BETWEEN}: {}", was.text);
     for asof in [None, Some(T2)] {
         let a = ask(&m, &path(&price_call("old"), asof)).await;
-        assert_eq!((a.status, a.outcome(), a.error()), (404, "not_covered", Some("E_NAME_UNBOUND")), "{asof:?}: {}", a.text);
+        assert_eq!(
+            (a.status, a.outcome(), a.error()),
+            (404, "not_covered", Some("E_NAME_UNBOUND")),
+            "{asof:?}: {}",
+            a.text
+        );
     }
     // an unknown label is the same, and a label that was not withdrawn is unaffected
     let nope = ask(&m, &path(&price_call("nope"), None)).await;
@@ -142,7 +162,12 @@ async fn k8_describe_by_label() {
         assert_eq!(r["call"], by_key.v["call"], "resolved.call is the object's call");
         let rs = r["resolutions"].as_array().unwrap_or_else(|| panic!("{}", a.text));
         assert_eq!(rs.len(), 1, "{}", a.text);
-        assert_eq!((rs[0]["kind"].as_str(), rs[0]["to"].as_str()), (Some("lookup"), Some(pk("A1").as_str())), "{}", a.text);
+        assert_eq!(
+            (rs[0]["kind"].as_str(), rs[0]["to"].as_str()),
+            (Some("lookup"), Some(pk("A1").as_str())),
+            "{}",
+            a.text
+        );
         assert!(rs[0]["asof"].as_str().is_some_and(|t| t.len() == 27 && t.ends_with('Z')), "{}", a.text);
     }
     // a label that was withdrawn, and one never known: not found

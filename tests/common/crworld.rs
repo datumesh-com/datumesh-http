@@ -40,12 +40,14 @@ pub fn publish(lite: &Lite, file: &str, lines: &[String], clock: &'static str) -
 }
 
 pub fn formula_line(name: &str, source: &str, signature: &str) -> String {
-    json!({"formula": name, "source": source, "signature": serde_json::from_str::<Value>(signature).unwrap()}).to_string()
+    json!({"formula": name, "source": source, "signature": serde_json::from_str::<Value>(signature).unwrap()})
+        .to_string()
 }
 
 /// A cell line of a stored function: `args` are `(name, type, lexical)`, the value is `(type, lexical)`.
 pub fn cell_line(function: &str, args: &[(&str, &str, &str)], value: (&str, &str)) -> String {
-    let a: serde_json::Map<String, Value> = args.iter().map(|(k, t, v)| (k.to_string(), json!({"type": t, "value": v}))).collect();
+    let a: serde_json::Map<String, Value> =
+        args.iter().map(|(k, t, v)| (k.to_string(), json!({"type": t, "value": v}))).collect();
     json!({"cell": {"fn": function, "args": a}, "licence": "CC0-1.0", "summary": "Synthetic test data.",
         "value": {"type": value.0, "value": value.1}})
     .to_string()
@@ -53,7 +55,8 @@ pub fn cell_line(function: &str, args: &[(&str, &str, &str)], value: (&str, &str
 
 /// A cell line whose value is the JSON `true` or `false` (a boolean as a cell line writes it).
 pub fn bool_cell_line(function: &str, args: &[(&str, &str, &str)], value: bool) -> String {
-    let a: serde_json::Map<String, Value> = args.iter().map(|(k, t, v)| (k.to_string(), json!({"type": t, "value": v}))).collect();
+    let a: serde_json::Map<String, Value> =
+        args.iter().map(|(k, t, v)| (k.to_string(), json!({"type": t, "value": v}))).collect();
     json!({"cell": {"fn": function, "args": a}, "licence": "CC0-1.0", "summary": "Synthetic test data.",
         "value": {"type": "boolean", "value": value}})
     .to_string()
@@ -121,7 +124,10 @@ impl Ans {
     }
     /// The receipt hashes the receipt lists as its inputs.
     pub fn inputs(&self) -> Vec<String> {
-        self.v["receipt"]["inputs"].as_array().map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect()).unwrap_or_default()
+        self.v["receipt"]["inputs"]
+            .as_array()
+            .map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
     }
     /// `resolved.resolutions` as `(from, kind, to)`.
     pub fn resolutions(&self) -> Vec<(String, String, String)> {
@@ -203,10 +209,16 @@ pub fn rates_functions() -> Vec<String> {
         function_line(&format!("{p}/rate"), &rate_sig(), None),
         formula_line(
             &format!("{p}/cross"),
-            &format!(r#"{p}/rate(base: "EUR", quote: quote, date: date) / {p}/rate(base: "EUR", quote: base, date: date)"#),
+            &format!(
+                r#"{p}/rate(base: "EUR", quote: quote, date: date) / {p}/rate(base: "EUR", quote: base, date: date)"#
+            ),
             &cross_sig,
         ),
-        formula_line(&format!("{p}/inverse"), &format!("1 / {p}/rate(base: base, quote: quote, date: date)"), &rate_sig()),
+        formula_line(
+            &format!("{p}/inverse"),
+            &format!("1 / {p}/rate(base: base, quote: quote, date: date)"),
+            &rate_sig(),
+        ),
         function_line(&format!("{s}/fixed"), &fixed_sig(), None),
         formula_line(
             &format!("{s}/cross"),
@@ -226,7 +238,11 @@ pub fn rates_classes(lite: &Lite) -> Vec<String> {
     let parent = class_json(
         crate::common::world::NONE_KEYS_PAIR,
         &["base", "quote"],
-        &[("cross", &h(&format!("{p}/cross"))), ("inverse", &h(&format!("{p}/inverse"))), ("rate", &h(&format!("{p}/rate")))],
+        &[
+            ("cross", &h(&format!("{p}/cross"))),
+            ("inverse", &h(&format!("{p}/inverse"))),
+            ("rate", &h(&format!("{p}/rate"))),
+        ],
         HOST,
         "",
     );
@@ -313,10 +329,16 @@ fn name_sig() -> String {
     format!(r#"{{"args":{{"sku":{SKU_ARG}}},"order":["sku"],"returns":"string"}}"#)
 }
 fn successor_sig() -> String {
-    format!(r#"{{"args":{{"sku":{SKU_ARG}}},"order":["sku"],"returns":{{"classes":["{}"],"type":"string"}}}}"#, product())
+    format!(
+        r#"{{"args":{{"sku":{SKU_ARG}}},"order":["sku"],"returns":{{"classes":["{}"],"type":"string"}}}}"#,
+        product()
+    )
 }
 fn from_label_sig() -> String {
-    format!(r#"{{"args":{{"label":{LABEL_ARG}}},"order":["label"],"returns":{{"classes":["{}"],"type":"string"}}}}"#, product())
+    format!(
+        r#"{{"args":{{"label":{LABEL_ARG}}},"order":["label"],"returns":{{"classes":["{}"],"type":"string"}}}}"#,
+        product()
+    )
 }
 fn weight_sig() -> String {
     format!(r#"{{"args":{{"id":{STR}}},"order":["id"],"returns":{NUM1}}}"#)
@@ -353,7 +375,8 @@ pub fn shop_classes(lite: &Lite) -> Vec<String> {
         HOST,
         r#""lookup":"from_label","#,
     );
-    let cc = class_json(&format!(r#"{{"id":{NONE_STR}}}"#), &["id"], &[("weight", &h(&format!("{c}/weight")))], HOST, "");
+    let cc =
+        class_json(&format!(r#"{{"id":{NONE_STR}}}"#), &["id"], &[("weight", &h(&format!("{c}/weight")))], HOST, "");
     vec![class_line(&p, &pc, None), class_line(&c, &cc, None)]
 }
 
@@ -449,8 +472,16 @@ pub fn filing_classes(lite: &Lite) -> Vec<String> {
     );
     vec![
         class_line(&c, &d, None),
-        cell_line(&format!("{c}/filed"), &[("accession", "string", ACCN), ("cik", "string", CIK)], ("date", "2024-11-01")),
-        cell_line(&reading(), &[("accession", "string", ACCN), ("cik", "string", CIK), ("n", "number", "5")], ("number", "42")),
+        cell_line(
+            &format!("{c}/filed"),
+            &[("accession", "string", ACCN), ("cik", "string", CIK)],
+            ("date", "2024-11-01"),
+        ),
+        cell_line(
+            &reading(),
+            &[("accession", "string", ACCN), ("cik", "string", CIK), ("n", "number", "5")],
+            ("number", "42"),
+        ),
     ]
 }
 

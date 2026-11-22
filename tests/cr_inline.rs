@@ -77,12 +77,7 @@ fn absent() -> Value {
 /// The tests of `double` and `quad` that satisfy the public rule: a value, and the absent input.
 fn tests() -> Vec<String> {
     let (d, q) = (format!("{}/double", item()), format!("{}/quad", item()));
-    vec![
-        t(&d, "A", val("20")),
-        t(&d, "ZZ", absent()),
-        t(&q, "A", val("40")),
-        t(&q, "ZZ", absent()),
-    ]
+    vec![t(&d, "A", val("20")), t(&d, "ZZ", absent()), t(&q, "A", val("40")), t(&q, "ZZ", absent())]
 }
 
 /// The whole step in one file: the class with its inline methods, the catalogue (class and methods), cells, tests.
@@ -116,7 +111,11 @@ fn k7_one_publish_step_defines_the_class_and_its_methods() {
     assert_eq!(d.methods.keys().map(String::as_str).collect::<Vec<_>>(), ["double", "price", "quad"]);
     let mut txs = std::collections::BTreeSet::new();
     for (m, h) in &d.methods {
-        let b = lite.store.resolve_binding(&format!("{}/{m}", item()), END).unwrap().unwrap_or_else(|| panic!("{m} unbound"));
+        let b = lite
+            .store
+            .resolve_binding(&format!("{}/{m}", item()), END)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{m} unbound"));
         assert_eq!(&b.fn_hash, h, "{m}: the name is bound to the hash the class holds");
         txs.insert(b.tx);
     }
@@ -128,7 +127,11 @@ fn k7_one_publish_step_defines_the_class_and_its_methods() {
     assert_eq!(d.methods["price"], descriptor_hash(&stored), "the hash of the stored descriptor");
     // the catalogue and the tests were taken
     let fh = d.methods["double"].clone();
-    assert_eq!(lite.store.function_tests(&fh).unwrap().len(), 2, "the public tests of an inline formula method are recorded");
+    assert_eq!(
+        lite.store.function_tests(&fh).unwrap().len(),
+        2,
+        "the public tests of an inline formula method are recorded"
+    );
     // a second run changes nothing
     let before = snapshot(&lite);
     let again = checked_run(&lite, &one_file()).unwrap_or_else(|e| panic!("{e}"));
@@ -148,7 +151,11 @@ async fn k7_this_and_a_method_reading_another() {
     assert_eq!(price.value(), Some("10"), "{}", price.text);
     let double = ask(&m, &format!("/cell/{n}/double?sku=A")).await;
     assert_eq!((double.outcome(), double.value()), ("ok", Some("20")), "{}", double.text);
-    assert_eq!(double.inputs(), vec![price.receipt_hash()], "`this.price()` is the read of `{n}/price(sku: sku)`: its receipt is the input");
+    assert_eq!(
+        double.inputs(),
+        vec![price.receipt_hash()],
+        "`this.price()` is the read of `{n}/price(sku: sku)`: its receipt is the input"
+    );
     let quad = ask(&m, &path(&format!("{n}(A).quad()"), None)).await;
     assert_eq!((quad.outcome(), quad.value()), ("ok", Some("40")), "{}", quad.text);
     assert_eq!(quad.inputs(), vec![double.receipt_hash()], "`this.double()` is the read of `{n}/double(sku: sku)`");
@@ -165,8 +172,11 @@ async fn k7_this_and_a_method_reading_another() {
 fn k7_a_mutual_read_is_refused() {
     let lite = Lite::new("cr-k7-mutual");
     let before = snapshot(&lite);
-    let e = checked_run(&lite, &[item_class(vec![("price", price()), ("a", formula("this.b() + 1")), ("b", formula("this.a() + 1"))])])
-        .expect_err("a mutual read is refused");
+    let e = checked_run(
+        &lite,
+        &[item_class(vec![("price", price()), ("a", formula("this.b() + 1")), ("b", formula("this.a() + 1"))])],
+    )
+    .expect_err("a mutual read is refused");
     assert_eq!(e.line, 1, "{e}");
     assert_eq!(snapshot(&lite), before, "nothing is written: {e}");
     assert!(lite.store.resolve_class(&item(), END).unwrap().is_none());
@@ -205,7 +215,12 @@ fn k7_a_formula_method_that_fails_its_tests_writes_nothing() {
     let lite = Lite::new("cr-k7-failing");
     let before = snapshot(&lite);
     let mut v = one_file();
-    let at = v.iter().position(|l| l.contains(r#""test":"mesh-test.datumesh.com/shop/item/double""#) && l.contains(r#""value":"20""#)).unwrap();
+    let at = v
+        .iter()
+        .position(|l| {
+            l.contains(r#""test":"mesh-test.datumesh.com/shop/item/double""#) && l.contains(r#""value":"20""#)
+        })
+        .unwrap();
     v[at] = t(&format!("{}/double", item()), "A", val("21"));
     let e = checked_run(&lite, &v).expect_err("a failing test");
     assert!(matches!(e.kind, PublishErrorKind::TestsFailing(_)), "{e}");
@@ -224,7 +239,8 @@ fn k7_an_inline_method_takes_the_class_keys_first() {
     let with_key = json!({"stored": {"args": {"date": {"type": "date", "valid": true}, "sku": {"type": "string", "valid": false}},
         "order": ["sku", "date"], "returns": {"type": "number", "unit": "1"}}});
     let ok = Lite::new("cr-k7-keys-ok");
-    checked_run(&ok, &[item_class(vec![("price", price()), ("by_date", with_key)])]).unwrap_or_else(|e| panic!("control: {e}"));
+    checked_run(&ok, &[item_class(vec![("price", price()), ("by_date", with_key)])])
+        .unwrap_or_else(|e| panic!("control: {e}"));
     let lite = Lite::new("cr-k7-keys");
     let before = snapshot(&lite);
     let no_key = json!({"stored": {"args": {"date": {"type": "date", "valid": true}}, "order": ["date"], "returns": {"type": "number", "unit": "1"}}});
@@ -242,7 +258,11 @@ async fn k7_a_variable_key_receiver_in_a_body() {
     checked_run(&lite, &one_file()).unwrap_or_else(|e| panic!("{e}"));
     let n = item();
     let f = formula_line(&format!("{HOST}/shop/price_of"), &format!("{n}(sku).price()"), &sku_sig().to_string());
-    let g = formula_line(&format!("{HOST}/shop/price_plus"), &format!(r#"{n}(sku).double() + {n}(upper(sku)).price()"#), &sku_sig().to_string());
+    let g = formula_line(
+        &format!("{HOST}/shop/price_plus"),
+        &format!(r#"{n}(sku).double() + {n}(upper(sku)).price()"#),
+        &sku_sig().to_string(),
+    );
     publish(&lite, "variable.jsonl", &[f, g], NOW).unwrap_or_else(|e| panic!("a receiver with a variable key: {e}"));
     let m = build_served(lite, None, |_| {}).await;
     let plain = ask(&m, &format!("/cell/{n}/price?sku=A")).await;
@@ -268,7 +288,11 @@ async fn k7_this_reads_an_inherited_method_of_the_defining_class() {
     let parent = json!({"class": p, "descriptor": {"keys": pkeys, "methods": {"rate": {"stored": rate_sig}},
         "order": ["base", "quote"], "steward": steward()}})
     .to_string();
-    let cell = cell_line(&format!("{p}/rate"), &[("base", "string", "EUR"), ("date", "date", DAY), ("quote", "string", "USD")], ("number", "1.2"));
+    let cell = cell_line(
+        &format!("{p}/rate"),
+        &[("base", "string", "EUR"), ("date", "date", DAY), ("quote", "string", "USD")],
+        ("number", "1.2"),
+    );
     publish(&lite, "parent.jsonl", &[parent, cell], BEFORE_T).unwrap_or_else(|e| panic!("parent: {e}"));
     let via_sig = json!({"args": {"base": {"type": "string", "valid": false}, "date": {"type": "date", "valid": true},
         "fixing": {"type": "string", "valid": false}, "quote": {"type": "string", "valid": false}},
@@ -278,7 +302,8 @@ async fn k7_this_reads_an_inherited_method_of_the_defining_class() {
         "methods": {"via_this": {"formula": "this.rate(date: date) * 2", "signature": via_sig}},
         "order": ["fixing"], "parent": class_hash(&lite, &p), "steward": steward()}})
     .to_string();
-    publish(&lite, "child.jsonl", &[child], NOW).unwrap_or_else(|e| panic!("a formula method reading an inherited one with this: {e}"));
+    publish(&lite, "child.jsonl", &[child], NOW)
+        .unwrap_or_else(|e| panic!("a formula method reading an inherited one with this: {e}"));
     let m = build_served(lite, None, |_| {}).await;
     let a = ask(&m, &path(&format!("{s}(EUR, USD, F1).via_this({DAY})"), None)).await;
     assert_eq!((a.outcome(), a.value()), ("ok", Some("2.4")), "{}", a.text);

@@ -155,8 +155,14 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     // descriptors are descriptor lines, not functions) and the formulas
     assert_eq!(p.functions, 3 + formula_names.len(), "{p:?}");
     assert_eq!(p.classes, 2, "{p:?}");
-    assert!(formula_names.contains(&format!("{HOST}/calendar/age_at")) && formula_names.contains(&format!("{HOST}/calendar/days_between")));
-    assert!(!formula_names.contains(&format!("{HOST}/ratio/age_at")) && !formula_names.contains(&format!("{HOST}/ratio/days_between")));
+    assert!(
+        formula_names.contains(&format!("{HOST}/calendar/age_at"))
+            && formula_names.contains(&format!("{HOST}/calendar/days_between"))
+    );
+    assert!(
+        !formula_names.contains(&format!("{HOST}/ratio/age_at"))
+            && !formula_names.contains(&format!("{HOST}/ratio/days_between"))
+    );
     assert!(formula_names.len() >= 28, "the K4 views and the K5 ratios: {}", formula_names.len());
     assert!(p.cells > 300 && stub_lines > 300, "{p:?}");
 
@@ -314,8 +320,10 @@ async fn sec_latest_is_exact_over_the_restated_company() {
         format!("{}(cik: \"{r}\", concept: \"us-gaap:{concept}\", unit: \"USD\", fiscal_year: {fy}, period_kind: \"{kind}\")", s(f))
     };
     // the selection: the latest filed of fiscal 2020 is the 10-K/A, whose accession is lower than B's
-    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2020)", s("annual_report")), "0000000777-21-000005").await;
-    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2023)", s("annual_report")), "0000000777-24-000004").await;
+    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2020)", s("annual_report")), "0000000777-21-000005")
+        .await;
+    expect_value(&node, &format!("{}(cik: \"{r}\", fiscal_year: 2023)", s("annual_report")), "0000000777-24-000004")
+        .await;
     expect_value(&node, &call("reported", "Assets", 2020, "instant"), "110").await;
     expect_value(&node, &call("latest", "Assets", 2020, "instant"), "130").await;
     expect_value(&node, &call("reported", "Revenues", 2020, "annual"), "55").await;
@@ -326,7 +334,13 @@ async fn sec_latest_is_exact_over_the_restated_company() {
 
     // a direct reading of the filings: every accession's value for the period, ordered by the filed date of the filing
     let mut best: Option<(String, String, String)> = None; // (filed, accession, value)
-    for accn in ["0000000777-21-000001", "0000000777-21-000005", "0000000777-22-000002", "0000000777-23-000003", "0000000777-24-000004"] {
+    for accn in [
+        "0000000777-21-000001",
+        "0000000777-21-000005",
+        "0000000777-22-000002",
+        "0000000777-23-000003",
+        "0000000777-24-000004",
+    ] {
         let v = answer(
             &node,
             &format!(

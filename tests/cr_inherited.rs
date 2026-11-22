@@ -38,7 +38,9 @@ async fn an_inherited_stored_method_reads_the_defining_classes_cells() {
     let (id, plain) = plain_id(&m, &format!("{p}/rate"), &format!("base=EUR&date={DAY}&quote=USD")).await;
     assert_eq!(plain.value(), Some("1.2"));
     // the three keys of the subclass's object, the method's date: the cell of P/rate, not an empty cell of S/rate
-    for call in [format!("{s}(EUR, USD, F1).rate({DAY})"), format!("{s}(base: EUR, quote: USD, fixing: F1).rate(date: {DAY})")] {
+    for call in
+        [format!("{s}(EUR, USD, F1).rate({DAY})"), format!("{s}(base: EUR, quote: USD, fixing: F1).rate(date: {DAY})")]
+    {
         let a = ask(&m, &path(&call, None)).await;
         assert_eq!((a.status, a.outcome(), a.value()), (200, "ok", Some("1.2")), "{call}: {}", a.text);
         assert_eq!(a.cell_id(), id, "{call}: the cell of the defining class");
@@ -64,7 +66,11 @@ async fn an_inherited_computed_method_reads_the_defining_classes_computed_cell()
     assert_eq!(via.outcome(), "ok", "{}", via.text);
     assert_eq!(via.cell_id(), plain.cell_id(), "the parent's computed cell, not S/inverse");
     assert_eq!(via.value(), plain.value());
-    assert!(via.resolutions().contains(&(format!("{s}(...).inverse"), "method".into(), format!("{p}/inverse"))), "{}", via.text);
+    assert!(
+        via.resolutions().contains(&(format!("{s}(...).inverse"), "method".into(), format!("{p}/inverse"))),
+        "{}",
+        via.text
+    );
 }
 
 /// An override stays the subclass's own: `S/cross`, a cell of its own function (twice the parent's cross, 3), with `method` ->
@@ -77,13 +83,21 @@ async fn an_override_stays_the_subclasss_own() {
     assert_eq!((via.outcome(), via.value()), ("ok", Some("3")), "{}", via.text);
     let own = ask(&m, &format!("/cell/{s}/cross?base=GBP&date={DAY}&quote=USD")).await;
     assert_eq!(via.cell_id(), own.cell_id(), "the cell of S/cross");
-    assert!(via.resolutions().contains(&(format!("{s}(...).cross"), "method".into(), format!("{s}/cross"))), "{}", via.text);
+    assert!(
+        via.resolutions().contains(&(format!("{s}(...).cross"), "method".into(), format!("{s}/cross"))),
+        "{}",
+        via.text
+    );
     // the parent's own cross is untouched: 1.5
     let parent = ask(&m, &path(&format!("{p}(GBP, USD).cross({DAY})"), None)).await;
     assert_eq!(parent.value(), Some("1.5"), "{}", parent.text);
     // an own stored method: no cell, but the name is S's
     let fixed = ask(&m, &path(&format!("{s}(EUR, USD, F1).fixed({DAY})"), None)).await;
-    assert!(fixed.resolutions().contains(&(format!("{s}(...).fixed"), "method".into(), format!("{s}/fixed"))), "{}", fixed.text);
+    assert!(
+        fixed.resolutions().contains(&(format!("{s}(...).fixed"), "method".into(), format!("{s}/fixed"))),
+        "{}",
+        fixed.text
+    );
 }
 
 /// In a body: a dispatch over `[fx_ndf]` (`pair.rate(date: date)`) and an object with literal keys
@@ -120,7 +134,11 @@ async fn binding_a_subclass_binds_only_its_own_methods() {
     assert_eq!((a.status, a.outcome(), a.error()), (404, "not_covered", Some("E_NAME_UNBOUND")), "{}", a.text);
     // in a body
     let sig = format!(r#"{{"args":{{"date":{DATE_V}}},"order":["date"],"returns":{NUM1}}}"#);
-    let f = formula_line(&format!("{HOST}/rates/plain_inherited"), &format!(r#"{s}/rate(base: "EUR", quote: "USD", date: date)"#), &sig);
+    let f = formula_line(
+        &format!("{HOST}/rates/plain_inherited"),
+        &format!(r#"{s}/rate(base: "EUR", quote: "USD", date: date)"#),
+        &sig,
+    );
     let e = publish(&m.lite, "plain.jsonl", &[f], NOW).expect_err("the plain read of an inherited method is refused");
     assert!(e.detail.contains("E_FORMULA_UNRESOLVED"), "{e}");
 }
@@ -152,6 +170,11 @@ async fn an_unbound_defining_class_is_e_name_unbound() {
     assert_eq!((then.outcome(), then.value()), ("ok", Some("1.2")), "as of {BETWEEN}: {}", then.text);
     for asof in [None, Some(T2)] {
         let now = ask(&m, &path(&call, asof)).await;
-        assert_eq!((now.status, now.outcome(), now.error()), (404, "not_covered", Some("E_NAME_UNBOUND")), "{asof:?}: {}", now.text);
+        assert_eq!(
+            (now.status, now.outcome(), now.error()),
+            (404, "not_covered", Some("E_NAME_UNBOUND")),
+            "{asof:?}: {}",
+            now.text
+        );
     }
 }

@@ -111,7 +111,9 @@ fn k1_an_added_member_is_seen() {
         fn_hash: h,
         args: [("site", "N", datumesh_core::Type::String), ("day", "2026-03-03", datumesh_core::Type::Date)]
             .iter()
-            .map(|(k, v, t)| (k.to_string(), datumesh_core::Arg::Value(datumesh_core::Scalar::from_lexical(*t, v).unwrap())))
+            .map(|(k, v, t)| {
+                (k.to_string(), datumesh_core::Arg::Value(datumesh_core::Scalar::from_lexical(*t, v).unwrap()))
+            })
             .collect(),
     }
     .id();
@@ -236,13 +238,7 @@ fn k1_an_entry_with_neither_member_is_refused() {
     let c = calc();
     for (i, entry) in [json!({}), json!({"keep": [cell(&c, "N", "2026-03-01")]})].into_iter().enumerate() {
         let mut t = avg_tests(&c);
-        t.push(test_line(
-            &c.avg_log,
-            &avg_call(&c, "N", "1"),
-            Some(json!({ slice(&c, "N"): entry })),
-            None,
-            n("3"),
-        ));
+        t.push(test_line(&c.avg_log, &avg_call(&c, "N", "1"), Some(json!({ slice(&c, "N"): entry })), None, n("3")));
         refused_at(&format!("cr-k1-neither-{i}"), &file(&c, t), line_of_test(3));
     }
 }
@@ -398,7 +394,8 @@ fn with_per_unit(c: &Calc) -> Vec<String> {
 /// test supplies `loaded` as `false` for a company that has it stored as `true`.
 #[test]
 fn k3_boolean_inputs_are_json_booleans() {
-    let sig = r#"{"args":{"cik":{"type":"string","valid":false}},"order":["cik"],"returns":{"type":"number","unit":"1"}}"#;
+    let sig =
+        r#"{"args":{"cik":{"type":"string","valid":false}},"order":["cik"],"returns":{"type":"number","unit":"1"}}"#;
     let flag = formula_line(FLAG, &format!("if {LOADED}(cik: cik) then 1 else 0"), sig, None);
     let call = |c: &str| format!("{FLAG}(cik: \"{c}\")");
     let input = |cik: &str, v: Value| json!({ format!("{LOADED}(cik: \"{cik}\")"): v });

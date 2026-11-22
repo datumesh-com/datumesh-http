@@ -27,7 +27,9 @@ fn note() -> String {
 }
 
 fn margin_sig() -> String {
-    format!(r#"{{"args":{{"pct":{{"type":"number","unit":"1","valid":false}},"sku":{STR}}},"order":["sku","pct"],"returns":{NUM1}}}"#)
+    format!(
+        r#"{{"args":{{"pct":{{"type":"number","unit":"1","valid":false}},"sku":{STR}}},"order":["sku","pct"],"returns":{NUM1}}}"#
+    )
 }
 fn note_sig() -> String {
     format!(r#"{{"args":{{"sku":{SKU_ARG}}},"order":["sku"],"returns":"string"}}"#)
@@ -58,7 +60,8 @@ fn extension_lines(class: &str) -> Vec<String> {
 
 async fn shop_with_extensions(label: &str) -> Served {
     let lite = lite_with_shop(label);
-    publish(&lite, "ext.jsonl", &extension_lines(&product()), T2).unwrap_or_else(|e| panic!("extends that matches: {e}"));
+    publish(&lite, "ext.jsonl", &extension_lines(&product()), T2)
+        .unwrap_or_else(|e| panic!("extends that matches: {e}"));
     build_served(lite, None, |_| {}).await
 }
 
@@ -81,7 +84,13 @@ fn k9_extends_that_matches_is_accepted() {
     assert_eq!(snapshot(&lite), before);
     // outside every hash: the same functions without the catalogue have the same hashes
     let bare = lite_with_shop("cr-k9-bare");
-    publish(&bare, "ext.jsonl", &[function_line(&margin(), &margin_sig(), None), function_line(&note(), &note_sig(), None)], T2).unwrap();
+    publish(
+        &bare,
+        "ext.jsonl",
+        &[function_line(&margin(), &margin_sig(), None), function_line(&note(), &note_sig(), None)],
+        T2,
+    )
+    .unwrap();
     for f in [margin(), note()] {
         assert_eq!(fn_hash(&lite, &f), fn_hash(&bare, &f), "{f}");
     }
@@ -111,7 +120,8 @@ fn k9_extends_that_does_not_match_is_refused() {
     // `extends` is for a function entry: a class entry that has it is refused
     let lite = lite_with_shop("cr-k9-refuse-class");
     let before = snapshot(&lite);
-    let e = publish(&lite, "ext.jsonl", &[catalog_line_of(&crate_class(), "class", extends(&product()))], T2).expect_err("a class entry");
+    let e = publish(&lite, "ext.jsonl", &[catalog_line_of(&crate_class(), "class", extends(&product()))], T2)
+        .expect_err("a class entry");
     assert_eq!(e.line, 1, "{e}");
     assert_eq!(snapshot(&lite), before);
     // the control: the same function with a matching key is accepted
