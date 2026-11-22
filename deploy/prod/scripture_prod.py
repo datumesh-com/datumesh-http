@@ -3,7 +3,10 @@
 lines that `datumesh-mesh publish-stored` (http 0.3.1) loads, from a fresh download checked against
 SOURCES, without changing a byte of any verse.
 
-    python -I scripture_prod.py <download dir> <out dir> [<host> [<namespace>]]
+    python -I scripture_prod.py <download dir> <out dir> [<host> [<namespace>]] [--catalog-only]
+
+--catalog-only writes only the two catalogue lines of the classes (00-classes.jsonl): no source is read, no
+blob, no report. The full run writes the same two lines in 00-classes.jsonl after the class lines.
 
 <host> defaults to datumesh.com and <namespace> to <host>/scripture; a rehearsal passes a scratch
 namespace (e.g. mesh-test.datumesh.com/scratch_1_7a/scripture). Writes, in the order they are to be loaded (the user's order of first writes):
@@ -36,9 +39,11 @@ import xml.etree.ElementTree as ET
 import zipfile
 from html.parser import HTMLParser
 
-dl, out = sys.argv[1], sys.argv[2]
-host = sys.argv[3] if len(sys.argv) > 3 else "datumesh.com"
-NS = sys.argv[4] if len(sys.argv) > 4 else f"{host}/scripture"
+ARGS = [a for a in sys.argv[1:] if a != "--catalog-only"]
+CATALOG_ONLY = len(ARGS) != len(sys.argv) - 1
+dl, out = ARGS[0], ARGS[1]
+host = ARGS[2] if len(ARGS) > 2 else "datumesh.com"
+NS = ARGS[3] if len(ARGS) > 3 else f"{host}/scripture"
 HERE = os.path.dirname(os.path.abspath(__file__))
 STEWARD = {"namespace": NS, "process": f"https://{host}/classes/change"}
 LIC_UXLC = "https://tanach.us/License.html"
@@ -54,6 +59,40 @@ OSIS = {"Gen": "Gen", "Ex": "Exod", "Lev": "Lev", "Num": "Num", "Deut": "Deut", 
         "Dan": "Dan", "Ezra": "Ezra", "Neh": "Neh", "1 Chr": "1Chr", "2 Chr": "2Chr"}
 NT = ["Matt", "Mark", "Luke", "John", "Acts", "Rom", "1Cor", "2Cor", "Gal", "Eph", "Phil", "Col", "1Thess", "2Thess",
       "1Tim", "2Tim", "Titus", "Phlm", "Heb", "Jas", "1Pet", "2Pet", "1John", "2John", "3John", "Jude", "Rev"]
+
+# ---- the classes' catalogue lines (the facets of the table; no source_name: the publisher's own data) ----
+def _facets(domain, thing, measure, region, frequency):
+    return {"domain": [domain], "thing": [thing], "measure": [measure], "region": [region], "frequency": [frequency]}
+
+
+def catalogue():
+    verse_line = {"catalog": f"{NS}/verse", "kind": "class",
+                  "label": "Scripture verses: the text of each verse of the Tanakh, the New Testament and the Quran",
+                  "description": ("One verse, by corpus (tanakh, nt or quran), book, chapter and verse. The method "
+                                  "text(edition) returns the verse's text as a UTF-8 blob in the edition named, byte for "
+                                  "byte as the source gives it. Books are OSIS names; for the Quran the chapter is the "
+                                  "surah and the verse the ayah. Each cell carries its edition's licence."),
+                  "args": {"corpus": "tanakh, nt or quran", "book": "the OSIS book name, or Quran",
+                           "chapter": "the chapter number (for the Quran, the surah)",
+                           "verse": "the verse number (for the Quran, the ayah)"},
+                  "examples": [], "facets": _facets("scripture", "verse", "text", "world", "static")}
+    edition_line = {"catalog": f"{NS}/edition", "kind": "class",
+                    "label": "Scripture editions: version, source, file hash, notice and source file",
+                    "description": ("The edition of a corpus: the Tanakh (UXLC), the New Testament (SBLGNT) or the Quran "
+                                    "(Tanzil, Uthmani and Simple). Methods: version, source_url, file_hash (SHA-256 of the "
+                                    "file the verses were checked against), notice (the licence or copyright notice, a "
+                                    "text blob), and file (the source file itself, a blob; not for UXLC)."),
+                    "args": {"corpus": "tanakh, nt or quran", "code": "the edition's code, for example uxlc or sblgnt"},
+                    "examples": [], "facets": _facets("scripture", "edition", "provenance", "world", "static")}
+    return [verse_line, edition_line]
+
+
+if CATALOG_ONLY:
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "00-classes.jsonl"), "w", encoding="utf-8") as f:
+        for l in catalogue():
+            f.write(json.dumps(l, ensure_ascii=False, sort_keys=True) + "\n")
+    sys.exit(0)
 
 # ---- the sources, checked against SOURCES (download.sh checked them too; checked again here) ----
 SOURCES = {}
@@ -140,6 +179,7 @@ edition_class = {"keys": {"corpus": none, "code": none}, "order": ["corpus", "co
                  "methods": {m: fn_hash(d) for m, d in edition_d.items()}, "steward": STEWARD}
 files["00-classes"].append({"class": f"{NS}/verse", "descriptor": verse_class})
 files["00-classes"].append({"class": f"{NS}/edition", "descriptor": edition_class})
+files["00-classes"] += catalogue()
 report["hashes"] = {"verse/text": fn_hash(text_d), **{f"edition/{m}": fn_hash(d) for m, d in edition_d.items()}}
 
 

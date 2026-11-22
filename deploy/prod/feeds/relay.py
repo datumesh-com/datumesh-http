@@ -48,7 +48,8 @@ def catalog_line(sec, fq, keycols, rows, text):
                          "expected": {"type": "number", "value": decimal_text(r["value"])}})
     return {"catalog": fq, "kind": "function", "label": text["label"],
             "description": f"Relayed by datumesh.com from {sec['source_name']}: {text['description']}",
-            "args": dict(text["args"]), "examples": examples, "dictionary": text["dictionary"](rows)}
+            "args": dict(text["args"]), "examples": examples, "dictionary": text["dictionary"](rows),
+            "facets": {k: list(v) for k, v in sec["facets"].items()}, "source_name": sec["plain_source"]}
 
 
 def cell_line(sec, fq, keycols, r, source, text):

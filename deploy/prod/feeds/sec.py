@@ -68,6 +68,10 @@ CONFORMANCE_MINIMUM = 20
 FILING_CONFORMANCE_MINIMUM = 20
 CF_FIELDS = ("cik", "form", "fiscal_year", "fiscal_period")  # the filing methods whose cells come from companyfacts
 SUBMITTED_FIELDS = ("filed", "period_end")  # the filing methods relayed from the submissions record (C2, C2b)
+# R6: the facets of the SEC classes (C6 of CONTRACT-classes-round); R8: the source name the held sentence uses
+FACETS_COMPANY = {"domain": ["finance"], "thing": ["company"], "measure": ["fundamentals"], "region": ["us"], "frequency": ["annual"]}
+FACETS_FILING = {"domain": ["finance"], "thing": ["filing"], "measure": ["fundamentals"], "region": ["us"], "frequency": ["annual"]}
+SOURCE_NAME = "SEC filings"
 MAX_SHOWN = 50  # disagreements listed in one ConformanceError; the rest are counted
 SUBMISSIONS_PAGES = "https://data.sec.gov/submissions/"  # the older pages of a submissions file, by their file names (C2)
 
@@ -634,9 +638,7 @@ def _class_lines(s):
         d = _method_descriptor(m)
         lines.append({"descriptor": d})
         hashes[m] = hashlib.sha256(licence_register.jcs(d)).hexdigest()
-    lines.append({"class": company, "descriptor": {
-        "keys": {"cik": {"type": "string", "key_normalisation": "none"}}, "order": ["cik"],
-        "methods": {"fact": hashlib.sha256(licence_register.jcs(fact)).hexdigest()}, "steward": dict(steward)}})
+    lines.append({"class": company, "descriptor": _relay_company_descriptor(s)})
     lines.append({"class": cls, "descriptor": {
         "keys": {"accession": {"type": "string", "key_normalisation": "none"}}, "order": ["accession"],
         "methods": hashes, "steward": dict(steward)}})
@@ -688,7 +690,8 @@ def _relay_catalogs(s, cells, rows, labels, entities):
                             "class are the figures of the companies in scope."),
             "args": {"cik": "the company's CIK, 10 digits with leading zeros"},
             "open_keys": ["cik"], "examples": [],
-            "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}}]
+            "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]},
+            "facets": dict(FACETS_COMPANY), "source_name": SOURCE_NAME}]
     fact_cells = cells["fact"]
     mine = rows
     used = sorted({r["concept"] for r in mine})
@@ -733,7 +736,8 @@ def _relay_catalogs(s, cells, rows, labels, entities):
                                   "accession; its six methods are the report's cik, form, filed date, fiscal year, fiscal "
                                   "period and period end, each as filed in the company's submissions record."),
                   "args": {"accession": "the accession number of the filing, for example 0000320193-23-000106"},
-                  "open_keys": ["accession"], "examples": [], "dictionary": {}}
+                  "open_keys": ["accession"], "examples": [], "dictionary": {},
+                  "facets": dict(FACETS_FILING), "source_name": SOURCE_NAME}
     out.append(filing_cat)
     for m in FILING_METHODS:
         mc = [c for c in accn_cells if c["cell"]["fn"] == f"{cls}/{m}"]
@@ -770,33 +774,91 @@ LABEL_KINDS = {"title": "the title as listed", "ticker": "a ticker as listed",
 
 def _label_cell(s, entity, cik, label, kind):
     """from_label(label) is the key of the company, for one label as the tickers file lists it (C3)."""
-    summary = (f'{LABEL_KINDS[kind]} of {entity} (cik {cik}): "{label}", from company_tickers_exchange.json; a label is '
-               "exact and case-sensitive, and names this company only")
+    summary = (f'{LABEL_KINDS[kind]} of {entity} (cik {cik}): "{label}", from company_tickers_exchange.json; a label ignores '
+               "case and extra spaces (it is written folded) and names this company only")
     return {"cell": {"fn": f"{_names(s)[3]}/from_label", "args": {"label": {"type": "string", "value": label}}},
             "value": {"type": "string", "value": _key(s, cik)}, "licence": s["licence"], "summary": common.nfc(summary)}
 
 
-def _company_functions(s):
-    """The stored functions of our subclass that are not formulas (C3): annual_report (a plain accession string, not a
-    class key: the fact's accession is a string, and chaining on a returned key fails at define), loaded (the extent's
-    keys) and from_label (the lookup, returning the key of the company)."""
+def _withdrawal(fn, args, reason):
+    """A withdrawn cell (R1): the cell has no value from now on, and says why."""
+    return {"cell": {"fn": fn, "args": args}, "withdrawn": reason}
+
+
+# The stored methods of our subclass that are not formulas (C3, R13): annual_report (a plain accession string, not a class
+# key: the fact's accession is a string, and chaining on a returned key fails at define), loaded (the extent's keys), and
+# from_label (the lookup, returning the key of the company; its label folded, K8). All three are inline in the class line
+# ({"stored": signature}), so a one-step class loads on a fresh mesh.
+ANNUAL_SIG = {"args": {"cik": dict(S_ARG), "fiscal_year": dict(N_ARG)}, "order": ["cik", "fiscal_year"], "returns": "string"}
+LOADED_SIG = {"args": {"cik": dict(S_ARG)}, "order": ["cik"], "returns": "boolean"}
+
+
+def _stored_hash(signature) -> str:
+    """The hash of a stored method's descriptor (as register.py and _class_lines hash them)."""
+    return hashlib.sha256(licence_register.jcs({"code": {"body": "", "lang": "stored"}, "inputs": [],
+                                                "signature": signature})).hexdigest()
+
+
+def _from_label_signature(sub):
+    return {"args": {"label": {"type": "string", "valid": False, "key_normalisation": "label_fold"}}, "order": ["label"],
+            "returns": {"type": "string", "classes": [sub]}}
+
+
+def _formula_methods(host):
+    """The 22 formula methods of the subclass (R13): {name: {"formula", "signature"}}, the bodies read from
+    sec_methods.jsonl, which writes each sibling as `this.m(` and the host as {host}."""
+    out = {}
+    with open(common.FEEDS / "sec_methods.jsonl", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                d = json.loads(line)
+                out[d["method"]] = {"formula": d["formula"].replace("{host}", host), "signature": d["signature"]}
+    return out
+
+
+def _relay_company_descriptor(s):
+    """The descriptor of the relay's company class (C1): the class line _class_lines writes, without its name. Its hash is
+    the `parent` of the subclass (R13), so it is the same whichever run asks."""
+    return {"keys": {"cik": {"type": "string", "key_normalisation": "none"}}, "order": ["cik"],
+            "methods": {"fact": hashlib.sha256(licence_register.jcs(_fact_descriptor())).hexdigest()},
+            "steward": {"namespace": s["namespace"], "process": _steward_process(_host_of(s))}}
+
+
+def _relay_company_hash(s) -> str:
+    return hashlib.sha256(licence_register.jcs(_relay_company_descriptor(s))).hexdigest()
+
+
+def company_class_line(s, parent):
+    """The class line of <host>/sec/company (R13, one step): its methods inline (K7), no `fact` override (K5), parent = the
+    relay company class's hash, lookup from_label, extent keys = loaded, and the steward (K12). `s` is the SEC table with
+    its namespace spelled for the host (<host>/relay/sec.gov)."""
+    host = _host_of(s)
     sub = _names(s)[3]
-    return [
-        {"function": f"{sub}/annual_report", "signature": {
-            "args": {"cik": dict(S_ARG), "fiscal_year": dict(N_ARG)}, "order": ["cik", "fiscal_year"], "returns": "string"}},
-        {"function": f"{sub}/loaded", "signature": {"args": {"cik": dict(S_ARG)}, "order": ["cik"], "returns": "boolean"}},
-        {"function": f"{sub}/from_label", "signature": {
-            "args": {"label": {"type": "string", "valid": False}}, "order": ["label"],
-            "returns": {"type": "string", "classes": [sub]}}},
-    ]
+    methods = {
+        "annual_report": {"stored": dict(ANNUAL_SIG)},
+        "loaded": {"stored": dict(LOADED_SIG)},
+        "from_label": {"stored": _from_label_signature(sub)},
+    }
+    methods.update(_formula_methods(host))
+    return {"class": sub, "descriptor": {
+        "keys": {}, "order": [], "parent": parent, "methods": dict(sorted(methods.items())), "lookup": "from_label",
+        "extent": {"keys": _stored_hash(LOADED_SIG)},
+        "steward": {"namespace": f"{host}/sec", "process": _steward_process(host)}}}
 
 
 def _company_catalogs(s, cells, entities):
-    """The catalogue of sec/company's functions (C3): annual_report (our selection), loaded and from_label, with their
-    examples taken from this run's cells."""
+    """The catalogue of sec/company (R6, R13): the class's own entry, with its facets and source name, then the stored
+    methods annual_report (our selection), loaded and from_label, with their examples taken from this run's cells."""
     sub = _names(s)[3]
     ann_cells, loaded_cells, label_cells = cells["annual"], cells["loaded"], cells["label"]
-    out = []
+    out = [{"catalog": sub, "kind": "class", "label": "SEC company (Datumesh views over the SEC relay)",
+            "description": ("A subclass of the SEC relay's company class, one company per cik: its figures as filed (fact, "
+                            "inherited from the relay), the annual report of a fiscal year (our selection), the companies in "
+                            "scope, the company by its name or ticker, and the ratios and money views. Labels ignore case "
+                            "and extra spaces."),
+            "args": {"cik": "the company's CIK, 10 digits with leading zeros"},
+            "open_keys": ["cik"], "examples": [], "dictionary": {},
+            "facets": dict(FACETS_COMPANY), "source_name": SOURCE_NAME}]
     out.append({"catalog": f"{sub}/annual_report", "kind": "function", "label": "Latest annual report of a fiscal year (our selection)",
                 "description": ("Datumesh's selection over the SEC's filings, not relayed: the accession of the latest-filed "
                                 "annual report (10-K or 10-K/A) of a company's fiscal year (fy as filed, not the period's "
@@ -816,13 +878,13 @@ def _company_catalogs(s, cells, entities):
                 "examples": [{"call": f'{sub}/loaded(cik: "{c["cell"]["args"]["cik"]["value"]}")',
                               "expected": c["value"]} for c in loaded_cells[:2]],
                 "dictionary": {"cik": [{"value": c, "label": entities[c]} for c in sorted(entities)]}})
-    out.append({"catalog": f"{sub}/from_label", "kind": "function", "label": "Company by its name or ticker (exact)",
+    out.append({"catalog": f"{sub}/from_label", "kind": "function", "label": "Company by its name or ticker",
                 "description": ("Datumesh's lookup of a company by a label as the SEC lists it in company_tickers_exchange.json: "
                                 "the company's name, each of its tickers, and a short name (the name without its legal-form "
-                                "words). Labels are exact and case-sensitive: no folding and no other spelling. A label that "
-                                "names more than one company is not in the lookup. The value is the key of that company in "
-                                "sec/company."),
-                "args": {"label": "a name or a ticker exactly as the SEC lists it, case-sensitive"},
+                                "words). Labels ignore case and extra spaces (each is folded: lower case, NFC, single spaces); "
+                                "keys stay strict. A label that names more than one company is not in the lookup. The value is "
+                                "the key of that company in sec/company."),
+                "args": {"label": "a name or a ticker as the SEC lists it; case and extra spaces are ignored"},
                 "examples": [{"call": f'{sub}/from_label(label: "{c["cell"]["args"]["label"]["value"]}")',
                               "expected": c["value"]} for c in label_cells[:2]]})
     return out
@@ -831,6 +893,11 @@ def _company_catalogs(s, cells, entities):
 KIND_OF_LABEL = {"title": "title", "ticker": "ticker", "short name": "short name"}
 LEGAL_WORDS = ("Inc", "Inc.", "Incorporated", "Corp", "Corp.", "Corporation", "Co", "Co.", "Company", "Ltd", "Ltd.",
                "Limited", "plc", "PLC", "N.V.", "NV", "S.A.", "SA", "AG", "SE", "LP", "L.P.", "LLC", "& Co", "& Co.")
+
+
+def fold(label: str) -> str:
+    """K8: a label's folded form: Unicode default case folding, NFC, each run of white space one space, none at the ends."""
+    return " ".join(unicodedata.normalize("NFC", label.casefold()).split())
 
 
 def short_name(title: str) -> str:
@@ -857,9 +924,9 @@ def short_name(title: str) -> str:
 
 def company_labels(tickers: bytes, ciks):
     """The labels that find a company, from the tickers file the scope rule already fetched (no request): the title as
-    listed, each ticker as listed, and the short name (C3). NFC; case-sensitive; no folding. -> (pairs, ambiguous): pairs is
-    the sorted [(label, cik, kind)] of the labels that name one company of `ciks`, and ambiguous is {label: [ciks]}, the
-    labels that name more than one (none of those is emitted)."""
+    listed, each ticker as listed, and the short name (C3), each folded (K8: casefold, NFC, white space collapsed). ->
+    (pairs, ambiguous): pairs is the sorted [(label, cik, kind)] of the folded labels that name one company of `ciks`, and
+    ambiguous is {folded label: [ciks]}, the labels that name more than one (none of those is emitted)."""
     t = _load(tickers)
     common.shape(isinstance(t, dict) and isinstance(t.get("fields"), list) and isinstance(t.get("data"), list),
                  "tickers file: fields and data are missing")
@@ -890,7 +957,7 @@ def company_labels(tickers: bytes, ciks):
         if short and short != title:
             named.append((short, "short name"))
         for label, kind in named:
-            by_label.setdefault(label, {}).setdefault(cik, kind)
+            by_label.setdefault(fold(label), {}).setdefault(cik, kind)
     ambiguous = {label: sorted(c) for label, c in by_label.items() if len(c) > 1}
     pairs = sorted((label, cik, kind) for label, c in by_label.items() if len(c) == 1 for cik, kind in c.items())
     return pairs, ambiguous
@@ -980,22 +1047,28 @@ def emit(items, state, names):
 
 
 def company_emit(items, labels, state, names):
-    """The lines of sec_company-<stamp>.jsonl (C3) for this run's companies. On the first run: the three stored functions
-    and their catalogue. Then the cells: loaded (true for each company of the scope), annual_report (our selection of each
-    fiscal year) and from_label (each label of `labels`, the (label, cik, kind) triples of company_labels). Nothing is
-    emitted for a company, year or label already in the state; with nothing new the state is returned as it was."""
+    """The lines of sec_company-<stamp>.jsonl (R13: one step) for this run's companies. On the first run: the class line
+    (its methods inline) and the catalogue (the class's entry with its facets and source name, then the three stored
+    methods). Then the cells: loaded (true for each company of the scope), annual_report (our selection of each fiscal
+    year) and from_label (each folded label of `labels`, the (label, cik, kind) triples of company_labels). Then the
+    withdrawals (R1): loaded(cik) of a company that left the scope, and the lookup cell of a label no longer given for a
+    company. The state keeps what is loaded and what is looked up now, so a withdrawal is written once. With nothing new the
+    state is returned as it was."""
     s = names["sec"]
+    sub = _names(s)[3]
+    now_loaded = {it["parsed"]["cik"] for it in items}
     seen_loaded = set(state.get("loaded", []))
     seen_labels = {tuple(x) for x in state.get("labels", [])}
+    kind_of = {(label, cik): kind for label, cik, kind in labels if cik in now_loaded}
+    now_labels = set(kind_of)
     filing_for_state = dict(state.get("filing_for", {}))
-    cells = {"loaded": [], "annual": [], "label": []}
+    cells = {"loaded": [], "annual": [], "label": [], "withdrawn": []}
     entities = {}
     for it in items:
         p = it["parsed"]
         cik = p["cik"]
         entities[cik] = p["entity"]
         if cik not in seen_loaded:
-            seen_loaded.add(cik)
             cells["loaded"].append(_loaded_cell(s, p["entity"], cik))
         for fy, accn in p["filing_for"].items():
             key = f"{cik}|{fy}"
@@ -1003,20 +1076,25 @@ def company_emit(items, labels, state, names):
                 continue
             filing_for_state[key] = accn
             cells["annual"].append(_annual_cell(s, p["entity"], cik, fy, accn))
-    for label, cik, kind in labels:
-        if cik in entities and (label, cik) not in seen_labels:
-            seen_labels.add((label, cik))
-            cells["label"].append(_label_cell(s, entities[cik], cik, label, kind))
+    for label, cik in sorted(now_labels - seen_labels):
+        if cik in entities:
+            cells["label"].append(_label_cell(s, entities[cik], cik, label, kind_of[(label, cik)]))
+    for cik in sorted(seen_loaded - now_loaded):
+        cells["withdrawn"].append(_withdrawal(f"{sub}/loaded", {"cik": {"type": "string", "value": cik}},
+                                              "the company left the top N"))
+    for label, cik in sorted(seen_labels - now_labels):
+        cells["withdrawn"].append(_withdrawal(f"{sub}/from_label", {"label": {"type": "string", "value": label}},
+                                              "the label is no longer given for this company"))
     if not any(cells.values()):
         return [], state
     lines = []
     if not state.get("announced"):
-        lines += _company_functions(s) + _company_catalogs(s, cells, entities)
-    for kind in ("loaded", "annual", "label"):
+        lines += [company_class_line(s, _relay_company_hash(s))] + _company_catalogs(s, cells, entities)
+    for kind in ("loaded", "annual", "label", "withdrawn"):
         lines += cells[kind]
     new = dict(state)
-    new.update({"announced": True, "loaded": sorted(seen_loaded), "labels": sorted([list(x) for x in seen_labels]),
-                "filing_for": filing_for_state})
+    new.update({"announced": True, "loaded": sorted(now_loaded),
+                "labels": sorted([list(x) for x in now_labels]), "filing_for": filing_for_state})
     return lines, new
 
 

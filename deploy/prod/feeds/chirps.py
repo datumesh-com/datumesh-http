@@ -257,7 +257,8 @@ def _catalogue(sec, fq, rows):
                      "month": "the first day of the month"},
             "examples": examples,
             "dictionary": {"dataset": [{"value": sec["dataset"], "label": sec["dataset_label"]}],
-                           "region": [{"value": k, "label": v["label"]} for k, v in sec["regions"].items()]}}
+                           "region": [{"value": k, "label": v["label"]} for k, v in sec["regions"].items()]},
+            "facets": {k: list(v) for k, v in sec["facets"].items()}, "source_name": sec["plain_source"]}
 
 
 def emit(rows, state, names, source):

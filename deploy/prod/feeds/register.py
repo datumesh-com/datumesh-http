@@ -95,7 +95,8 @@ def _class_lines(sec, cls):
     lines.append({"catalog": cls, "kind": "class", "label": sec["class_label"], "description": sec["class_description"],
                   "args": dict(sec["key_text"]), "examples": [],
                   "dictionary": {"source": [{"value": s, "label": sec["source_labels"][s]} for s in sources],
-                                 "code": [{"value": d["code"], "label": d["name"]} for d in sec["datasets"]]}})
+                                 "code": [{"value": d["code"], "label": d["name"]} for d in sec["datasets"]]},
+                  "facets": {k: list(v) for k, v in sec["facets"].items()}})
     for m in sec["methods"]:
         t = sec["method_text"][m]
         lines.append({"catalog": f"{cls}/{m}", "kind": "function", "label": t["label"], "description": t["description"],
