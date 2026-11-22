@@ -42,6 +42,19 @@ fn encoding(class: &str, keys: &[(&str, &str)]) -> String {
     format!("{class}({})", pairs.join(","))
 }
 
+/// Tells the mesh of a stored version it was not told of (the cells of `install` are put straight into the
+/// store). CONTRACT-round-0.7-P HP1 to HP3: a class describe no longer indexes the class on the request, and
+/// the background build reads only `extent.keys` (or the first method), so an object of any other method
+/// is known by id from the moment its stored version is announced (`Mesh::stored_version_added`, O(1)).
+fn announce(a: &Node, name: &str, cell_args: &datumesh_core::Args) {
+    let id = a.cell_id(name, cell_args);
+    bl(|| a.mesh.stored_version_added(&id));
+}
+
+fn rate_args(base: &str, quote: &str) -> datumesh_core::Args {
+    args(&[("base", s(base)), ("date", d(DAY)), ("quote", s(quote))])
+}
+
 fn field<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or_else(|| panic!("no {k} in {}", String::from_utf8_lossy(&v.to_jcs())))
 }
@@ -217,6 +230,22 @@ async fn describe_an_object() {
 async fn describe_an_object_by_id_and_by_short_id() {
     let (a, w) = mesh().await;
     let held = w.held(&a.store);
+    // the cells `install` put: their objects are known by id once announced (HP1 to HP3)
+    announce(&a, &format!("{}/rate", w.pair), &rate_args("EUR", "USD"));
+    announce(&a, &format!("{}/rate", w.pair), &rate_args("EUR", "GBP"));
+    announce(&a, &format!("{}/rate", w.upper), &rate_args("EUR", "USD"));
+    announce(&a, &format!("{}/rate", w.named), &rate_args("GBP", "USD"));
+    announce(
+        &a,
+        &format!("{}/text", w.verse),
+        &args(&[
+            ("book", s("Gen")),
+            ("chapter", n("1")),
+            ("corpus", s("tanakh")),
+            ("edition", s("uxlc")),
+            ("verse", n("1")),
+        ]),
+    );
     for enc in [
         encoding(&w.pair, &[("base", "EUR"), ("quote", "USD")]),
         encoding(&w.pair, &[("base", "EUR"), ("quote", "GBP")]),
