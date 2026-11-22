@@ -317,6 +317,10 @@ async fn an_ambiguous_short_id_is_e_short_id_ambiguous() {
             TV,
         );
     }
+    // HP3: the mesh is told of each stored version, which puts its object into the index at once
+    for base in [x, y] {
+        announce(&a, &format!("{}/rate", w.pair), &args(&[("base", s(base)), ("date", d(DAY)), ("quote", s("EUR"))]));
+    }
     let short = &ix[..12];
     let r = a.get(&describe_path(short)).await;
     assert_eq!(r.status, 400, "{}", r.text());
