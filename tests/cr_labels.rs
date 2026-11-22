@@ -38,13 +38,18 @@ async fn k8_labels_are_folded_in_a_request() {
     }
     let a = ask(&m, &path(&price_call("APPLE"), None)).await;
     assert_eq!(a.resolutions()[0].0, "APPLE", "the lookup's from is the label as written");
-    // a label with spaces: a run of white space is one space, ends trimmed, case folded
+    // a label with spaces: a run of white space (spaces and NBSP) is one space, ends trimmed, case folded
     let green = ask(&m, &format!("/cell/{n}/price?date={SHOP_DAY}&sku=A2")).await;
-    for label in [r#""green apple""#, r#""Green   APPLE""#, r#""  green  apple ""#, "\"GREEN\u{a0}APPLE\"", "\"green\tapple\""] {
+    for label in [r#""green apple""#, r#""Green   APPLE""#, r#""  green  apple ""#, "\"GREEN\u{a0}APPLE\"", "\"green \u{a0} \u{a0}apple\"", "\"\u{a0}Green\u{a0}\u{a0}apple  \""] {
         let a = ask(&m, &path(&price_call(label), None)).await;
         assert_eq!((a.outcome(), a.value()), ("ok", Some("2.5")), "[{label}]: {}", a.text);
         assert_eq!(a.cell_id(), green.cell_id(), "[{label}]");
     }
+    // a control character is refused by the string rule (3.5) before any folding: K8 repairs label_fold only, and
+    // keeps every other rule strict. A TAB in a request label is E_CANON_STRING, not a space.
+    let tab = ask(&m, &path(&price_call("\"green\tapple\""), None)).await;
+    assert_eq!(tab.error(), Some("E_CANON_STRING"), "{}", tab.text);
+    assert_ne!(tab.status, 200, "{}", tab.text);
     // full case folding, then NFC
     let s1 = ask(&m, &format!("/cell/{n}/price?date={SHOP_DAY}&sku=S1")).await;
     for label in ["\"Stra\u{df}e\"", "\"STRASSE\"", "\"strasse\""] {
