@@ -150,8 +150,7 @@ async fn shop_world(label: &str, close: bool, again: bool) -> Served {
         publish(&lite, "close.jsonl", &[close_line(&product())], T2).unwrap_or_else(|e| panic!("close: {e}"));
     }
     if again {
-        // a class binds only its own methods' names, which the close ended too: the functions are bound again first
-        publish(&lite, "again-f.jsonl", &shop_functions(), T3).unwrap_or_else(|e| panic!("functions again: {e}"));
+        // binding the class binds its `N/m` names from the same instant (16.3): no function line is needed
         publish(&lite, "again-c.jsonl", &classes, T3).unwrap_or_else(|e| panic!("classes again: {e}"));
     }
     common::readpath::build_served(lite, None, |_| {}).await
