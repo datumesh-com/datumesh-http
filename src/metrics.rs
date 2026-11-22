@@ -23,6 +23,7 @@ pub(crate) struct Metrics {
     latency: Mutex<BTreeMap<String, Hist>>,
     /// Series overview builds, by what started them (`background`, or `request`, which never happens).
     series_builds: Mutex<BTreeMap<&'static str, u64>>,
+    catalog_builds: Mutex<BTreeMap<&'static str, u64>>,
     /// The open dictionary keys the find thread last counted (CONTRACT-0.4.9 H7).
     open_keys: std::sync::atomic::AtomicU64,
 }
@@ -68,6 +69,11 @@ impl Metrics {
         *self.series_builds.lock().unwrap_or_else(|p| p.into_inner()).entry(by).or_default() += 1;
     }
 
+    /// One catalogue pages build, by what started it.
+    pub(crate) fn catalog_build(&self, by: &'static str) {
+        *self.catalog_builds.lock().unwrap_or_else(|p| p.into_inner()).entry(by).or_default() += 1;
+    }
+
     /// The number of open dictionary keys counted by the find thread (H7).
     pub(crate) fn set_open_keys(&self, n: u64) {
         self.open_keys.store(n, std::sync::atomic::Ordering::Relaxed);
@@ -103,6 +109,13 @@ impl Metrics {
         for by in ["background", "request"] {
             let n = builds.get(by).copied().unwrap_or(0);
             let _ = writeln!(out, "datumesh_series_overview_builds_total{{by=\"{by}\"}} {n}");
+        }
+        let _ = writeln!(out, "# HELP datumesh_catalog_builds_total Catalogue pages builds, by what started them.");
+        let _ = writeln!(out, "# TYPE datumesh_catalog_builds_total counter");
+        let builds = self.catalog_builds.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        for by in ["background", "request"] {
+            let n = builds.get(by).copied().unwrap_or(0);
+            let _ = writeln!(out, "datumesh_catalog_builds_total{{by=\"{by}\"}} {n}");
         }
         let _ = writeln!(out, "# HELP datumesh_dictionary_open_keys_total Dictionary keys open (past DATUMESH_DICTIONARY_MAX), as counted by the find thread.");
         let _ = writeln!(out, "# TYPE datumesh_dictionary_open_keys_total gauge");

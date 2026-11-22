@@ -148,6 +148,19 @@ pub fn datumesh_http::call::is_call(&str) -> bool
 pub fn datumesh_http::call::resolve(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
 pub fn datumesh_http::call::resolve_call(&str, &str, &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
 pub fn datumesh_http::call::resolve_uri(&str, &str, &dyn datumesh_http::call::Bindings, bool) -> core::result::Result<alloc::rcs::arc::Arc<datumesh_http::call::Target>, datumesh_http::call::Rejection>
+pub mod datumesh_http::catalog_build
+#[non_exhaustive] pub struct datumesh_http::catalog_build::CatalogBuilt
+pub datumesh_http::catalog_build::CatalogBuilt::cells: u64
+pub datumesh_http::catalog_build::CatalogBuilt::subjects: u64
+impl core::clone::Clone for datumesh_http::catalog_build::CatalogBuilt
+pub fn datumesh_http::catalog_build::CatalogBuilt::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::catalog_build::CatalogBuilt
+impl core::cmp::PartialEq for datumesh_http::catalog_build::CatalogBuilt
+pub fn datumesh_http::catalog_build::CatalogBuilt::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::catalog_build::CatalogBuilt
+pub fn datumesh_http::catalog_build::CatalogBuilt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::catalog_build::CatalogBuilt
+pub fn datumesh_http::catalog_build::catalog_build_with<S: datumesh_store::Store + ?core::marker::Sized>(&S, &datumesh_core::sign::SigningKey, &str, &str, &datumesh_http::publish::PublishOptions) -> core::result::Result<datumesh_http::catalog_build::CatalogBuilt, datumesh_http::publish::PublishError>
 pub mod datumesh_http::client
 pub struct datumesh_http::client::Client
 impl datumesh_http::client::Client
@@ -306,6 +319,8 @@ pub datumesh_http::config::Config::base_url: core::option::Option<alloc::string:
 pub datumesh_http::config::Config::batch_max: usize
 pub datumesh_http::config::Config::budget: core::time::Duration
 pub datumesh_http::config::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_http::config::Config::catalog_first_build_delay: core::time::Duration
+pub datumesh_http::config::Config::catalog_refresh: core::time::Duration
 pub datumesh_http::config::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::config::Config::cross_mesh: bool
 pub datumesh_http::config::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>
@@ -690,6 +705,8 @@ pub datumesh_http::Config::base_url: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::batch_max: usize
 pub datumesh_http::Config::budget: core::time::Duration
 pub datumesh_http::Config::catalog: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub datumesh_http::Config::catalog_first_build_delay: core::time::Duration
+pub datumesh_http::Config::catalog_refresh: core::time::Duration
 pub datumesh_http::Config::contact: core::option::Option<alloc::string::String>
 pub datumesh_http::Config::cross_mesh: bool
 pub datumesh_http::Config::cross_mesh_hosts: core::option::Option<alloc::vec::Vec<alloc::string::String>>

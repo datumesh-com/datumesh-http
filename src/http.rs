@@ -1337,6 +1337,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/fn/{*name}" => "/fn/{name}".to_string(),
         "/takeover/{*domain}" => "/takeover/{domain}".to_string(),
         "/series/{*rest}" => "/series/{page}".to_string(),
+        "/catalog/{*rest}" => "/catalog/{page}".to_string(),
         "/x/interval/{*function}" => "/x/interval/{function}".to_string(),
         _ => route,
     };
@@ -1358,9 +1359,11 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
     let html_ok = (route == "/fn/{name}" || route == "/takeover/{domain}") && accepts(req.headers(), "text/html");
     // The series pages and the sitemap choose their own media type, and a slice's browser redirect or
     // format is answered whatever its Accept (Build 2 Part 6, G1).
-    let own_form = matches!(route.as_str(), "/series/{page}" | "/series/sitemap.xml" | "/x/interval/{function}")
-        || (route == "/slice/{cell}"
-            && crate::series::negotiation_free(&mesh.inner, &rest_of(req.uri(), "/slice/"), req.headers()));
+    let own_form = matches!(
+        route.as_str(),
+        "/series/{page}" | "/series/sitemap.xml" | "/x/interval/{function}" | "/catalog" | "/catalog/{page}"
+    ) || (route == "/slice/{cell}"
+        && crate::series::negotiation_free(&mesh.inner, &rest_of(req.uri(), "/slice/"), req.headers()));
     let mut resp = if route != "/blob/{sha256}"
         && route != "/metrics"
         && !html_ok
@@ -1613,6 +1616,24 @@ async fn takeover_page(
     }
 }
 
+/// `GET /catalog`, `/catalog/<domain>`, `/catalog/<domain>/subject?key=<key encoding>` and `/catalog/rule` (CONTRACT-classes-round
+/// C9): HTML for people, from the catalogue's last build (`503` before it).
+async fn catalog_page(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let rest = uri.path().strip_prefix("/catalog").unwrap_or("").trim_start_matches('/').to_string();
+    let key = uri
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("key=")))
+        .map(crate::catalog_view::unpercent);
+    let inner = mesh.inner.clone();
+    match inner.pool.clone().run(move || crate::catalog_view::respond(&mesh.inner, &rest, key.as_deref())).await {
+        Some(o) => series_response(o),
+        None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
+    }
+}
+
 /// The per-IP budget of the series pages (`DATUMESH_RATE_SERIES_PER_IP`), after the ordinary per-IP limit.
 fn series_admit(inner: &Inner, headers: &HeaderMap, req: &Request) -> Option<Response> {
     let peer = peer_of(req);
@@ -1745,6 +1766,8 @@ impl Mesh {
             .route("/describe/{*id}", get(describe))
             .route("/fn/{*name}", get(function_page))
             .route("/takeover/{*domain}", get(takeover_page))
+            .route("/catalog", get(catalog_page))
+            .route("/catalog/{*rest}", get(catalog_page))
             .route("/series/sitemap.xml", get(series_sitemap))
             .route("/series/{*rest}", get(series_page))
             .route("/bundles", post(bundles))

@@ -5,9 +5,12 @@
 //! `<host>/key/…` is accepted only as a key-derived name (`<host>/key/k<24 hex>/…`, the 0.4.8 rule) from the
 //! registered key it is derived from; the mesh's own key does not publish there, and any other `key/…` name is
 //! reserved. Names under another host are not reserved: they are rooted at their own domain.
+//!
+//! `<host>/catalog/...` is the mesh's catalogue (CONTRACT-classes-round C1): reserved the same way, except in the
+//! catalogue job's own run (`catalog_build`), which is the only writer of it.
 
 /// The first segments after the host that no name may take.
-const RESERVED: [&str; 4] = ["series", "fn", "takeover", "x"];
+const RESERVED: [&str; 5] = ["series", "fn", "takeover", "x", "catalog"];
 
 /// The code of a refused name.
 pub(crate) const CODE: &str = "E_NAME_RESERVED";
@@ -16,8 +19,17 @@ pub(crate) const CODE: &str = "E_NAME_RESERVED";
 /// publish under (the namespace derived from a registered key that signs the write), or `None` for a write by
 /// the mesh itself or its operator. The error text starts with the code.
 pub(crate) fn check(host: &str, name: &str, signer_ns: Option<&str>) -> Result<(), String> {
+    check_for(host, name, signer_ns, false)
+}
+
+/// As [`check`], for a write that may be the catalogue job's (`job`, C1): under `<host>/catalog` only the job's run is
+/// allowed, and the job flag is not a standing exception (it is passed for one run only).
+pub(crate) fn check_for(host: &str, name: &str, signer_ns: Option<&str>, job: bool) -> Result<(), String> {
     let Some(rest) = name.strip_prefix(host).and_then(|r| r.strip_prefix('/')) else { return Ok(()) };
     let first = rest.split('/').next().unwrap_or("");
+    if first == "catalog" && job {
+        return Ok(());
+    }
     if RESERVED.contains(&first) {
         return Err(format!("{CODE}: {name} is under {host}/{first}, a path the mesh reserves"));
     }
@@ -51,10 +63,28 @@ mod tests {
 
     #[test]
     fn the_mesh_paths_are_reserved_and_their_look_alikes_are_not() {
-        for n in ["series/a", "fn/a", "takeover/a", "x/a", "series/deep/er/a"] {
+        for n in [
+            "series/a",
+            "fn/a",
+            "takeover/a",
+            "x/a",
+            "series/deep/er/a",
+            "catalog",
+            "catalog/a",
+            "catalog/subject/source",
+        ] {
             assert!(check(H, &format!("{H}/{n}"), None).is_err(), "{n}");
         }
-        for n in ["seriesx/a", "series_a/b", "fnord/a", "h049/series/a", "series_a"] {
+        for n in [
+            "seriesx/a",
+            "series_a/b",
+            "fnord/a",
+            "h049/series/a",
+            "series_a",
+            "catalogue/a",
+            "catalog_x/a",
+            "h/catalog/a",
+        ] {
             assert!(check(H, &format!("{H}/{n}"), None).is_ok(), "{n}");
         }
         // A name of another host is never reserved, whatever its first segment (the mesh host is H).

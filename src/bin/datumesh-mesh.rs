@@ -39,6 +39,12 @@
 //!                                manifests, name bindings and versions into the store; refused
 //!                                as a whole when a name it would bind is under DATUMESH_HOST or
 //!                                DATUMESH_NAMESPACES (the mesh's own)
+//! datumesh-mesh catalog-build    the catalogue job (CONTRACT-classes-round C5): the classes `catalog/subject` and `catalog/facet`
+//!                                and their cells, from the facets of the catalogue entries, signed with the mesh's key
+//!                                (DATUMESH_HOST, DATUMESH_KEY_FILE), under the licence DATUMESH_LICENCE; the rule as the
+//!                                page /catalog/rule. Takes no flag; prints one JCS line `{"cells":N,"subjects":M}`
+//!                                (a rerun over an unchanged catalogue has cells 0). The one run that writes under
+//!                                <host>/catalog
 //! datumesh-mesh import-signed <bundle.json>
 //!                                a bundle 1 (`datumesh_http::bundle`, docs/bundle-1.md): its
 //!                                descriptors, names and receipts, checked and written when every
@@ -115,6 +121,17 @@ fn main() {
                 p.blob_bytes, p.blobs, p.cells, p.classes, p.descriptors, p.functions, p.receipts, t.elapsed().as_secs_f64(), p.versions
             );
         }
+        Some("catalog-build") => {
+            let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
+            let key_file = std::env::var("DATUMESH_KEY_FILE").unwrap_or_else(|_| fail("DATUMESH_KEY_FILE is not set"));
+            let licence = std::env::var("DATUMESH_LICENCE").unwrap_or_else(|_| fail("DATUMESH_LICENCE is not set"));
+            let key = read_key(&key_file);
+            let s = store(4);
+            let opts = datumesh_http::publish::PublishOptions::system();
+            let b = datumesh_http::catalog_build::catalog_build_with(&s, &key, &host, &licence, &opts)
+                .unwrap_or_else(|e| fail(e));
+            println!(r#"{{"cells":{},"subjects":{}}}"#, b.cells, b.subjects);
+        }
         Some("import-signed") => {
             let file = args.get(1).unwrap_or_else(|| fail("import-signed <bundle.json>"));
             let host = std::env::var("DATUMESH_HOST").unwrap_or_else(|_| fail("DATUMESH_HOST is not set"));
@@ -164,7 +181,7 @@ fn main() {
             println!("{}", datumesh_http::openapi().to_pretty_json().unwrap_or_default());
         }
         Some(other) => fail(format!(
-            "unknown command {other} (serve, migrate, keygen, declare, validate, apikey, publish-stored, import-signed, import-vectors, openapi, health)"
+            "unknown command {other} (serve, migrate, keygen, declare, validate, apikey, publish-stored, catalog-build, import-signed, import-vectors, openapi, health)"
         )),
     }
 }

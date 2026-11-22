@@ -49,29 +49,6 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// The store as the formula runtime's callees (K5, the classes round): every answer of the store, and the name a class hash
-/// is bound to (`class_name`), which the runtime needs to name the class that defines an inherited method.
-/// `FormulaRuntime::new` does not give that name.
-struct MeshCallees(Arc<dyn Store + Send + Sync>);
-
-impl datumesh_formula::definition::Callees for MeshCallees {
-    fn callee(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::Callee>, String> {
-        datumesh_formula::definition::Callees::callee(&*self.0, name, at)
-    }
-    fn bound_class(&self, name: &str, at: &str) -> Result<Option<datumesh_formula::definition::ClassCallee>, String> {
-        datumesh_formula::definition::Callees::bound_class(&*self.0, name, at)
-    }
-    fn class_descriptor(&self, class_hash: &str) -> Result<Option<datumesh_core::ClassDescriptor>, String> {
-        datumesh_formula::definition::Callees::class_descriptor(&*self.0, class_hash)
-    }
-    fn class_name(&self, class_hash: &str) -> Result<Option<String>, String> {
-        datumesh_formula::definition::Callees::class_name(&*self.0, class_hash)
-    }
-    fn function_descriptor(&self, fn_hash: &str) -> Result<Option<datumesh_core::json::Value>, String> {
-        datumesh_formula::definition::Callees::function_descriptor(&*self.0, fn_hash)
-    }
-}
-
 /// Builds a [`Mesh`].
 pub struct MeshBuilder {
     config: Config,
@@ -172,7 +149,7 @@ impl MeshBuilder {
         };
         let mut runtimes = self.runtimes;
         if self.formula {
-            runtimes.push(Arc::new(FormulaRuntime::with_callees(Arc::new(MeshCallees(self.store.clone())))));
+            runtimes.push(Arc::new(FormulaRuntime::new(self.store.clone())));
         }
         if self.config.test_cells {
             crate::testrun::install_test_cases(&*self.store, &self.config.host)
@@ -205,6 +182,7 @@ impl MeshBuilder {
             value_counts_at: Mutex::new(None),
             unnamed: Mutex::new(HashSet::new()),
             series: Mutex::new(crate::series::Memo::default()),
+            catalog: Mutex::new(None),
             challenges: Mutex::new(crate::keynames::Challenges::default()),
             keys_lock: Mutex::new(()),
             own_key_id,
@@ -280,6 +258,28 @@ impl MeshBuilder {
         });
         if let Err(e) = spawned {
             tracing::warn!(error = %e, "the takeover thread is not started; the takeover pages answer 503");
+        }
+        // The catalogue (CONTRACT-classes-round C7 to C9): its root, its `held` text and its pages, built after the catalogue's
+        // first delay (at start when there is none), then every refresh interval, on a thread of its own. Requests read the
+        // last build. Before the find answers, which take the `held` text from it.
+        let (delay, refresh) = (mesh.inner.config.catalog_first_build_delay, mesh.inner.config.catalog_refresh);
+        if delay.is_zero() {
+            std::thread::scope(|s| {
+                let inner = mesh.inner.clone();
+                let _ = s.spawn(move || crate::catalog_view::rebuild(&inner, "background")).join();
+            });
+        }
+        let weak = Arc::downgrade(&mesh.inner);
+        let mut wait = if delay.is_zero() { refresh } else { delay };
+        let spawned = std::thread::Builder::new().name("datumesh-catalog".into()).spawn(move || loop {
+            std::thread::sleep(wait);
+            let Some(inner) = weak.upgrade() else { break };
+            crate::catalog_view::rebuild(&inner, "background");
+            drop(inner);
+            wait = refresh;
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "the catalogue thread is not started; the catalogue pages are never built");
         }
         // The find answers (CONTRACT-0.4.9 H4): the summary and the empty query's listing, built after the first
         // delay, then every 300 s. Requests read the last build.
@@ -428,6 +428,8 @@ pub(crate) struct Inner {
     pub(crate) unnamed: Mutex<HashSet<String>>,
     /// The overviews and dictionary orders of the series pages (Build 2 Part 6, G5).
     pub(crate) series: Mutex<crate::series::Memo>,
+    /// The catalogue's last build: its root, its `held` text and its pages (CONTRACT-classes-round C7 to C9).
+    pub(crate) catalog: Mutex<Option<Arc<crate::catalog_view::Built>>>,
     /// The challenges of `POST /x/keys` issued and not yet used (QUESTIONS-build2 D39).
     pub(crate) challenges: Mutex<crate::keynames::Challenges>,
     /// One registration at a time: the key document is read and written as a whole.

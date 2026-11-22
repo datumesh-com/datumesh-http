@@ -776,6 +776,18 @@ fn annotate(inner: &Inner, results: &mut [Value]) {
         let (kind, fn_hash) = (text("kind"), text("fn_hash"));
         let publisher = crate::describe::publisher_of(&name).to_string();
         members.push(("publisher".into(), Value::String(publisher)));
+        // The entry's facets, when it has them (CONTRACT-classes-round C2).
+        let entry_kind = match kind.as_deref() {
+            Some("function") => Some(CatalogKind::Function),
+            Some("class") => Some(CatalogKind::Class),
+            _ => None,
+        };
+        if let Some(k) = entry_kind {
+            let facets = inner.store.catalog_entry_ext(k, &name).ok().flatten().map(|e| e.facets).unwrap_or_default();
+            if !facets.is_empty() {
+                members.push(("facets".into(), crate::describe::facets_value(&facets)));
+            }
+        }
         if kind.as_deref() != Some("function") {
             continue;
         }
@@ -1042,12 +1054,17 @@ fn summary_value(inner: &Inner, ctx: &Ctx<'_>) -> Value {
             _ => functions.push(item),
         }
     }
-    Value::Object(vec![
+    let mut summary = vec![
         ("summary".into(), Value::Bool(true)),
         ("mesh".into(), Value::String(inner.config.host.clone())),
         ("classes".into(), Value::Array(classes)),
         ("functions".into(), Value::Array(functions)),
-    ])
+    ];
+    // The catalogue's held text (CONTRACT-classes-round C8), from its last build; absent with no facets.
+    if let Some(held) = crate::catalog_view::held(inner) {
+        summary.push(("held".into(), Value::String(held)));
+    }
+    Value::Object(summary)
 }
 
 /// The stored cells of the function `name` (hash `hash`), counted by name (one indexed count, S6).

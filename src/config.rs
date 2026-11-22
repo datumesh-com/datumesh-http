@@ -271,6 +271,11 @@ pub struct Config {
     pub series_first_build_delay: Duration,
     /// How often the series overview is rebuilt (`DATUMESH_SERIES_REFRESH_SECS`; default 300 s, at least 1 s).
     pub series_refresh: Duration,
+    /// How long the first build of the catalogue pages waits after start (`DATUMESH_CATALOG_FIRST_BUILD_DELAY_SECS`;
+    /// default 0). Until that build is done the catalogue's pages and the root of its `describe` answer `503`.
+    pub catalog_first_build_delay: Duration,
+    /// How often the catalogue pages are rebuilt (`DATUMESH_CATALOG_REFRESH_SECS`; default 300 s, at least 1 s).
+    pub catalog_refresh: Duration,
     /// How long the first build of the object index (`describe` of an object id) waits after start
     /// (`DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`; default 0). Until it is built, such a request is `503`.
     pub index_first_build_delay: Duration,
@@ -363,6 +368,8 @@ impl Config {
             contact: None,
             series_first_build_delay: Duration::ZERO,
             series_refresh: Duration::from_secs(300),
+            catalog_first_build_delay: Duration::ZERO,
+            catalog_refresh: Duration::from_secs(300),
             index_first_build_delay: Duration::ZERO,
             find_first_build_delay: Duration::ZERO,
             value_counts_refresh: Duration::from_secs(3600),
@@ -446,6 +453,8 @@ impl Config {
         c.contact = get("DATUMESH_CONTACT").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         c.series_first_build_delay = secs("DATUMESH_SERIES_FIRST_BUILD_DELAY_SECS", c.series_first_build_delay)?;
         c.series_refresh = secs("DATUMESH_SERIES_REFRESH_SECS", c.series_refresh)?;
+        c.catalog_first_build_delay = secs("DATUMESH_CATALOG_FIRST_BUILD_DELAY_SECS", c.catalog_first_build_delay)?;
+        c.catalog_refresh = secs("DATUMESH_CATALOG_REFRESH_SECS", c.catalog_refresh)?;
         c.index_first_build_delay = secs("DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS", c.index_first_build_delay)?;
         c.find_first_build_delay = secs("DATUMESH_FIND_FIRST_BUILD_DELAY_SECS", c.find_first_build_delay)?;
         c.value_counts_refresh = secs("DATUMESH_VALUE_COUNTS_SECS", c.value_counts_refresh)?;
@@ -499,6 +508,9 @@ impl Config {
         lexical::check_dns_name(&self.host, "$").map_err(|e| ConfigError::new("host", e.to_string()))?;
         if self.series_refresh < Duration::from_secs(1) {
             return Err(ConfigError::new("DATUMESH_SERIES_REFRESH_SECS", "at least 1 second"));
+        }
+        if self.catalog_refresh < Duration::from_secs(1) {
+            return Err(ConfigError::new("DATUMESH_CATALOG_REFRESH_SECS", "at least 1 second"));
         }
         if self.value_counts_refresh < Duration::from_secs(1) {
             return Err(ConfigError::new("DATUMESH_VALUE_COUNTS_SECS", "at least 1 second"));

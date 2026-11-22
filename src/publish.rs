@@ -629,6 +629,10 @@ struct Ctx<'a> {
     now: &'a str,
     /// The directory of the file (blobs are relative to it).
     base: &'a Path,
+    /// The catalogue job's run (C1): the one run that may write under `<host>/catalog`.
+    job: bool,
+    /// Blobs given in memory, by the file name a cell line gives (the job's rule text); read before the directory.
+    blobs: &'a BTreeMap<String, Vec<u8>>,
 }
 
 /// One write the second pass makes, planned (and checked) by the first.
@@ -648,6 +652,7 @@ enum Op {
         dictionaries: Vec<(String, Vec<datumesh_store::KeyValue>)>,
         open_keys: Vec<String>,
         extends: Option<String>,
+        facets: datumesh_store::Facets,
     },
 }
 
@@ -871,7 +876,8 @@ impl<S: Store + ?Sized> Planner<'_, S> {
                 Ok(v) if is_cell_line(&v) => {
                     // The reserved paths (CONTRACT-0.4.9 H8), as for any other line.
                     if let Some(name) = v.get("cell").and_then(|c| c.get("fn")).and_then(Value::as_str) {
-                        crate::reserved::check(self.ctx.host, name, None).map_err(|e| PublishError::at(n, e))?;
+                        crate::reserved::check_for(self.ctx.host, name, None, self.ctx.job)
+                            .map_err(|e| PublishError::at(n, e))?;
                     }
                     cells.push((n, v));
                     if cells.len() == CHUNK {
@@ -897,7 +903,7 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         let named =
             v.get("class").or_else(|| v.get("function")).or_else(|| v.get("formula")).or_else(|| v.get("catalog"));
         if let Some(name) = named.and_then(Value::as_str) {
-            crate::reserved::check(self.ctx.host, name, None).map_err(err)?;
+            crate::reserved::check_for(self.ctx.host, name, None, self.ctx.job).map_err(err)?;
         }
         if let Some(name) = v.get("class").and_then(Value::as_str) {
             self.class_line(n, name, v)?;
@@ -957,7 +963,13 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             self.check_extension(class, fh).map_err(err)?;
         }
         let entry = d.entry(hash, datumesh_store::CatalogSource::Publisher, Some(self.key.key_id().to_string()));
-        self.ops.push(Op::Catalog { entry, dictionaries: d.dictionary, open_keys: d.open_keys, extends: d.extends });
+        self.ops.push(Op::Catalog {
+            entry,
+            dictionaries: d.dictionary,
+            open_keys: d.open_keys,
+            extends: d.extends,
+            facets: d.facets,
+        });
         Ok(())
     }
 
@@ -1361,7 +1373,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         let (value, blob) = match value_v.get("blob").and_then(Value::as_str) {
             Some(file) => {
                 let media = value_v.get("media_type").and_then(Value::as_str).unwrap_or("application/octet-stream");
-                let bytes = std::fs::read(self.ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?;
+                let bytes = match self.ctx.blobs.get(file) {
+                    Some(b) => b.clone(),
+                    None => std::fs::read(self.ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?,
+                };
                 let sha = sha256_hex(&bytes);
                 let scalar = Scalar::from_lexical(Type::Blob, &format!("{sha}:{}:{media}", bytes.len()))
                     .map_err(|e| err(e.to_string()))?;
@@ -1512,8 +1527,8 @@ fn write<S: Store + ?Sized>(
                     }
                 }
             }
-            Op::Catalog { entry, dictionaries, open_keys, extends } => {
-                crate::catalog::store_publisher(store, entry, dictionaries, open_keys, extends.as_deref())
+            Op::Catalog { entry, dictionaries, open_keys, extends, facets } => {
+                crate::catalog::store_publisher(store, entry, dictionaries, open_keys, extends.as_deref(), facets)
                     .map_err(err)?;
             }
             Op::Cell { .. } => {
@@ -1921,7 +1936,7 @@ pub fn publish_stored_checked_lanes<S: Store + Sync + ?Sized>(
     })
 }
 
-/// The first pass (the planner) and the second pass (`write_ops`) of a publish.
+/// The first pass (the planner) and the second pass (`write_ops`) of a publish of a file.
 #[allow(clippy::too_many_arguments)]
 fn publish_planned<S: Store + ?Sized>(
     store: &S,
@@ -1934,6 +1949,42 @@ fn publish_planned<S: Store + ?Sized>(
     write_ops: impl FnOnce(&S, &[Op]) -> Result<(Published, Written), PublishError>,
 ) -> Result<Published, PublishError> {
     let lines = read_lines(path)?;
+    let base = path.parent().unwrap_or(Path::new("."));
+    planned_lines(store, key, host, owned, lines, base, &BTreeMap::new(), false, opts, checked, write_ops)
+}
+
+/// The catalogue job's run (C5, `catalog_build`): the lines it writes, with its blobs in memory, as one publish with the
+/// job flag (C1). Stored cells, the public rule as checked by [`publish_stored_with`].
+pub(crate) fn publish_job<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    lines: Vec<String>,
+    blobs: &BTreeMap<String, Vec<u8>>,
+    opts: &PublishOptions,
+) -> Result<Published, PublishError> {
+    let numbered: Vec<(usize, String)> = lines.into_iter().enumerate().map(|(i, l)| (i + 1, l)).collect();
+    planned_lines(store, key, host, owned, numbered, Path::new("."), blobs, true, opts, false, |s, ops| {
+        write(s, ops, |s, g, out| write_cells_one_lane(s, g, out))
+    })
+}
+
+/// The planning and writing of numbered lines (see [`publish_planned`]).
+#[allow(clippy::too_many_arguments)]
+fn planned_lines<S: Store + ?Sized>(
+    store: &S,
+    key: &SigningKey,
+    host: &str,
+    owned: &[String],
+    lines: Vec<(usize, String)>,
+    base: &Path,
+    blobs: &BTreeMap<String, Vec<u8>>,
+    job: bool,
+    opts: &PublishOptions,
+    checked: bool,
+    write_ops: impl FnOnce(&S, &[Op]) -> Result<(Published, Written), PublishError>,
+) -> Result<Published, PublishError> {
     // The key's start: the earliest `issued`.
     let key_from = store
         .namespace(host)
@@ -1951,7 +2002,7 @@ fn publish_planned<S: Store + ?Sized>(
             PublishError::at(0, format!("the key {} is not in {host}'s key document in the store", key.key_id()))
         })?;
     let now = opts.clock.now();
-    let ctx = Ctx { host, owned, key_from: &key_from, now: &now, base: path.parent().unwrap_or(Path::new(".")) };
+    let ctx = Ctx { host, owned, key_from: &key_from, now: &now, base, job, blobs };
     let mut planner = Planner {
         store,
         key,

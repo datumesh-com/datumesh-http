@@ -35,6 +35,7 @@ use datumesh_core::{
     lexical, parse_object_key, short_id, Arg, Cell, ClassDescriptor, ClassKey, DescribeTests, ErrorCode,
     FunctionAnswer, KeyValue, ObjectKey, Scalar, Slice,
 };
+use datumesh_store::CatalogKind;
 
 use crate::call::{Bindings, BoundClass};
 use crate::envelope::{self, Cache, Reply};
@@ -288,6 +289,10 @@ impl Inner {
     /// The describe reply for `id` (see the module documentation).
     pub(crate) fn describe(&self, id: &str) -> Reply {
         let now = self.now();
+        // The catalogue's root (CONTRACT-classes-round C7): one call, from the catalogue's last build.
+        if id == format!("{}/catalog", self.config.host) {
+            return crate::catalog_view::describe_root(self);
+        }
         // A class name.
         if lexical::check_function_name(id, "$").is_ok() {
             return match Bindings::class(self, id, &now) {
@@ -393,7 +398,20 @@ impl Inner {
                 }
             }
         }
-        Reply::json(200, answer.to_json(), Cache::NoStore)
+        let body = self.with_facets(answer.to_json(), name, CatalogKind::Function);
+        Reply::json(200, body, Cache::NoStore)
+    }
+
+    /// The body of a function or class answer with the entry's `facets` member, when the entry has facets (C2): an entry
+    /// without them has no member.
+    fn with_facets(&self, body: Vec<u8>, name: &str, kind: CatalogKind) -> Vec<u8> {
+        let facets = self.store.catalog_entry_ext(kind, name).ok().flatten().map(|e| e.facets).unwrap_or_default();
+        if facets.is_empty() {
+            return body;
+        }
+        let Ok(Value::Object(mut members)) = json::parse(&body) else { return body };
+        members.push(("facets".into(), facets_value(&facets)));
+        Value::Object(members).to_jcs()
     }
 
     fn class_answer(&self, name: &str, c: &BoundClass) -> Reply {
@@ -433,7 +451,8 @@ impl Inner {
             ("methods".into(), Value::Object(methods)),
             ("publisher".into(), Value::String(publisher_of(name).into())),
         ]);
-        Reply::json(200, doc.to_jcs(), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
+        let body = self.with_facets(doc.to_jcs(), name, CatalogKind::Class);
+        Reply::json(200, body, Cache::Public(self.config.ttl.latest_max_age.as_secs()))
     }
 
     /// The object a label `N[label]` names (K8, 16.7): through `N`'s lookup, read as of `asof` (the request's, or `now`).
@@ -616,6 +635,16 @@ pub(crate) fn label_form(id: &str) -> Option<(String, String, Option<String>)> {
     };
     let asof = query.and_then(|q| q.strip_prefix("asof=")).map(str::to_string);
     Some((class.to_string(), written, asof))
+}
+
+/// A catalogue entry's facets as a JSON object: each key to its names.
+pub(crate) fn facets_value(facets: &datumesh_store::Facets) -> Value {
+    Value::Object(
+        facets
+            .iter()
+            .map(|(k, vs)| (k.clone(), Value::Array(vs.iter().map(|v| Value::String(v.clone())).collect())))
+            .collect(),
+    )
 }
 
 /// The publisher of a name: the host of its namespace, its first segment (spec-0.6.1, 2.3, 16.8).

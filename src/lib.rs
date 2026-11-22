@@ -147,6 +147,8 @@ mod bundles;
 mod calc;
 pub mod call;
 mod catalog;
+pub mod catalog_build;
+mod catalog_view;
 pub mod client;
 pub mod config;
 mod describe;

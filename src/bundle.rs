@@ -708,7 +708,7 @@ fn import_with<S: Store + ?Sized>(
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));
-        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys, None)
+        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys, None, &d.facets)
             .map_err(BundleError::Store)?;
     }
     let mut cell_values = BTreeSet::new();

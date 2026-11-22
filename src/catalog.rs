@@ -8,7 +8,48 @@ use std::collections::BTreeMap;
 
 use datumesh_core::json::Value;
 use datumesh_core::lexical::check_name;
-use datumesh_store::{CatalogEntry, CatalogKind, CatalogSource, KeyValue};
+use datumesh_store::{CatalogEntry, CatalogKind, CatalogSource, Facets, KeyValue};
+
+/// The keys a facet may carry (C2): the five, and no other.
+const FACET_KEYS: [&str; 5] = ["domain", "thing", "measure", "region", "frequency"];
+
+/// The most names a facet lists, and the most bytes of one (C2).
+const FACET_MAX_VALUES: usize = 8;
+const FACET_VALUE_BYTES: usize = 32;
+
+/// The facets of an entry (C2): an object of at most the five keys, each a list of 1 to 8 names (2.2, at most 32 bytes),
+/// ascending and unique. Absent, none.
+fn parse_facets(v: Option<&Value>) -> Result<Facets, String> {
+    let mut out = Facets::new();
+    let obj = match v {
+        None => return Ok(out),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err("facets is not an object".into()),
+    };
+    for (k, list) in obj {
+        if !FACET_KEYS.contains(&k.as_str()) {
+            return Err(format!("facets.{k}: not a facet (domain, thing, measure, region or frequency)"));
+        }
+        let Value::Array(items) = list else { return Err(format!("facets.{k} is not a list")) };
+        if items.is_empty() || items.len() > FACET_MAX_VALUES {
+            return Err(format!("facets.{k} has 1 to {FACET_MAX_VALUES} names"));
+        }
+        let mut names: Vec<String> = Vec::with_capacity(items.len());
+        for x in items {
+            let n = x.as_str().ok_or_else(|| format!("facets.{k}: a name is not a string"))?;
+            if n.len() > FACET_VALUE_BYTES {
+                return Err(format!("facets.{k}: a name has at most {FACET_VALUE_BYTES} bytes"));
+            }
+            check_name(n, "facets").map_err(|e| format!("facets.{k}: {e}"))?;
+            names.push(n.to_string());
+        }
+        if names.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(format!("facets.{k}: the names are not ascending and unique"));
+        }
+        out.insert(k.clone(), names);
+    }
+    Ok(out)
+}
 
 /// The most bytes of a label.
 pub(crate) const LABEL_BYTES: usize = 120;
@@ -29,6 +70,8 @@ pub(crate) struct Described {
     pub(crate) open_keys: Vec<String>,
     /// The class a function extends (`extends`, K9, the classes round): a function's entry only.
     pub(crate) extends: Option<String>,
+    /// The facets (C2): none when the line has none, which removes the entry's facets.
+    pub(crate) facets: Facets,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -137,7 +180,8 @@ pub(crate) fn parse(v: &Value, name_key: &str) -> Result<Described, String> {
         }
         Some(_) => return Err("extends is a class's full name".into()),
     };
-    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys, extends })
+    let facets = parse_facets(v.get("facets")).map_err(|e| format!("facets: {e}"))?;
+    Ok(Described { kind, name, label, description, args, examples, dictionary, open_keys, extends, facets })
 }
 
 impl Described {
@@ -165,8 +209,10 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
     dictionaries: &[(String, Vec<KeyValue>)],
     open_keys: &[String],
     extends: Option<&str>,
+    facets: &Facets,
 ) -> Result<(), String> {
-    // The row's facets are kept (the publisher does not set them): the extension is written with them as they are.
+    // The line is the publisher's whole statement of the entry: its facets are the line's (C2), so a line without
+    // facets removes them.
     let old = store.catalog_entry_ext(entry.kind, &entry.name).map_err(|e| e.to_string())?;
     let same = old.as_ref().is_some_and(|old| {
         old.entry.kind == entry.kind
@@ -178,10 +224,11 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
             && old.entry.source == entry.source
             && old.entry.signed_by == entry.signed_by
             && old.extends.as_deref() == extends
+            && old.facets == *facets
     });
     if !same {
         let mut ext = datumesh_store::CatalogEntryExt::new(entry.clone());
-        ext.facets = old.map(|o| o.facets).unwrap_or_default();
+        ext.facets = facets.clone();
         ext.extends = extends.map(str::to_string);
         store.upsert_catalog_ext(std::slice::from_ref(&ext)).map_err(|e| e.to_string())?;
     }
