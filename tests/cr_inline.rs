@@ -154,7 +154,9 @@ async fn k7_this_and_a_method_reading_another() {
     assert_eq!(quad.inputs(), vec![double.receipt_hash()], "`this.double()` is the read of `{n}/double(sku: sku)`");
     // an absent input is the fault of the cell
     let zz = ask(&m, &format!("/cell/{n}/quad?sku=ZZ")).await;
-    assert_eq!((zz.outcome(), zz.fault()), ("not_covered", Some("E_FORMULA_ABSENT")), "{}", zz.text);
+    // SPEC 15.12: a single-cell read with no value is E_FORMULA_NOT_COVERED, plain not_covered with no fault member
+    // (E_FORMULA_ABSENT is for a lookup with no qualifying member or a computed slice member without value).
+    assert_eq!((zz.outcome(), zz.fault()), ("not_covered", None), "{}", zz.text);
 }
 
 /// Two methods that read each other with `this` are refused (16.3: the class holds each method's function hash, and two
