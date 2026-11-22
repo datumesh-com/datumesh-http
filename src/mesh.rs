@@ -1038,15 +1038,20 @@ impl Inner {
     ) -> Reply {
         let target = match call::resolve(rest, now, &self.config.aliases, bindings, false) {
             Ok(t) => t,
-            // `N[label]` with no method is the object's describe (K8, the classes round).
-            Err(Rejection::BadRequest(ErrorCode::ParseUri))
-                if crate::call::url_decode(rest).is_some_and(|d| crate::describe::label_form(&d).is_some()) =>
+            // `N[label]` with no method is the object's describe (K8, the classes round). A raw `[`/`]` is not
+            // a name, so the cell URI's name check refuses it as E_CANON_NAME before this form is seen; the
+            // class part is what must be a name here.
+            Err(Rejection::BadRequest(code @ (ErrorCode::ParseUri | ErrorCode::CanonName)))
+                if crate::call::url_decode(rest).is_some_and(|d| {
+                    crate::describe::label_form(&d)
+                        .is_some_and(|(class, _, _)| datumesh_core::lexical::check_function_name(&class, "$").is_ok())
+                }) =>
             {
                 let text = crate::call::url_decode(rest).unwrap_or_default();
                 if let Some(reply) = self.describe_label(bindings, &text, now) {
                     return reply;
                 }
-                return self.rejection(Rejection::BadRequest(ErrorCode::ParseUri), None);
+                return self.rejection(Rejection::BadRequest(code), None);
             }
             Err(r) => return self.rejection(r, None),
         };
