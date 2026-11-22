@@ -414,9 +414,13 @@ async fn a_label_resolves_through_the_classes_lookup() {
             g.env
         );
     }
-    // A label stands where the keys would: not as an argument, and not without a method.
+    // K8 (the user's decision, CONTRACT-classes-round): `N[label]` with no method, at `/cell`, answers that object's
+    // `describe` with 200 and kind "object" (it was E_PARSE_URI); `resolved` says the lookup was made.
     let g = got(&a.get(&path(&format!("{nm}[cable]"), Some(ASOF))).await);
-    assert_eq!((g.outcome(), g.error()), ("bad_request", Some("E_PARSE_URI")));
+    assert_eq!((g.status, g.env.get("kind").and_then(Value::as_str)), (200, Some("object")), "{:?}", g.env);
+    let rs = resolved_of(&g).1;
+    assert_eq!(rs.len(), 1, "{rs:?}");
+    assert_eq!(rs[0].1, "lookup", "{rs:?}");
 }
 
 /// A bare name in the function position resolves through the mesh's alias map (5.8, 16.7); an alias
