@@ -5,7 +5,7 @@
 //! `"asof"` default. An unbound argument in a request takes it and `resolved` records a `default` resolution; in a body the
 //! canonical AST holds the literal, so a body that leaves the argument out and one that writes it are one function; a default
 //! that is not a valid value of the type is `E_SCHEMA` at define. The world is the shape C3's `source(rank)` needs: a function
-//! `catalog/pick(subject, rank)` and a class `catalog/subject` whose method `source(rank)` have `rank` default `"1"`.
+//! `dflt/pick(subject, rank)` and a class `dflt/subject` whose method `source(rank)` have `rank` default `"1"`.
 
 mod common;
 #[path = "common/crworld.rs"]
@@ -19,10 +19,10 @@ use datumesh_core::Resolver as _;
 use serde_json::json;
 
 fn pick() -> String {
-    format!("{HOST}/catalog/pick")
+    format!("{HOST}/dflt/pick")
 }
 fn subject() -> String {
-    format!("{HOST}/catalog/subject")
+    format!("{HOST}/dflt/subject")
 }
 
 fn rank_arg(default: &str) -> String {
@@ -64,8 +64,8 @@ async fn world(label: &str, formulas: bool) -> Served {
     publish(&lite, "classes.jsonl", &v, NOW).unwrap_or_else(|e| panic!("classes and cells: {e}"));
     if formulas {
         let sig = format!(r#"{{"args":{{"subject":{STR}}},"order":["subject"],"returns":"string"}}"#);
-        let a = formula_line(&format!("{HOST}/catalog/top_a"), &format!("{}(subject: subject)", pick()), &sig);
-        let b = formula_line(&format!("{HOST}/catalog/top_b"), &format!("{}(subject: subject, rank: 1)", pick()), &sig);
+        let a = formula_line(&format!("{HOST}/dflt/top_a"), &format!("{}(subject: subject)", pick()), &sig);
+        let b = formula_line(&format!("{HOST}/dflt/top_b"), &format!("{}(subject: subject, rank: 1)", pick()), &sig);
         publish(&lite, "formulas.jsonl", &[a, b], NOW).unwrap_or_else(|e| panic!("a body that leaves the argument out: {e}"));
     }
     build_served(lite, None, |_| {}).await
@@ -95,7 +95,7 @@ async fn k13_a_request_with_the_argument_left_out() {
     let uri = ask(&m, &format!("/cell/{p}?subject=s1")).await;
     assert_eq!((uri.status, uri.error()), (400, Some("E_ARG_MISSING")), "{}", uri.text);
     // an argument with no default is still missing
-    let pp = ask(&m, &path(&format!("{HOST}/catalog/pick_plain(s1)"), None)).await;
+    let pp = ask(&m, &path(&format!("{HOST}/dflt/pick_plain(s1)"), None)).await;
     assert_eq!((pp.status, pp.error()), (400, Some("E_ARG_MISSING")), "{}", pp.text);
     // the receipt verifies: the cell is the plain one
     let keys = {
@@ -137,7 +137,7 @@ async fn k13_a_method_call_with_the_argument_left_out() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn k13_a_body_with_the_argument_left_out_is_the_literal() {
     let m = world("cr-k13-body", true).await;
-    let (a, b) = (format!("{HOST}/catalog/top_a"), format!("{HOST}/catalog/top_b"));
+    let (a, b) = (format!("{HOST}/dflt/top_a"), format!("{HOST}/dflt/top_b"));
     let (ha, hb) = (fn_hash(&m.lite, &a), fn_hash(&m.lite, &b));
     assert_eq!(ha, hb, "one body: the same descriptor");
     let d = |h: &str| String::from_utf8(m.lite.store.descriptor(h).unwrap().into_owned()).unwrap();
@@ -159,7 +159,7 @@ fn k13_the_default_is_hashed() {
     // and a function with a default publishes (a stored one, and a formula over it)
     let lite = Lite::new("cr-k13-hash");
     publish(&lite, "f.jsonl", &functions(), NOW).unwrap_or_else(|e| panic!("{e}"));
-    assert_ne!(fn_hash(&lite, &pick()), fn_hash(&lite, &format!("{HOST}/catalog/pick_plain")));
+    assert_ne!(fn_hash(&lite, &pick()), fn_hash(&lite, &format!("{HOST}/dflt/pick_plain")));
 }
 
 /// A default that is not a valid value of the argument's type is `E_SCHEMA` at define (and nothing is written): a word for a
@@ -181,7 +181,7 @@ fn k13_a_default_of_the_wrong_type_is_refused() {
     ];
     for (i, (arg, ty)) in ok.iter().enumerate() {
         let lite = Lite::new(&format!("cr-k13-ok-{i}"));
-        let f = function_line(&format!("{HOST}/catalog/d{i}"), &with(arg, ty), None);
+        let f = function_line(&format!("{HOST}/dflt/d{i}"), &with(arg, ty), None);
         publish(&lite, "f.jsonl", &[f], NOW).unwrap_or_else(|e| panic!("{arg}: {e}"));
     }
     let bad = [
@@ -198,7 +198,7 @@ fn k13_a_default_of_the_wrong_type_is_refused() {
     for (i, (arg, code)) in bad.iter().enumerate() {
         let lite = Lite::new(&format!("cr-k13-bad-{i}"));
         let before = snapshot(&lite);
-        let f = function_line(&format!("{HOST}/catalog/b{i}"), &with(arg, "string"), None);
+        let f = function_line(&format!("{HOST}/dflt/b{i}"), &with(arg, "string"), None);
         let e = publish(&lite, "f.jsonl", &[f], NOW).expect_err(arg);
         assert_eq!(e.line, 1, "{arg}: {e}");
         assert!(e.detail.contains(code), "{arg}: {e}");
@@ -206,7 +206,7 @@ fn k13_a_default_of_the_wrong_type_is_refused() {
     }
     // a formula's signature goes through the same check
     let lite = Lite::new("cr-k13-formula");
-    let f = formula_line(&format!("{HOST}/catalog/fbad"), "k", &with(r#"{"default":"abc","type":"number","unit":"1","valid":false}"#, "string"));
+    let f = formula_line(&format!("{HOST}/dflt/fbad"), "k", &with(r#"{"default":"abc","type":"number","unit":"1","valid":false}"#, "string"));
     let e = publish(&lite, "f.jsonl", &[f], NOW).expect_err("a formula with a bad default");
     assert!(e.detail.contains("E_SCHEMA"), "{e}");
     let _ = json!(null);
