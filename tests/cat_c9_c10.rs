@@ -163,7 +163,7 @@ async fn c9_a_subject_page_lists_the_ranked_sources_with_links() {
         // the links to sources, in page order
         let got: Vec<String> = links
             .iter()
-            .filter_map(|l| l.strip_prefix("/fn/").or_else(|| l.strip_prefix("/describe/")).map(|n| unpct(n)))
+            .filter_map(|l| l.strip_prefix("/fn/").or_else(|| l.strip_prefix("/describe/")).map(unpct))
             .collect();
         assert_eq!(got, s.sources, "{path}: the sources in rank order");
         for src in &s.sources {
@@ -300,7 +300,7 @@ async fn c10_every_source_value_is_a_stable_bound_name() {
             assert!(known.contains(&v), "{v} is not the name of an entry");
             // a stable name: no facet value, and no rank, appended as a path segment of the entry's name
             let own: Vec<&str> = v.split('/').collect();
-            assert!(own.last().map_or(false, |l| !l.bytes().all(|b| b.is_ascii_digit())), "{v}: ends in a rank");
+            assert!(own.last().is_some_and(|l| !l.bytes().all(|b| b.is_ascii_digit())), "{v}: ends in a rank");
             let given = s.sources[rank as usize - 1].as_str();
             assert_eq!(v, given, "{} {} {}: source({rank})", s.domain, s.thing, s.measure);
             let _ = facets;

@@ -242,7 +242,7 @@ async fn c8_a_large_catalogue_is_cut_to_sixty_words_largest_first() {
     let m = serve(lite, &[]).await;
     let held = held_of(&m).await;
     let n = held.split_whitespace().count();
-    assert!(n <= 60 && n >= 20, "{n} words: {held}");
+    assert!((20..=60).contains(&n), "{n} words: {held}");
     let t = tokens(&held);
     assert!(t.contains(&"d00".to_string()), "the largest domain is there: {held}");
     assert!(!t.contains(&"d14".to_string()), "the smallest is left out: {held}");
