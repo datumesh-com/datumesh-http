@@ -301,13 +301,16 @@ def test_the_stub_relay_is_the_fetchers_own_output_over_the_fixtures():
 
 def test_the_stub_relay_has_the_relay_signatures_the_views_read():
     sig = {l["function"]: l["signature"] for l in stub() if "function" in l}
+    for l in stub():   # R13: annual_report is an inline stored method of the one-step class line
+        if l.get("class") == HOST + "/sec/company":
+            sig[ANNUAL] = l["descriptor"]["methods"]["annual_report"]["stored"]
     # C1, C3: fact is a stored method of the relay class company (a descriptor line, no function line); annual_report is a
     # function of the subclass; the filing class is its own lines (N2)
     assert ANNUAL in sig and RELAY + "company_fact" not in sig and RELAY + "company/fact" not in sig
     assert sig[ANNUAL]["order"] == ["cik", "fiscal_year"] and sig[ANNUAL]["returns"] == "string"
     assert sig[ANNUAL]["args"]["fiscal_year"] == {"type": "number", "unit": "1", "valid": False}
     classes = [l["class"] for l in stub() if "class" in l]
-    assert sorted(classes) == [RELAY + "company", RELAY + "filing"]
+    assert sorted(classes) == [RELAY + "company", RELAY + "filing", HOST + "/sec/company"], "the stub has the one-step class line too"
     descriptors = [l["descriptor"] for l in stub() if "descriptor" in l and "class" not in l]
     (fact,) = [d["signature"] for d in descriptors if d["signature"]["order"][0] == "cik"]
     assert fact["order"] == ["cik", "concept", "unit", "accession", "period_start", "period_end"]
@@ -477,9 +480,15 @@ def test_the_22_signatures_are_unchanged_and_take_cik_first():
         assert f[COMPANY + m]["signature"]["order"][0] == "cik", m + ": the class key first"
 
 
-def test_ratio_and_calendar_lines_are_unchanged():
+def test_ratio_and_calendar_lines_are_unchanged_but_for_the_added_facets():
+    """R6 adds a `facets` member to the catalogue entries of ratio/* and calendar/*; nothing else of them changes."""
     keep = lambda l: re.search(r'"(?:formula|catalog|test)": "' + re.escape(HOST) + r"/(?:ratio|calendar)/", l)
-    assert [l for l in new_lines() if keep(l)] == [l for l in old_lines() if keep(l)]
+
+    def strip(l):
+        o = json.loads(l)
+        o.pop("facets", None)
+        return o
+    assert [strip(l) for l in new_lines() if keep(l)] == [strip(l) for l in old_lines() if keep(l)]
     assert [l for l in new_lines() if keep(l)], "the file has them"
 
 

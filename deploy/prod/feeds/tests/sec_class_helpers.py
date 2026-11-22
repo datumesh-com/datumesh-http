@@ -300,7 +300,8 @@ def is_nfc(s):
 
 # ---------- the one-step company file (CONTRACT-round-0.7 R13) ----------
 
-EXTRA = [Co(1000060, "Zebra Corp", ["ZEB"]), Co(1000061, "ZEBRA Inc", ["ZEBX"])]
+# Zebra Corp has two tickers so that it stays in scope when one of them is no longer listed
+EXTRA = [Co(1000060, "Zebra Corp", ["ZEB", "ZEBC"]), Co(1000061, "ZEBRA Inc", ["ZEBX"])]
 # "Zebra" (Zebra Corp) and "ZEBRA" (ZEBRA Inc) are distinct short names, and fold to the same label: both are dropped
 LABEL_WORLD = WORLD + EXTRA
 

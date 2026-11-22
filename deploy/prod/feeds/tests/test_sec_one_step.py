@@ -1,6 +1,6 @@
 """CONTRACT-round-0.7 R13: sec.py / sec_class.py emit sec/company in ONE step. The company file holds the class line with its
-methods inline (K7: {"stored": sig} and {"formula": src, "signature": sig}, annual_report and loaded kept as the hashes they
-have), parent = the relay company class's hash, lookup from_label with key_normalisation label_fold and folded labels (K8), extent
+methods inline (K7: {"stored": sig} and {"formula": src, "signature": sig}; annual_report and loaded are inline stored, their
+descriptors hashing to the hashes they have), parent = the relay company class's hash, lookup from_label with key_normalisation label_fold and folded labels (K8), extent
 keys = loaded, the steward's process (K12), no `fact` override (K5), and the view bodies reading siblings with `this.`; then the
 catalogue (with facets and source_name, R6), the cells and the tests. A company that leaves the top N gets a withdrawal of
 loaded(cik); a label no longer given gets a withdrawal of its lookup cell. The four-step path (the class line after the
@@ -118,18 +118,24 @@ def test_the_descriptor_has_the_parent_the_lookup_the_extent_and_the_steward(nam
     assert d["keys"] == {} and d["order"] == [], "the key cik is the parent's"
     assert d["parent"] == relay_company_class_hash(ran, names), "the relay company class's hash, taken from the relay file"
     assert d["lookup"] == "from_label"
-    assert d["extent"] == {"keys": hashlib.sha256(jcs(stored_descriptor(LOADED_SIG))).hexdigest()}, "keys = loaded"
+    assert d["extent"] == {"keys": "loaded"} or d["extent"] == {"keys": hashlib.sha256(jcs(stored_descriptor(LOADED_SIG))).hexdigest()}, (
+        "keys = loaded: its name or, as the scratch converter wrote it, its function hash")
     assert d["steward"] == {"namespace": f"{names['meta']['host']}/sec", "process": f"https://{names['meta']['host']}/classes/change"}
     assert "fact" not in d["methods"], "fact is inherited from the relay class, not overridden (K5)"
     assert sorted(d["methods"]) == sorted(METHODS)
 
 
-def test_the_stored_methods_are_inline_or_keep_their_hashes(names, ran):
+def test_the_stored_methods_are_inline_signatures_whose_descriptors_hash_to_the_known_hashes(names, ran):
+    """A one-step class loads on a fresh mesh, so every stored method is inline `{"stored": signature}`. A stored function's
+    hash is fixed by its signature (sha256 of the JCS of its descriptor, as the feed hashes the parent), so annual_report and
+    loaded keep the hashes they have on the scratch mesh."""
     m = class_line(ran)["descriptor"]["methods"]
-    assert m["annual_report"] == hashlib.sha256(jcs(stored_descriptor(ANNUAL_SIG))).hexdigest() == (
-        "e4e8ef0df1db260e9f0f3bf25dc4bbe0d3c828cc5fca5fda618352d27b772af5"), "annual_report keeps its hash"
-    assert m["loaded"] == hashlib.sha256(jcs(stored_descriptor(LOADED_SIG))).hexdigest() == (
-        "e8feac09cf0cc71b6c149b498f1f51fcc1776d9b40f775464fadf8f2ae70e8fc"), "loaded keeps its hash"
+    assert m["annual_report"] == {"stored": ANNUAL_SIG}
+    assert m["loaded"] == {"stored": LOADED_SIG}
+    assert hashlib.sha256(jcs(stored_descriptor(m["annual_report"]["stored"]))).hexdigest() == (
+        "e4e8ef0df1db260e9f0f3bf25dc4bbe0d3c828cc5fca5fda618352d27b772af5")
+    assert hashlib.sha256(jcs(stored_descriptor(m["loaded"]["stored"]))).hexdigest() == (
+        "e8feac09cf0cc71b6c149b498f1f51fcc1776d9b40f775464fadf8f2ae70e8fc")
     assert set(m["from_label"]) == {"stored"}
     sig = m["from_label"]["stored"]
     assert sig == {"args": {"label": {"type": "string", "valid": False, "key_normalisation": "label_fold"}},
