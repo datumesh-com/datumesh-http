@@ -392,18 +392,43 @@ async fn sec_latest_is_exact_over_the_restated_company() {
     .await;
 }
 
-/// K4 finding, pinned: the whole views file, `sec/company/latest` included, is accepted with the public rule on. It is not:
-/// since fbd8adf `latest`'s tests carry no asof and hold on the real relay, where every filing has its filed() cell, so none
-/// reaches the derived case `empty(relay/sec.gov/filing/filed)` (`last_by` over an empty slice), and the rule answers
-/// E_TESTS_MISSING at any clock (before the stub's staged filed() cells the tests fail instead). K1 does not reach it either:
-/// remove and add cannot empty an open, growing slice (CONTRACT-classes-round K1, "No clearing"). Fails until the
-/// coordinator decides what the file's tests are.
+/// The slice of the filing class's `filed()` cells, the one `latest` orders its figures by (`last_by(.., filed(accession: *))`).
+fn filed_slice() -> String {
+    format!("{HOST}/relay/sec.gov/filing/filed(accession: *)")
+}
+
+/// The test of `latest` that reaches the derived case `empty(relay/sec.gov/filing/filed)` (R3, CONTRACT-round-0.7): the slice of
+/// `filed()` cells replaced by **no members** (`"inputs": {<slice>: {"members": {}}}`), so `last_by` has nothing to order by.
+/// The views file may already carry it (the implementer's rewrite of its tests); otherwise it is added here.
+fn latest_empty_case() -> String {
+    serde_json::json!({
+        "test": latest(),
+        "call": format!("{}(cik: \"0000019617\", concept: \"us-gaap:Assets\", unit: \"USD\", fiscal_year: 2019, period_kind: \"instant\")", latest()),
+        "inputs": { filed_slice(): {"members": {}} },
+        "expect": {"fault": "E_FORMULA_EMPTY"},
+    })
+    .to_string()
+}
+
+/// K4 finding, resolved by R3 (CONTRACT-round-0.7): the whole views file, `sec/company/latest` included, is accepted with the
+/// public rule on. It was not, since fbd8adf: `latest`'s tests carry no asof and hold on the real relay, where every filing has
+/// its filed() cell, so none reached the derived case `empty(relay/sec.gov/filing/filed)` (`last_by` over an empty slice) and the
+/// rule answered E_TESTS_MISSING at any clock; remove and add could not empty an open, growing slice. A test input
+/// `{"members": {}}` can. This file's `latest` tests plus the one test below (`latest_empty_case`, added unless the views file has
+/// a test with a `members` input) are accepted, and every one passes.
 #[test]
-#[ignore = "pins a defect that cannot be fixed in this round: by the user's decision of 2026-11-22, `latest` stays out until test inputs can empty an open slice (CONTRACT-classes-round K1, No clearing)"]
 fn latest_publishes_under_the_public_rule() {
     let lite = Lite::new("sv-latest");
     let mut all = stub();
     all.extend(views());
+    let has_members = all.iter().any(|l| {
+        let v = json(l);
+        v.get("test").and_then(Value::as_str) == Some(latest().as_str())
+            && v["inputs"].as_object().is_some_and(|i| i.values().any(|e| e.get("members").is_some()))
+    });
+    if !has_members {
+        all.push(latest_empty_case());
+    }
     let f = write(&lite, "all.jsonl", &all);
     let r = publish_stored_checked(&*lite.store, &lite.key, HOST, &[HOST.to_string()], &f, &opts(PUBLISH_NOW));
     r.unwrap_or_else(|e| panic!("{e}"));
