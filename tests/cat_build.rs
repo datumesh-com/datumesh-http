@@ -22,8 +22,9 @@
 //! * **Within a level**: the instant the name was first bound (a class: the class name's binding), then the name ascending.
 //! * `exists()` is `true` for each subject, a stored boolean cell; `catalog/facet`'s objects are the (facet, value) pairs of all
 //!   five keys of the entries.
-//! * A subject whose entry loses its facets: `exists()` false and its lookup cells (every label it had) `""`; a facet value no
-//!   entry has: `exists()` false. The run that does it writes new versions only for what changed.
+//! * A subject whose entry loses its facets (R1, R10): every method cell of it is withdrawn, `exists()` included (never `false`),
+//!   with the reason "the subject is no longer in the catalogue", and so is every lookup cell of a label it had (never `""`); a
+//!   facet value no entry has is withdrawn likewise. The run that does it writes new versions only for what changed.
 
 #[path = "common/catjob.rs"]
 mod catjob;
@@ -53,6 +54,24 @@ async fn sources_of(m: &Served, d: &str, t: &str, me: &str, r: &str) -> Vec<Stri
         }
     }
     out
+}
+
+/// The reason a subject that left the catalogue is withdrawn for (R10).
+const GONE: &str = "the subject is no longer in the catalogue";
+
+/// A read of a withdrawn cell (R1): `not_covered`, the withdrawal as `receipt` (`withdrawn` in place of `type` and `value`),
+/// `trust` and `reason`, the receipt's own text, here `reason`.
+fn assert_withdrawn(a: &Ans, reason: &str) {
+    assert_withdrawn_any(a);
+    assert_eq!(a.v["reason"], reason, "{}", a.text);
+}
+
+fn assert_withdrawn_any(a: &Ans) {
+    assert_eq!((a.status, a.outcome()), (404, "not_covered"), "{}", a.text);
+    let w = a.v["receipt"]["withdrawn"].as_str().unwrap_or_else(|| panic!("a withdrawal receipt: {}", a.text));
+    assert!(!w.is_empty() && a.v["reason"] == w, "reason is the receipt's withdrawn: {}", a.text);
+    assert!(a.v["receipt"].get("value").is_none() && a.v["receipt"].get("type").is_none(), "{}", a.text);
+    assert!(a.v["trust"].is_string(), "{}", a.text);
 }
 
 fn ok_value(a: &Ans, what: &str) -> String {
@@ -502,10 +521,11 @@ async fn c5_a_change_writes_new_versions_and_a_second_run_nothing() {
     assert_eq!(truth(&old), Some(false), "{}", old.text);
 }
 
-/// A removed facet: the entry is republished without its facets, so its only subject disappears: `exists()` false, every label
-/// of it withdrawn (its lookup cells hold `""`, so a bracketed label is `E_NAME_UNBOUND`; as of an instant before the run it
-/// still resolves, the history stays), and the vocabulary that depended on it follows (`gb` has no object any more, the
-/// counts of the others are new versions).
+/// A removed facet: the entry is republished without its facets, so its only subject disappears (R1, R10): every method cell of
+/// it is withdrawn, `exists()` included (not `false`), with the reason `GONE`; every label of it is withdrawn (its lookup cells
+/// are withdrawals, not `""`, so a bracketed label is `not_covered` with that reason and no receipt; as of an instant before
+/// the run it still resolves, the history stays), and the vocabulary that depended on it follows (`gb` has no object any more:
+/// its `exists()` is withdrawn, the counts of the others are new versions).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c5_a_removed_facet_sets_exists_false_and_withdraws_the_labels() {
     let lite = vocab("c5-removed");
@@ -517,8 +537,10 @@ async fn c5_a_removed_facet_sets_exists_false_and_withdraws_the_labels() {
     assert!(cells(&run) > 0, "{run:?}");
     let m = serve(lite, &[]).await;
     let (d, t, me, r) = ("finance", "rate", "interest_rate", "gb");
-    let e = cell(&m, &sc(d, t, me, r, "exists()")).await;
-    assert_eq!((e.status, e.outcome(), truth(&e)), (200, "ok", Some(false)), "{}", e.text);
+    for method in ["exists()", "label()", "sources()", "source(1)"] {
+        let a = cell(&m, &sc(d, t, me, r, method)).await;
+        assert_withdrawn(&a, GONE);
+    }
     let labels = [
         "interest rate · rate · united kingdom · finance",
         "interest rate united kingdom",
@@ -527,16 +549,18 @@ async fn c5_a_removed_facet_sets_exists_false_and_withdraws_the_labels() {
     for label in labels {
         let lookup = format!("/cell/{}/from_label?label={}", subject_class(), common::world::qenc(label));
         let a = ask(&m, &lookup).await;
-        assert_eq!((a.outcome(), a.value()), ("ok", Some("")), "{label}: withdrawn, not deleted: {}", a.text);
+        assert_withdrawn(&a, GONE);
         let b = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), None)).await;
-        assert_eq!((b.status, b.error()), (404, Some("E_NAME_UNBOUND")), "{label}: {}", b.text);
+        assert_eq!((b.status, b.outcome(), b.error()), (404, "not_covered", None), "{label}: {}", b.text);
+        assert_eq!(b.v["reason"], GONE, "{label}: the withdrawal's text: {}", b.text);
+        assert!(b.v.get("receipt").is_none(), "{label}: no cell was resolved: {}", b.text);
         // as of before the run, the label was there
         let was = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), Some(T4))).await;
         assert_eq!(was.outcome(), "ok", "{label} as of {T4}: {}", was.text);
     }
     // the vocabulary: gb has no entry now; the counts moved
     let gb = cell(&m, &fc("region", "gb", "exists()")).await;
-    assert_eq!(truth(&gb), Some(false), "{}", gb.text);
+    assert_withdrawn_any(&gb);
     assert_eq!(ok_value(&cell(&m, &fc("domain", "finance", "subjects()")).await, "domain finance"), "4");
     assert_eq!(ok_value(&cell(&m, &fc("measure", "interest_rate", "subjects()")).await, "measure interest_rate"), "2");
     // the other subjects are untouched
