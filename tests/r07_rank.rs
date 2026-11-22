@@ -206,8 +206,8 @@ async fn r5_sec_company_is_above_relay_sec_gov_company_at_level_two() {
     assert_eq!(sources_list(&m, FAM).await, [sec, relay]);
 }
 
-/// A subclass does not leave its level: the parent reads the relay (level 2), the subclass reads nothing (level 3), so the
-/// subclass is below, after the relay and its parent.
+/// A subclass does not leave its level: the parent reads the relay (level 2), the subclass reads nothing (its `rate` is overridden
+/// by a stored function, level 3), so the subclass is below, after the relay and its parent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r5_a_subclass_in_a_lower_level_stays_below_the_parent() {
     let lite = Lite::new("r5-levels");
@@ -216,9 +216,12 @@ async fn r5_a_subclass_in_a_lower_level_stays_below_the_parent() {
     let sub = host_name("fam/sub");
     let rate = format!("{book}/rate");
     let own = format!("{sub}/own");
+    let over = format!("{sub}/rate");
     let facets = fam_facets();
     let mut a = entries_lines(&[(relay.clone(), facets.clone())]);
     a.push(function_line(&own, &sig(&[("n", NUM_ARG), ("k2", NUM_ARG)], &["n", "k2"]), None));
+    // the subclass overrides `rate` with a stored function that reads nothing, so it inherits no read of the relay
+    a.push(function_line(&over, &sig(&[("n", NUM_ARG), ("date", DATE_V)], &["n", "date"]), None));
     publish(&lite, "a.jsonl", &a, BEFORE).unwrap_or_else(|e| panic!("relay: {e}"));
     publish(
         &lite,
@@ -243,7 +246,7 @@ async fn r5_a_subclass_in_a_lower_level_stays_below_the_parent() {
     let sd = common::world::class_json(
         k2_key(),
         &["k2"],
-        &[("own", &fn_hash(&lite, &own))],
+        &[("own", &fn_hash(&lite, &own)), ("rate", &fn_hash(&lite, &over))],
         HOST,
         &format!(r#""parent":"{h}","#),
     );
