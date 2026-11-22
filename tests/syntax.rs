@@ -18,7 +18,7 @@ const A: &str = "mesh-a.example";
 fn enc(call: &str) -> String {
     let mut out = String::new();
     for b in call.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~/:@*".contains(&b) {
+        if b.is_ascii_graphic() && !b"%?#".contains(&b) {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));

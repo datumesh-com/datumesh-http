@@ -42,11 +42,13 @@ pub const GEN_1_1: &str = "בְּרֵאשִׁ֖ית בָּרָ֣א אֱלֹהִ�
 /// Its consonants, as `consonantal` returns them.
 pub const GEN_1_1_CONSONANTAL: &str = "בראשית ברא אלהים את השמים ואת הארץ׃";
 
-/// Percent-encodes a call for a URL path (and a query value).
+/// Percent-encodes a call for a URL path as a client sends it (CONTRACT-round-0.7 R4): `[`, `]`, `(`, `)`, `,`, `:`, `"` and
+/// every other printable ASCII byte go raw, as `curl` and the libraries send them; only what SPEC 5.1 requires is encoded:
+/// a space, `%`, `?`, `#`, and bytes that are not ASCII.
 pub fn call_path(call: &str) -> String {
     let mut out = String::new();
     for b in call.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~/:@*".contains(&b) {
+        if b.is_ascii_graphic() && !b"%?#".contains(&b) {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
