@@ -277,7 +277,11 @@ async fn c3_from_label_reads_the_three_forms_when_unique() {
         let a = ask(&m, &lookup(label)).await;
         assert_eq!(ok_value(&a, label), want, "{label}");
     }
-    // "interest rate euro area" names two subjects (rate and yield things): it is not stored, so it is unbound
+    // "interest rate euro area" names two subjects (rate and yield things): it is not stored, so it is unbound; its lookup cell
+    // was never written, so it is absent (no receipt), and not a withdrawal (R1, R10: a label is withdrawn only after it was stored)
+    let ambiguous = ask(&m, &lookup("interest rate euro area")).await;
+    assert_eq!((ambiguous.status, ambiguous.outcome()), (404, "not_covered"), "{}", ambiguous.text);
+    assert!(ambiguous.v.get("receipt").is_none() && ambiguous.v.get("reason").is_none(), "{}", ambiguous.text);
     for label in ["interest rate euro area", "nothing at all"] {
         let a = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), None)).await;
         assert_eq!(
