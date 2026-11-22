@@ -8,6 +8,16 @@
 //!   body of the `404` (HP1: "404 with the reason ..."), compared in lower case.
 //! * A cell id is not an object id any more: HP2 "the `cells` map goes: an object's id comes from its keys, not
 //!   from a cell id". `GET /describe/<64 or 12 hex of a method cell>` is `404`.
+//! Decisions of the contract's owner (2026-11-22), which these tests follow:
+//!
+//! 1. A class describe still marks the class as heard of, so the next background build includes it; it indexes
+//!    nothing on the request.
+//! 2. A truncated class keeps its first N objects in the paged read order: cell id ascending of the
+//!    `extent.keys` method's cells (of the first method's, for a class without `extent.keys`).
+//! 3. A cell id is not an object id: 404.
+//! 4. The series overview reads 10,000 members per page. (No test for it, nor for the fuel read of HP8: the
+//!    fuel is a constant.)
+//!
 //! * A class is made known to the index by a configured alias to one of its methods (the build hears of those
 //!   classes at its start). What a request that names a class does to the next build is not pinned.
 //! * `DATUMESH_INDEX_CLASS_MAX` and `DATUMESH_INDEX_MAX` count objects; which objects a truncated class keeps is
