@@ -159,7 +159,7 @@ fn name_value(name: &str, fn_hash: &str) -> Value {
 /// The bytes the manifest signs (CONTRACT-1.8b H2): the JCS object of the names (`(name, fn_hash)`,
 /// ascending by name), the namespace and the receipt hashes (ascending).
 pub fn manifest_bytes(namespace: &str, names: &[(String, String)], receipts: &[String]) -> Vec<u8> {
-    manifest_bytes_with(namespace, names, receipts, None, None)
+    manifest_bytes_with(namespace, names, receipts, None, None, None)
 }
 
 /// As [`manifest_bytes`], and the catalogue member when the bundle has one (R5): the manifest signs
@@ -170,12 +170,16 @@ fn manifest_bytes_with(
     receipts: &[String],
     catalog: Option<&Value>,
     tests: Option<&Value>,
+    close: Option<&Value>,
 ) -> Vec<u8> {
     let mut members = vec![
         ("names".into(), Value::Array(names.iter().map(|(n, h)| name_value(n, h)).collect())),
         ("namespace".into(), s(namespace)),
         ("receipts".into(), Value::Array(receipts.iter().map(|h| s(h)).collect())),
     ];
+    if let Some(c) = close {
+        members.push(("close".into(), c.clone()));
+    }
     if let Some(c) = catalog {
         members.push(("catalog".into(), c.clone()));
     }
@@ -228,7 +232,7 @@ pub fn build_with_tests(
     }
     entries.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
     let tests_value = (!entries.is_empty()).then(|| Value::Array(entries.into_iter().map(|(_, _, v)| v).collect()));
-    build_inner(namespace, descriptors, names, receipts, catalog, tests_value, seed)
+    build_inner(namespace, descriptors, names, receipts, catalog, tests_value, Vec::new(), seed)
 }
 
 /// As [`build`], with the publisher's catalogue (CONTRACT-build2-part2-read R5): `catalog` is a list
@@ -244,9 +248,24 @@ pub fn build_with_catalog(
     catalog: Vec<Vec<u8>>,
     seed: &[u8; 32],
 ) -> Result<Vec<u8>, BundleError> {
-    build_inner(namespace, descriptors, names, receipts, catalog, None, seed)
+    build_inner(namespace, descriptors, names, receipts, catalog, None, Vec::new(), seed)
 }
 
+/// As [`build`], with the bundle's closed names (R2, SPEC 9.7): `close` lists full names, sorted into the bundle's
+/// `close` member, which the manifest signs. Each is ended at the importing mesh's clock (`import`); a name that is
+/// not bound there is refused, and nothing is written. An empty list makes a bundle without the member.
+pub fn build_with_close(
+    namespace: &str,
+    descriptors: Vec<Vec<u8>>,
+    names: Vec<(String, String)>,
+    receipts: Vec<Vec<u8>>,
+    close: Vec<String>,
+    seed: &[u8; 32],
+) -> Result<Vec<u8>, BundleError> {
+    build_inner(namespace, descriptors, names, receipts, Vec::new(), None, close, seed)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_inner(
     namespace: &str,
     descriptors: Vec<Vec<u8>>,
@@ -254,8 +273,12 @@ fn build_inner(
     receipts: Vec<Vec<u8>>,
     catalog: Vec<Vec<u8>>,
     tests: Option<Value>,
+    mut close: Vec<String>,
     seed: &[u8; 32],
 ) -> Result<Vec<u8>, BundleError> {
+    close.sort();
+    close.dedup();
+    let close_value = (!close.is_empty()).then(|| Value::Array(close.iter().map(|c| s(c)).collect()));
     let mut catalog_entries: Vec<(String, Value)> = Vec::new();
     for c in catalog {
         let v = json::parse(&c).map_err(|e| BundleError::Format(format!("catalog: {e}")))?;
@@ -275,13 +298,19 @@ fn build_inner(
     }
     signed.sort_by(|a, b| a.0.cmp(&b.0));
     let hashes: Vec<String> = signed.iter().map(|(h, _)| h.clone()).collect();
-    let sig = sign(seed, &manifest_bytes_with(namespace, &names, &hashes, catalog_value.as_ref(), tests.as_ref()));
+    let sig = sign(
+        seed,
+        &manifest_bytes_with(namespace, &names, &hashes, catalog_value.as_ref(), tests.as_ref(), close_value.as_ref()),
+    );
     let key = SigningKey::from_seed(seed);
     let descriptors = descriptors
         .iter()
         .map(|d| json::parse(d).map_err(|e| BundleError::Format(format!("descriptor: {e}"))))
         .collect::<Result<Vec<Value>, _>>()?;
     let mut members = vec![("bundle".into(), number(1))];
+    if let Some(c) = close_value {
+        members.push(("close".into(), c));
+    }
     if let Some(c) = catalog_value {
         members.push(("catalog".into(), c));
     }
@@ -397,7 +426,8 @@ fn import_with<S: Store + ?Sized>(
     keys.sort_unstable();
     let has_catalog = keys.contains(&"catalog");
     let has_tests = keys.contains(&"tests");
-    keys.retain(|k| *k != "catalog" && *k != "tests");
+    let has_close = keys.contains(&"close");
+    keys.retain(|k| *k != "catalog" && *k != "tests" && *k != "close");
     let mut want = MEMBERS;
     want.sort_unstable();
     if keys != want {
@@ -526,9 +556,23 @@ fn import_with<S: Store + ?Sized>(
     if tests_doc.as_ref().is_some_and(|t| !matches!(t, Value::Array(_))) {
         return Err(BundleError::Format("tests is not an array".into()));
     }
+    // The closed names (R2): strings under the namespace, signed with the manifest like the rest.
+    let close_doc = if has_close { doc.get("close").cloned() } else { None };
+    let closes: Vec<String> = match &close_doc {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|c| match c {
+                Value::String(name) if name.starts_with(&format!("{namespace}/")) => Ok(name.clone()),
+                Value::String(name) => Err(BundleError::NotOwned(format!("close: {name} is not under {namespace}/"))),
+                _ => Err(BundleError::Format("close: a name is a string".into())),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(BundleError::Format("close is not an array".into())),
+        None => Vec::new(),
+    };
     if !verify_ed25519(
         &key.public,
-        &manifest_bytes_with(&namespace, &names, &hashes, catalog_doc.as_ref(), tests_doc.as_ref()),
+        &manifest_bytes_with(&namespace, &names, &hashes, catalog_doc.as_ref(), tests_doc.as_ref(), close_doc.as_ref()),
         &sig,
     ) {
         return Err(BundleError::Manifest("the signature does not verify".into()));
@@ -662,6 +706,16 @@ fn import_with<S: Store + ?Sized>(
         new_versions.push((id, tx.to_string(), r.hash().to_string()));
     }
 
+    // A closed name must be bound (R2): checked before anything is written, so a refused bundle writes nothing.
+    for name in &closes {
+        let bound = store.resolve_name(name, END).map_err(|e| BundleError::Store(e.to_string()))?.is_some()
+            || store.resolve_class(name, END).map_err(|e| BundleError::Store(e.to_string()))?.is_some();
+        if !bound {
+            return Err(BundleError::Format(format!(
+                "E_NAME_UNBOUND: close: {name} is not bound, so it cannot be closed"
+            )));
+        }
+    }
     // The publisher's key document, as fetched for this request, is the namespace's record before its
     // receipts are written (the store checks each receipt's signer against it): written after every
     // check has passed, as the bundle's first write.
@@ -697,6 +751,10 @@ fn import_with<S: Store + ?Sized>(
         store.bind_name(name, fh, &now).map_err(|e| BundleError::Bind(format!("{name}: {e}")))?;
         step()?;
     }
+    for name in &closes {
+        store.close_binding(name, &now).map_err(|e| BundleError::Store(format!("close {name}: {e}")))?;
+        step()?;
+    }
     crate::testrun::apply_rows(store, &test_rows, &now).map_err(BundleError::Store)?;
     let rebound: Vec<String> = binds.iter().map(|(n, _)| (*n).clone()).collect();
     crate::testrun::rerun_readers(store, &rebound, &now).map_err(BundleError::Store)?;
@@ -708,8 +766,16 @@ fn import_with<S: Store + ?Sized>(
     // The publisher's catalogue (R5), signed by this bundle's key; then the values of the cells (R3).
     for (d, hash) in &catalog_entries {
         let entry = d.entry(hash.clone(), datumesh_store::CatalogSource::Publisher, Some(key_id.clone()));
-        crate::catalog::store_publisher(store, &entry, &d.dictionary, &d.open_keys, None, &d.facets)
-            .map_err(BundleError::Store)?;
+        crate::catalog::store_publisher(
+            store,
+            &entry,
+            &d.dictionary,
+            &d.open_keys,
+            None,
+            &d.facets,
+            d.source_name.as_deref(),
+        )
+        .map_err(BundleError::Store)?;
     }
     let mut cell_values = BTreeSet::new();
     for (_, r) in &receipts {

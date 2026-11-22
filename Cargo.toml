@@ -26,7 +26,7 @@ path = "src/bin/datumesh-mesh.rs"
 datumesh-core = { version = "0.3.13", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
 datumesh-store = { version = "0.6.0", default-features = false }
-datumesh-engine = "0.5.0"
+datumesh-engine = "0.6.0"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
 datumesh-formula = "0.6.0"
 # The manifest signature of bundle 1 (src/bundle.rs, CONTRACT-1.8b H2): Ed25519 signing by

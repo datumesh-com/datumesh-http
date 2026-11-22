@@ -93,7 +93,9 @@ pub fn parse_test(v: &Value) -> Result<TestSpec, String> {
     let mut inputs = Vec::new();
     if let Some(i) = v.get("inputs") {
         for (call, entry) in i.as_object().ok_or("a test's inputs is an object")? {
-            if entry.get("type").is_some() {
+            if entry.get("withdrawn").is_some() {
+                withdrawn_shape(entry).map_err(|e| format!("input {call}: {e}"))?;
+            } else if entry.get("type").is_some() {
                 typed_scalar(entry).map_err(|e| format!("input {call}: {e}"))?;
             } else {
                 slice_override_shape(entry).map_err(|e| format!("input {call}: {e}"))?;
@@ -129,16 +131,41 @@ pub fn typed_scalar(v: &Value) -> Result<Scalar, String> {
     Scalar::from_lexical(ty, &lexical).map_err(|e| e.to_string())
 }
 
+/// A test input that withdraws a cell (R1): `{"withdrawn": "<reason>"}`, a non-empty string under the string rules, and
+/// nothing else. The cell has no value in the run, and is not a member of a slice.
+fn withdrawn_shape(v: &Value) -> Result<(), String> {
+    let obj = v.as_object().ok_or("a withdrawn input is an object")?;
+    if obj.len() != 1 {
+        return Err("a withdrawn input has the member withdrawn and no other".into());
+    }
+    match v.get("withdrawn") {
+        Some(Value::String(text)) if !text.is_empty() && text.len() <= 1024 && !text.chars().any(char::is_control) => {
+            Ok(())
+        }
+        _ => Err("withdrawn is a non-empty string of at most 1024 bytes without control characters".into()),
+    }
+}
+
 /// The shape of a slice override in a test's `inputs` (CONTRACT-classes-round K1): `{"add"?: {<cell call>: <typed
-/// scalar>, ...}, "remove"?: [<cell call>, ...]}`, at least one member. Whether the cells are members of the slice is
-/// checked by the run.
+/// scalar>, ...}, "remove"?: [<cell call>, ...]}`, at least one member; or `{"members": {<cell call>: <typed scalar>, ...}}`
+/// (R3), which replaces the slice's whole member set and excludes `add` and `remove`. Whether the cells are members of the
+/// slice is checked by the run.
 fn slice_override_shape(v: &Value) -> Result<(), String> {
     let obj = v.as_object().ok_or("an input is a typed scalar or a slice override")?;
     if obj.is_empty() {
         return Err("a slice override has neither add nor remove".into());
     }
+    if obj.iter().any(|(k, _)| k == "members") && obj.len() > 1 {
+        return Err("E_SLICE_MEMBER: members excludes add and remove".into());
+    }
     for (k, x) in obj {
         match (k.as_str(), x) {
+            ("members", Value::Object(cells)) => {
+                for (call, typed) in cells {
+                    typed_scalar(typed).map_err(|e| format!("members {call}: {e}"))?;
+                }
+            }
+            ("members", _) => return Err("E_SLICE_MEMBER: members is an object of cell calls to typed scalars".into()),
             ("add", Value::Object(cells)) => {
                 for (call, typed) in cells {
                     typed_scalar(typed).map_err(|e| format!("add {call}: {e}"))?;
@@ -164,6 +191,9 @@ pub struct SliceOverride {
     pub add: Vec<(Args, Scalar)>,
     /// The cells removed, by their arguments.
     pub remove: Vec<Args>,
+    /// The whole member set, when the override replaces it (R3, `members`): then `add` and `remove` are empty and
+    /// the stored members are not seen.
+    pub members: Option<Vec<(Args, Scalar)>>,
 }
 
 /// The planned writes of a run, as the store will see them: the functions bound, their
@@ -294,6 +324,8 @@ pub struct Run<'a, S: Store + ?Sized> {
     overlay: &'a Overlay,
     asof: String,
     overrides: BTreeMap<String, Scalar>,
+    /// The cells the test's inputs withdraw (R1), by key: they have no value and are no slice's members.
+    withdrawn: BTreeSet<String>,
     slice_overrides: Vec<SliceOverride>,
     used: u64,
     depth: usize,
@@ -314,6 +346,7 @@ impl<'a, S: Store + ?Sized> Run<'a, S> {
             overlay,
             asof: asof.to_string(),
             overrides: BTreeMap::new(),
+            withdrawn: BTreeSet::new(),
             slice_overrides: Vec::new(),
             used: 0,
             depth: 0,
@@ -465,7 +498,19 @@ impl<'a, S: Store + ?Sized> Run<'a, S> {
                 members.insert(p.id.clone(), (p.args.clone(), ver));
             }
         }
+        // A withdrawn input is no member (R1), whatever the store and the file give.
+        members.retain(|_, (args, _)| !self.withdrawn.contains(&Run::<S>::key(&slice.name, args)));
         for o in self.slice_overrides.iter().filter(|o| o.slice == *slice) {
+            if let Some(whole) = &o.members {
+                // R3: the replacement is the whole member set, the stored and the file's members not seen.
+                members.clear();
+                for (args, value) in whole {
+                    let ver =
+                        Version { value: value.clone(), receipt_hash: String::new(), tx: t.clone(), asof: t.clone() };
+                    members.insert(cell_id(&slice.name, &hash, args), (args.clone(), ver));
+                }
+                continue;
+            }
             for args in &o.remove {
                 members.remove(&cell_id(&slice.name, &hash, args));
             }
@@ -492,8 +537,13 @@ impl<S: Store + ?Sized> World for Run<'_, S> {
 
     fn read(&mut self, cell: &CellKey, at: Option<&str>) -> Result<Option<Version>, Stop<RunError>> {
         let t = at.map_or_else(|| self.asof.clone(), str::to_string);
-        if let Some(v) = self.overrides.get(&Run::<S>::key(&cell.name, &cell.args)) {
+        let key = Run::<S>::key(&cell.name, &cell.args);
+        if let Some(v) = self.overrides.get(&key) {
             return Ok(Some(Version { value: v.clone(), receipt_hash: String::new(), tx: t.clone(), asof: t }));
+        }
+        if self.withdrawn.contains(&key) {
+            self.events.insert(format!("absent:{}", cell.name));
+            return Err(Stop::Code(Code::Absent));
         }
         let Some((hash, _)) =
             binding_of(self.store, self.overlay, &cell.name, &t).map_err(|e| Stop::World(RunError(e)))?
@@ -609,7 +659,7 @@ pub fn run_test<S: Store + ?Sized>(store: &S, overlay: &Overlay, now: &str, spec
     let args = plain_args(&target.cell.args);
     let mut run = Run::new(store, overlay, &asof);
     for (call, entry) in &spec.inputs {
-        if entry.get("type").is_none() {
+        if entry.get("type").is_none() && entry.get("withdrawn").is_none() {
             match slice_override(store, overlay, &asof, call, entry) {
                 Ok(o) => run.slice_overrides.push(o),
                 Err(e) => return fail(e),
@@ -620,11 +670,15 @@ pub fn run_test<S: Store + ?Sized>(store: &S, overlay: &Overlay, now: &str, spec
             Ok(t) => t,
             Err(_) => return fail(format!("the input {call} does not resolve")),
         };
+        let key = Run::<S>::key(&format!("{}/{}", t.cell.ns, t.cell.fn_name), &plain_args(&t.cell.args));
+        if entry.get("withdrawn").is_some() {
+            run.withdrawn.insert(key);
+            continue;
+        }
         let v = match typed_scalar(entry) {
             Ok(v) => v,
             Err(e) => return fail(e),
         };
-        let key = Run::<S>::key(&format!("{}/{}", t.cell.ns, t.cell.fn_name), &plain_args(&t.cell.args));
         run.overrides.insert(key, v);
     }
     let b = match run.built(&name, &hash) {
@@ -670,7 +724,7 @@ fn member_args<S: Store + ?Sized>(
         .map_err(|_| format!("the cell {call} does not resolve"))?;
     let args = plain_args(&t.cell.args);
     if format!("{}/{}", t.cell.ns, t.cell.fn_name) != slice.name || !slice.matches(&args) {
-        return Err(format!("the cell {call} is not a member of the slice {}", slice.name));
+        return Err(format!("E_SLICE_MEMBER: the cell {call} is not a member of the slice {}", slice.name));
     }
     Ok(args)
 }
@@ -701,8 +755,18 @@ fn slice_override<S: Store + ?Sized>(
     let slice = SliceKey { name: format!("{}/{}", t.cell.ns, t.cell.fn_name), args: pattern };
     let mut add = Vec::new();
     let mut remove = Vec::new();
+    let mut members = None;
     for (k, x) in entry.as_object().ok_or("a slice override is an object")? {
         match (k.as_str(), x) {
+            ("members", Value::Object(cells)) => {
+                let mut whole = Vec::new();
+                for (cell, typed) in cells {
+                    let args = member_args(&names, asof, &slice, cell)?;
+                    let v = typed_scalar(typed).map_err(|e| format!("members {cell}: {e}"))?;
+                    whole.push((args, v));
+                }
+                members = Some(whole);
+            }
             ("add", Value::Object(cells)) => {
                 for (cell, typed) in cells {
                     let args = member_args(&names, asof, &slice, cell)?;
@@ -719,7 +783,10 @@ fn slice_override<S: Store + ?Sized>(
             _ => return Err(format!("a slice override has no member {k} of that shape")),
         }
     }
-    Ok(SliceOverride { slice, add, remove })
+    if members.is_some() && (!add.is_empty() || !remove.is_empty()) {
+        return Err("E_SLICE_MEMBER: members excludes add and remove".into());
+    }
+    Ok(SliceOverride { slice, add, remove, members })
 }
 
 /// Whether the test's expectation holds for the run; the detail says what came out otherwise.

@@ -646,6 +646,8 @@ enum Op {
     Class { name: String, start: String, hash: String, bytes: Vec<u8>, bind: bool, methods: Vec<(String, String)> },
     /// A cell: its blob, its receipt, and the version when `version`.
     Cell { tx: String, id: String, receipt: Vec<u8>, blob: Option<Vec<u8>>, version: bool },
+    /// A name closed (R2): the store ends its binding (and a class's methods') at `at`.
+    Close { name: String, at: String },
     /// A catalogue line (R5): the entry, and its dictionaries (`publisher`, signed by the run's key).
     Catalog {
         entry: datumesh_store::CatalogEntry,
@@ -653,6 +655,8 @@ enum Op {
         open_keys: Vec<String>,
         extends: Option<String>,
         facets: datumesh_store::Facets,
+        /// The entry's `source_name` (R8), as the line gives it.
+        source_name: Option<String>,
     },
 }
 
@@ -914,6 +918,13 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             let start = bound_of(v, n, self.ctx.now)?;
             let fd = FunctionDescriptor::from_value(&stored_value(sig)).map_err(|e| err(e.to_string()))?;
             self.function(n, name, start, fd.hash(), fd.canonical())?;
+        } else if let Some(name) = v.get("close").and_then(Value::as_str) {
+            if v.as_object().is_some_and(|m| m.len() != 1) {
+                return Err(err(
+                    "a close line takes only close: the name's binding ends at the clock of the write".into()
+                ));
+            }
+            self.close_line(n, name)?;
         } else if v.get("catalog").is_some() {
             self.catalog_line(n, v)?;
         } else if let Some(name) = v.get("formula").and_then(Value::as_str) {
@@ -939,6 +950,28 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         } else {
             return Err(err("neither a function nor a cell".into()));
         }
+        Ok(())
+    }
+
+    /// `{"close": <full name>}` (R2, SPEC 9.7): the name's binding ends at the run's clock, and a class closes its
+    /// methods with it (the store's rule). Refused as `E_NAME_UNBOUND` when the name is not bound, and as
+    /// `E_TIME_ORDER` when the clock is not later than the name's latest binding (a close is not backdated).
+    fn close_line(&mut self, n: usize, name: &str) -> Result<(), PublishError> {
+        let err = |d: String| PublishError::at(n, d);
+        let class = current_class(self.store, &self.sim, name).map_err(err)?.is_some();
+        let bound = class || current_function(self.store, &self.sim, name).map_err(err)?.is_some();
+        if !bound {
+            return Err(err(format!("E_NAME_UNBOUND: {name} is not bound, so it cannot be closed")));
+        }
+        if let Some(tx) = latest_bind(self.store, &self.sim, name, class).map_err(err)? {
+            if self.ctx.now <= tx.as_str() {
+                return Err(err(format!(
+                    "E_TIME_ORDER: the close of {name} at {} is not later than its binding at {tx}",
+                    self.ctx.now
+                )));
+            }
+        }
+        self.ops.push(Op::Close { name: name.to_string(), at: self.ctx.now.to_string() });
         Ok(())
     }
 
@@ -969,6 +1002,7 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             open_keys: d.open_keys,
             extends: d.extends,
             facets: d.facets,
+            source_name: d.source_name,
         });
         Ok(())
     }
@@ -1323,6 +1357,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
     /// instants, the function as of `tx`, the descriptor, the arguments and the value (and its blob).
     fn prepare_cell(&mut self, n: usize, v: &Value) -> Result<Pending, PublishError> {
         let err = |d: String| PublishError::at(n, d);
+        if v.get("withdrawn").is_some() {
+            // R1: a withdrawal is signed like a receipt, and core 0.3.13 has no signer for one yet (CONTRACT-round-0.7 R1).
+            return Err(err("a withdrawal line is not published yet: core has no signer for a withdrawal".into()));
+        }
         let cell_v = v.get("cell").ok_or_else(|| err("a cell without fn".into()))?;
         let name = cell_v.get("fn").and_then(Value::as_str).ok_or_else(|| err("a cell without fn".into()))?;
         let (ns, f) = name.rsplit_once('/').ok_or_else(|| err(format!("{name}: not a function name")))?;
@@ -1384,6 +1422,14 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             }
             None => (Scalar::from_json(&value_v.to_jcs()).map_err(|e| err(e.to_string()))?, None),
         };
+        // A lookup returns an object's key, never the empty string (R1, D116 as amended: no withdrawal by "").
+        if let Scalar::String(text) = &value {
+            if text.is_empty() && lookup_method(self.store, &self.sim, name).map_err(err)? {
+                return Err(err(format!(
+                    "E_KEY_NORMALISATION: {name} is a lookup, and its value is not the empty string"
+                )));
+            }
+        }
         let cell = Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash, args };
         Ok(Pending {
             line: n,
@@ -1439,6 +1485,15 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         self.ops.push(Op::Cell { tx: s.tx, id: s.id, receipt: s.receipt, blob: s.blob, version });
         Ok(())
     }
+}
+
+/// Whether `name` is the lookup method of its class (`<class>/<m>`, D93), as the class `name`'s prefix means now.
+fn lookup_method<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str) -> Result<bool, String> {
+    let Some((class, method)) = name.rsplit_once('/') else { return Ok(false) };
+    let Some(hash) = current_class(store, sim, class)? else { return Ok(false) };
+    let Some(bytes) = store.class(&hash).map_err(|e| e.to_string())? else { return Ok(false) };
+    let cd = ClassDescriptor::from_json(&bytes).map_err(|e| e.to_string())?;
+    Ok(cd.lookup.as_deref() == Some(method))
 }
 
 /// The stored descriptor of a function line's signature.
@@ -1527,9 +1582,20 @@ fn write<S: Store + ?Sized>(
                     }
                 }
             }
-            Op::Catalog { entry, dictionaries, open_keys, extends, facets } => {
-                crate::catalog::store_publisher(store, entry, dictionaries, open_keys, extends.as_deref(), facets)
-                    .map_err(err)?;
+            Op::Close { name, at } => {
+                store.close_binding(name, at).map_err(|e| err(format!("close {name}: {e}")))?;
+            }
+            Op::Catalog { entry, dictionaries, open_keys, extends, facets, source_name } => {
+                crate::catalog::store_publisher(
+                    store,
+                    entry,
+                    dictionaries,
+                    open_keys,
+                    extends.as_deref(),
+                    facets,
+                    source_name.as_deref(),
+                )
+                .map_err(err)?;
             }
             Op::Cell { .. } => {
                 let mut j = i;
@@ -1776,7 +1842,7 @@ fn overlay_of(ops: &[Op]) -> Result<Overlay, PublishError> {
                     }
                 }
             }
-            Op::Catalog { .. } => {}
+            Op::Catalog { .. } | Op::Close { .. } => {}
         }
     }
     Ok(overlay)

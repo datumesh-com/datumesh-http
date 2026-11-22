@@ -1627,8 +1627,17 @@ async fn catalog_page(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, re
         .query()
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("key=")))
         .map(crate::catalog_view::unpercent);
+    let after = uri
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
+        .map(crate::catalog_view::unpercent);
     let inner = mesh.inner.clone();
-    match inner.pool.clone().run(move || crate::catalog_view::respond(&mesh.inner, &rest, key.as_deref())).await {
+    match inner
+        .pool
+        .clone()
+        .run(move || crate::catalog_view::respond_paged(&mesh.inner, &rest, key.as_deref(), after.as_deref()))
+        .await
+    {
         Some(o) => series_response(o),
         None => to_response(envelope::error_reply(ErrorCode::EvalUnavailable)),
     }

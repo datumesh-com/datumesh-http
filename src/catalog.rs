@@ -210,6 +210,7 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
     open_keys: &[String],
     extends: Option<&str>,
     facets: &Facets,
+    source_name: Option<&str>,
 ) -> Result<(), String> {
     // The line is the publisher's whole statement of the entry: its facets are the line's (C2), so a line without
     // facets removes them.
@@ -225,11 +226,13 @@ pub(crate) fn store_publisher<S: datumesh_store::Store + ?Sized>(
             && old.entry.signed_by == entry.signed_by
             && old.extends.as_deref() == extends
             && old.facets == *facets
+            && old.source_name.as_deref() == source_name
     });
     if !same {
         let mut ext = datumesh_store::CatalogEntryExt::new(entry.clone());
         ext.facets = facets.clone();
         ext.extends = extends.map(str::to_string);
+        ext.source_name = source_name.map(str::to_string);
         store.upsert_catalog_ext(std::slice::from_ref(&ext)).map_err(|e| e.to_string())?;
     }
     // The keys the entry names are open from now: no automatic values for them (CONTRACT-0.4.9 H7).

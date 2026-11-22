@@ -161,6 +161,12 @@ impl Inner {
         for item in overrides {
             let Value::Object(_) = item else { return bad(ErrorCode::Schema) };
             if item.get("slice").is_some() {
+                // R3: `members` excludes `add` and `remove`. Its evaluation needs the engine's members override,
+                // which the engine does not take yet: until it does, a members override is refused.
+                if item.get("members").is_some() {
+                    let excluded = item.get("add").is_some() || item.get("remove").is_some();
+                    return bad(if excluded { ErrorCode::SliceMember } else { ErrorCode::Schema });
+                }
                 if let Err(c) = exactly(item, &["slice", "add", "remove"]) {
                     return bad(c);
                 }
