@@ -385,6 +385,7 @@ async fn sec_latest_is_exact_over_the_restated_company() {
 /// remove and add cannot empty an open, growing slice (CONTRACT-classes-round K1, "No clearing"). Fails until the
 /// coordinator decides what the file's tests are.
 #[test]
+#[ignore = "pins a defect that cannot be fixed in this round: by the user's decision of 2026-11-22, `latest` stays out until test inputs can empty an open slice (CONTRACT-classes-round K1, No clearing)"]
 fn latest_publishes_under_the_public_rule() {
     let lite = Lite::new("sv-latest");
     let mut all = stub();
