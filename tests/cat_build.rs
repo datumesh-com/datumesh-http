@@ -550,10 +550,20 @@ async fn c5_the_rule_is_a_page_and_a_cell_with_the_same_words() {
     let m = serve(lite, &[]).await;
     let a = cell(&m, &format!("{}()", rule_fn())).await;
     assert_eq!((a.status, a.outcome()), (200, "ok"), "{}", a.text);
-    let sha = a.value().unwrap_or_else(|| panic!("no value: {}", a.text)).to_string();
-    assert!(sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()), "a blob's value is its SHA-256: {sha}");
+    let lexical = a.value().unwrap_or_else(|| panic!("no value: {}", a.text)).to_string();
+    // SPEC 3: a blob's lexical form is `<sha256>:<length>:<media type>`.
+    let mut parts = lexical.splitn(3, ':');
+    let (sha, len, media) = (parts.next().unwrap(), parts.next(), parts.next());
+    assert!(
+        sha.len() == 64 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "a blob's value starts with its SHA-256 in lowercase hex: {lexical}"
+    );
+    let len: usize = len.and_then(|l| l.parse().ok()).unwrap_or_else(|| panic!("a blob's value has its length: {lexical}"));
+    assert!(media.is_some_and(|m| m.contains('/')), "a blob's value ends with its media type: {lexical}");
     let (status, bytes) = m.raw(&format!("/blob/{sha}")).await;
     assert_eq!(status, 200);
+    assert_eq!(bytes.len(), len, "the length in the value is the content's");
+    assert_eq!(datumesh_core::sha256_hex(&bytes), sha, "the sha part is the SHA-256 of the words the page holds");
     let rule = String::from_utf8(bytes).unwrap();
     let rule_words = words(&rule);
     assert!(rule_words.len() >= 30, "the rule says how the order is made: {rule}");
