@@ -252,7 +252,7 @@ async fn c3_from_label_reads_the_three_forms_when_unique() {
     let lite = vocab("c3-lookup");
     build(&lite, T3);
     let m = serve(lite, &[]).await;
-    let lookup = |label: &str| format!("{}/from_label?label={}", subject_class(), common::world::qenc(label));
+    let lookup = |label: &str| format!("/cell/{}/from_label?label={}", subject_class(), common::world::qenc(label));
     let ea_rate = sk("finance", "rate", "interest_rate", "ea");
     let cases: Vec<(&str, String)> = vec![
         // the folded label()
@@ -521,7 +521,7 @@ async fn c5_a_removed_facet_sets_exists_false_and_withdraws_the_labels() {
         "rate interest rate united kingdom",
     ];
     for label in labels {
-        let lookup = format!("{}/from_label?label={}", subject_class(), common::world::qenc(label));
+        let lookup = format!("/cell/{}/from_label?label={}", subject_class(), common::world::qenc(label));
         let a = ask(&m, &lookup).await;
         assert_eq!((a.outcome(), a.value()), ("ok", Some("")), "{label}: withdrawn, not deleted: {}", a.text);
         let b = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), None)).await;
