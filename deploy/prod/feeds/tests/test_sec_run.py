@@ -362,8 +362,8 @@ def test_the_company_file_has_the_annual_report_cells_and_loaded_and_labels_of_t
     assert len(loaded) == 125 and {CIK_CAT, CIK_GE, CIK_JPM} <= loaded
     labels = {c["cell"]["args"]["label"]["value"]: c["value"]["value"] for c in cells("from_label")}
     enc = lambda cik: f'{names["meta"]["host"]}/sec/company(cik:"{cik}")'
-    for label, cik in (("CATERPILLAR INC", CIK_CAT), ("CAT", CIK_CAT), ("CATERPILLAR", CIK_CAT),
-                       ("JPMORGAN CHASE & CO", CIK_JPM), ("JPM", CIK_JPM), ("JPMORGAN CHASE", CIK_JPM),
-                       ("GENERAL ELECTRIC CO", CIK_GE), ("GE", CIK_GE), ("GENERAL ELECTRIC", CIK_GE)):
+    for label, cik in (("caterpillar inc", CIK_CAT), ("cat", CIK_CAT), ("caterpillar", CIK_CAT),
+                       ("jpmorgan chase & co", CIK_JPM), ("jpm", CIK_JPM), ("jpmorgan chase", CIK_JPM),
+                       ("general electric co", CIK_GE), ("ge", CIK_GE), ("general electric", CIK_GE)):  # folded (K8)
         assert labels[label] == enc(cik), label
     assert all(re.fullmatch(r".*/sec/company\(cik:\"\d{10}\"\)", v) for v in labels.values())

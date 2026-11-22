@@ -121,7 +121,8 @@ def test_catalogue_line(key, names):
     fq = f"{sec['namespace']}/{sec['function']}"
     assert len(cats) == 1
     c = cats[0]
-    assert set(c) == {"catalog", "kind", "label", "description", "args", "examples", "dictionary"}
+    assert set(c) == {"catalog", "kind", "label", "description", "args", "examples", "dictionary", "facets", "source_name"}, (
+        "R6: the facets and the source name are in the feed's own catalogue line (test_feed_facets.py pins their values)")
     assert c["catalog"] == fq and c["kind"] == "function"
     assert c["label"] and len(c["label"].encode()) <= 120
     assert 0 < len(c["description"].encode()) <= 1024

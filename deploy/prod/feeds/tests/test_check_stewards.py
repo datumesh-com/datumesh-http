@@ -217,16 +217,17 @@ def test_sec_py_spells_the_production_address_for_the_production_host_and_keeps_
         assert classes and all(l["descriptor"]["steward"]["process"] == want for l in classes), (host, classes)
 
 
-def test_sec_class_py_spells_the_production_address_for_the_production_host():
-    import sec_class
-    h = lambda n: __import__("hashlib").sha256(n.encode()).hexdigest()
+def test_the_one_step_class_line_spells_the_production_address_for_the_production_host():
+    """R13: sec.py writes the class line itself (no describe round trip), with K12's address."""
+    import sec
+    table = dict(sec.sec_table(REHEARSAL)["sec"])
     for host, want in [(PRODUCTION, PROD_PROCESS), (REHEARSAL, f"https://{REHEARSAL}/classes/change")]:
-        sec_class._hash = lambda mesh, name, key: h(name + key)
-        cls = sec_class.build(host, "http://unused")[0]
+        t = dict(table, namespace=f"{host}/relay/sec.gov")
+        cls = sec.company_class_line(t, "0" * 64)
         assert cls["descriptor"]["steward"]["process"] == want, host
 
 
-@pytest.mark.parametrize("source", ["sec.py", "sec_class.py"])
+@pytest.mark.parametrize("source", ["sec.py"])
 def test_the_rehearsal_addresses_are_noted_as_not_real_pages(source):
     text = (FEEDS / source).read_text(encoding="utf-8").lower()
     assert "not a real page" in text or "not real pages" in text, f"{source} does not say that the rehearsal addresses are not real pages"

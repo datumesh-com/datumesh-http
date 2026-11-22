@@ -296,3 +296,52 @@ def key_encoding(names, cik10):
 
 def is_nfc(s):
     return unicodedata.is_normalized("NFC", s)
+
+
+# ---------- the one-step company file (CONTRACT-round-0.7 R13) ----------
+
+EXTRA = [Co(1000060, "Zebra Corp", ["ZEB"]), Co(1000061, "ZEBRA Inc", ["ZEBX"])]
+# "Zebra" (Zebra Corp) and "ZEBRA" (ZEBRA Inc) are distinct short names, and fold to the same label: both are dropped
+LABEL_WORLD = WORLD + EXTRA
+
+
+def fold(s):
+    """K8: Unicode default case folding, then NFC; each run of white space one U+0020; no leading or trailing space."""
+    return " ".join(unicodedata.normalize("NFC", s.casefold()).split())
+
+
+_ONE = {}
+
+
+def one_step_lines(host="mesh-test.datumesh.com"):
+    """The lines of the company file of one run over WORLD (cached), or [] when the run fails."""
+    if host not in _ONE:
+        import tempfile
+        from pathlib import Path
+        names = sec.names(host)
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                _, _, _, o = run_world(names, Path(d))
+                p = company_file(o)
+                _ONE[host] = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+            except Exception:
+                _ONE[host] = []
+    return _ONE[host]
+
+
+def inline_formulas(host="mesh-test.datumesh.com"):
+    """name -> {"formula", "signature", "source"} of the formula methods of the one-step class line, the sources with each
+    `this.m(` written back as the full read it stands for (`this.fact` is the relay's fact; the others are sec/company's),
+    so a test written over full names reads either layout. {} while the class line has none."""
+    cls = [l for l in one_step_lines(host) if "class" in l]
+    out = {}
+    for m, v in (cls[0]["descriptor"]["methods"].items() if cls else ()):
+        if isinstance(v, dict) and "formula" in v:
+            def back(x):
+                n = x.group(1)
+                target = f"{host}/relay/sec.gov/company/fact" if n == "fact" else f"{host}/sec/company/{n}"
+                return f"{target}(cik: cik, "
+            src = re.sub(r"this\.(\w+)\(", back, v["formula"])
+            name = f"{host}/sec/company/{m}"
+            out[name] = {"formula": name, "signature": v["signature"], "source": src}
+    return out

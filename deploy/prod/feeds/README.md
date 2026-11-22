@@ -9,7 +9,7 @@ Status: all scripts are written and the tests pass. Nothing has been fetched fro
 ## Run the tests
 
 ```
-docker run --rm -v "$PWD/deploy/prod/feeds:/feeds" -w /feeds python:3.13-slim \
+docker run --rm -v "$PWD/deploy:/deploy" -w /deploy/prod/feeds python:3.13-slim \
   sh -c "pip install -q pytest numpy==2.1.3 tifffile==2024.8.30 imagecodecs==2024.12.30 && python -B -m pytest -q -p no:cacheprovider tests"
 ```
 

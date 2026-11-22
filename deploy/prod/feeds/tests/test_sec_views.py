@@ -30,7 +30,12 @@ def stub():
 
 
 def formulas():
-    return {l["formula"]: l for l in lines() if "formula" in l}
+    """The formulas the views define: the file's own (ratio/*, calendar/*) and the 22 inline methods of the class line sec.py
+    writes (R13; the bodies' `this.m(` read back as the full read they stand for, see sec_class_helpers.inline_formulas)."""
+    from sec_class_helpers import inline_formulas
+    out = {l["formula"]: l for l in lines() if "formula" in l}
+    out.update(inline_formulas())
+    return out
 
 
 def catalogs():
@@ -247,6 +252,8 @@ def test_sec_latest_is_exact_on_the_restated_company():
         if m and m[1] == "sec/company/reported" and m[2] == "0000000777":
             got[(m[1], m[3], int(m[4]), m[5])] = l["expect"]["value"]
             assert l["inputs"], "the synthetic company's cells come through inputs"
+        if m and m[1] == "sec/company/latest" and any(isinstance(v, dict) and "members" in v for v in l.get("inputs", {}).values()):
+            continue  # R3: the empty case with the filed slice replaced (test_latest_has_the_empty_case...)
         if m and m[1] == "sec/company/latest":
             assert "asof" not in l, "a latest test holds at the mesh's own time"
             assert m[2] != "0000000777", "the synthetic company is not in the views file's tests"
@@ -403,14 +410,19 @@ def is_override_line(l):
     return o.get("formula") == OVERRIDE or o.get("test") == OVERRIDE or o.get("catalog") == OVERRIDE
 
 
-def test_the_22_methods_and_the_override_are_formulas_under_sec_company_and_nothing_else_moved():
+def test_the_22_methods_are_inline_in_the_class_line_and_the_file_defines_only_ratio_and_calendar():
+    """R13 and K5: the 22 methods are formula methods of the class line (not formula lines of this file), and there is no `fact`
+    override: the class inherits the relay's."""
     f = formulas()
     assert len(METHODS_22) == 22 and len(set(METHODS_22)) == 22
     for m in METHODS_22:
         assert COMPANY + m in f, m
-    assert OVERRIDE in f
-    assert sorted(f) == sorted([COMPANY + m for m in METHODS_22] + [OVERRIDE] + [HOST + "/ratio/" + n for n in K5_GENERIC]
+    assert OVERRIDE not in f
+    assert sorted(f) == sorted([COMPANY + m for m in METHODS_22] + [HOST + "/ratio/" + n for n in K5_GENERIC]
                                + [HOST + "/calendar/" + n for n in CALENDAR])
+    assert sorted(l["formula"] for l in lines() if "formula" in l) == sorted(
+        [HOST + "/ratio/" + n for n in K5_GENERIC] + [HOST + "/calendar/" + n for n in CALENDAR])
+    assert not [l for l in lines() if OVERRIDE in (l.get("formula"), l.get("catalog"), l.get("test"))]
 
 
 def test_no_old_name_appears_anywhere():
@@ -424,8 +436,10 @@ def test_no_old_name_appears_anywhere():
 def test_the_old_lines_with_the_renames_are_the_new_lines_apart_from_the_override_and_the_catalogue_prose():
     """Signatures, bodies and tests are the old ones, only the names renamed (C4); the catalogue entries keep their names,
     args and example calls (their prose is the implementer's to adjust for the new names)."""
-    want = [json.loads(renamed(l)) for l in old_lines()]
+    is_formula = lambda o: o.get("formula", "").startswith(COMPANY)   # now inline in the class line (R13)
+    want = [o for o in (json.loads(renamed(l)) for l in old_lines()) if not is_formula(o)]
     got = [json.loads(l) for l in new_lines() if not is_override_line(l)]
+    got = [o for o in got if not any(isinstance(v, dict) and "members" in v for v in o.get("inputs", {}).values())]  # R3's cases
     # The tests of fact_in, reported and latest were then rewritten to hold on a mesh with the real relay (the synthetic
     # company's cells through `inputs` or real ones; no asof; the empty:filed case needs an asof and is not a test of the
     # file): those lines are compared as sets of what changed, everything else line for line.
@@ -469,45 +483,23 @@ def test_ratio_and_calendar_lines_are_unchanged():
     assert [l for l in new_lines() if keep(l)], "the file has them"
 
 
-# ---------- C4: the override sec/company/fact ----------
+# ---------- K5, R13: no override of fact ----------
 
-def relay_fact_descriptor(names):
-    import sec
-    from sec_helpers import CIK_CAT, item
-    lines, _ = sec.emit([item(names, CIK_CAT)], {}, names)
-    (d,) = [l["descriptor"] for l in lines if "descriptor" in l and "class" not in l and l["descriptor"]["signature"]["order"][0] == "cik"]
-    return d
+def test_there_is_no_fact_override_anywhere_in_the_views():
+    assert OVERRIDE not in formulas() and OVERRIDE not in catalogs() and OVERRIDE not in grouped_tests()
 
 
-def test_the_override_signature_is_byte_equal_to_the_relay_fact_descriptors(names):
-    ds = relay_fact_descriptor(names)["signature"]
-    assert canonical(formulas()[OVERRIDE]["signature"]) == canonical(ds), "args, declarations, order and returns"
-    assert formulas()[OVERRIDE]["signature"]["order"] == ["cik", "concept", "unit", "accession", "period_start", "period_end"]
+# ---------- R3: the empty case of `latest` ----------
 
-
-def test_the_override_body_is_the_plain_read_of_the_relay_method():
-    src = formulas()[OVERRIDE]["source"]
-    assert src.strip() == (RELAY + "company/fact(cik: cik, concept: concept, unit: unit, accession: accession, "
-                           "period_start: period_start, period_end: period_end)")
-
-
-def test_the_override_has_a_present_case_from_a_fact_in_test_and_an_absent_case():
-    tests = grouped_tests()[OVERRIDE]
-    assert len(tests) == 2
-    absent = [t for t in tests if t["expect"].get("fault") == "E_FORMULA_ABSENT"]
-    present = [t for t in tests if "fault" not in t["expect"]]
-    assert len(absent) == 1 and len(present) == 1
-    arg = lambda call, a: re.search(r"\b" + a + r': ("[^"]*"|[^,)]*)', call).group(1)
-    call = present[0]["call"]
-    assert call.startswith(OVERRIDE + "(")
-    key = ("cik", "concept", "unit", "accession", "period_end")
-    fact_in = [t for t in grouped_tests()[COMPANY + "fact_in"] if "fault" not in t["expect"]
-               and tuple(arg(t["call"], k) for k in key) == tuple(arg(call, k) for k in key)]
-    assert fact_in, "the case is taken from a fact_in test's cell: same cik, concept, unit, accession and period end"
-    assert any(t["expect"] == present[0]["expect"] for t in fact_in)
-    assert present[0]["expect"]["type"] == "number"
-
-
-def test_the_override_has_a_catalogue_entry_like_every_function():
-    c = catalogs()[OVERRIDE]
-    assert c["kind"] == "function" and set(c["args"]) == set(formulas()[OVERRIDE]["signature"]["args"])
+def test_latest_has_the_empty_case_with_a_slice_replaced_by_no_members():
+    """R3: a test's `inputs` may replace a slice's whole member set, which may be empty: the empty case of
+    relay/sec.gov/filing/filed(accession: *) is now a test of the file."""
+    key = FILING + "filed(accession: *)"
+    cases = [t for t in grouped_tests()[COMPANY + "latest"] if key in t.get("inputs", {})]
+    assert cases, "a latest test replaces the filed slice"
+    for t in cases:
+        assert t["inputs"][key] == {"members": {}}, t
+        assert t["expect"] == {"fault": "E_FORMULA_EMPTY"}, "an empty slice gives empty:"
+        assert "asof" not in t, "it holds at the mesh's own time"
+        assert re.match(re.escape(COMPANY) + r'latest\(cik: "\d{10}", concept: "us-gaap:\w+", unit: "USD", fiscal_year: \d+, period_kind: "(instant|annual)"\)$', t["call"])
+        assert "0000000777" not in t["call"], "the synthetic company is not in the file's tests"
