@@ -77,7 +77,7 @@ fn the_stub_relay_publishes_under_the_public_rule_and_a_second_run_changes_nothi
     // relay/sec.gov/company (its method fact) and the filing class (its six methods); the methods are descriptor lines
     assert_eq!(p.functions, 3, "annual_report, loaded and from_label of sec/company: {p:?}");
     assert_eq!(p.classes, 2, "the company class and the filing class: {p:?}");
-    assert_eq!(p.cells as usize, count(&ls, "cell"), "{p:?}");
+    assert_eq!(p.cells, count(&ls, "cell"), "{p:?}");
     assert!(p.cells > 800, "{p:?}");
     let again = publish(&lite, &ls).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!((again.functions, again.classes, again.versions), (0, 0, 0), "{again:?}");
@@ -90,7 +90,7 @@ fn every_kind_of_unit_publishes_through_the_one_function() {
     let p = publish(&lite, &ls).unwrap_or_else(|e| panic!("{e}"));
     // 98100ab: no function lines; the methods are descriptor lines bound by their classes (company: fact; filing: six)
     assert_eq!((p.functions, p.classes), (0, 2), "the company class and the filing class: {p:?}");
-    assert_eq!(p.cells as usize, count(&ls, "cell"), "{p:?}");
+    assert_eq!(p.cells, count(&ls, "cell"), "{p:?}");
     let fns: Vec<String> = ls.iter().filter_map(|l| json_of(l).get("function").map(|f| f.as_str().unwrap().to_string())).collect();
     assert!(fns.is_empty(), "every method is a descriptor line, and sec/annual_report is in the sec/company file: {fns:?}");
     assert!(lite.bound_tx(&fact()).is_some(), "company/fact unbound");

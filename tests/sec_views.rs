@@ -239,7 +239,7 @@ async fn the_views_publish_with_the_public_rule_and_every_test_passes() {
     expect_value(&node, &filing("cik", jpm_fy2019), jpm).await;
     let a = answer(&node, &format!("{}(cik: \"{jpm}\", fiscal_year: 2019)", s("annual_report"))).await;
     assert_eq!((a["trust"].as_str(), a["receipt"]["licence"].as_str()), (Some("primary"), Some(SEC_LICENCE)), "{a}");
-    assert!(a["receipt"].get("source").map_or(true, Value::is_null), "no source: {a}");
+    assert!(a["receipt"].get("source").is_none_or(Value::is_null), "no source: {a}");
     // a bank has no inventory: no value, and its fault is a fault of the cell
     expect_not_covered(&node, &format!("{}(cik: \"{jpm}\", fiscal_year: 2023)", s("inventory")), None).await;
     // the first fiscal year in scope has no opening balance
@@ -341,7 +341,7 @@ async fn sec_latest_is_exact_over_the_restated_company() {
         let f = answer(&node, &format!("{HOST}/relay/sec.gov/filing/filed(accession: \"{accn}\")")).await;
         let filed = f["receipt"]["value"].as_str().unwrap().to_string();
         let cand = (filed, accn.to_string(), value_of(&v));
-        if best.as_ref().map_or(true, |b| (&cand.0, &cand.1) > (&b.0, &b.1)) {
+        if best.as_ref().is_none_or(|b| (&cand.0, &cand.1) > (&b.0, &b.1)) {
             best = Some(cand);
         }
     }
