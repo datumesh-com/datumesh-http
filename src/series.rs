@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{lexical, FunctionDescriptor, Receipt, Slice};
-use datumesh_store::{Hit, SliceValue, Store};
+use datumesh_store::{SliceValue, Store};
 
 use crate::config::ConfigError;
 use crate::fnpage::{esc, relay_of, Relay};
@@ -328,11 +328,11 @@ fn slice_of(b: &Bound, page: &SeriesPage, span: &Span) -> Option<Slice> {
     Slice::from_value(&cell).ok()
 }
 
-/// The members of a series in a span, as of now (stored versions only).
-fn members(inner: &Inner, b: &Bound, page: &SeriesPage, span: Span) -> Option<Vec<SliceValue>> {
+/// At most `limit` members of a series in a span, as of now (stored versions only): the store stops there.
+fn members(inner: &Inner, b: &Bound, page: &SeriesPage, span: Span, limit: usize) -> Option<Vec<SliceValue>> {
     let slice = slice_of(b, page, &span)?;
     let store: &dyn Store = &*inner.store;
-    store.slice_values(&slice, &inner.now()).ok()
+    store.slice_values_limit(&slice, &inner.now(), limit).ok()
 }
 
 fn key_of(m: &SliceValue, arg: &str) -> Option<String> {
@@ -354,9 +354,29 @@ pub(crate) struct Period {
 }
 
 fn build_overview(inner: &Inner, b: &Bound, page: &SeriesPage) -> Option<Overview> {
-    let members = members(inner, b, page, Span::All)?;
+    // The members are folded in pages of SERIES_PAGE by cell id, never held whole (CONTRACT-round-0.7-P HP7).
+    let slice = slice_of(b, page, &Span::All)?;
+    let store: &dyn Store = &*inner.store;
+    let now = inner.now();
     let mut ov = Overview::default();
-    for m in &members {
+    let mut after: Option<String> = None;
+    loop {
+        let chunk = store.slice_values_page(&slice, &now, after.as_deref(), SERIES_PAGE).ok()?;
+        let n = chunk.len();
+        after = chunk.last().map(|m| m.version.cell_id.clone());
+        fold_members(&mut ov, &chunk, page);
+        if n < SERIES_PAGE {
+            return Some(ov);
+        }
+    }
+}
+
+/// The members of a page of an overview's fold (see [`build_overview`]).
+const SERIES_PAGE: usize = 10_000;
+
+/// Folds members into an overview: their periods, first and latest instants, and the column values.
+fn fold_members(ov: &mut Overview, members: &[SliceValue], page: &SeriesPage) {
+    for m in members {
         let Some(date) = key_of(m, &page.date_arg) else { continue };
         let Some(period) = period_of(page.granularity, &date) else { continue };
         let tx = m.version.tx.clone();
@@ -381,7 +401,6 @@ fn build_overview(inner: &Inner, b: &Bound, page: &SeriesPage) -> Option<Overvie
             }
         }
     }
-    Some(ov)
 }
 
 /// The values of a dictionary in their order, each with its value id.
@@ -468,27 +487,13 @@ fn dictionary_order(inner: &Inner, owner: &str, key: &str) -> Dictionary {
 
 /// The dictionary order of `owner`'s `key` now: the store's catalogue and value ids (the overview thread's read).
 fn dictionary_order_now(store: &dyn Store, owner: &str, key: &str) -> Dictionary {
-    let mut out = Vec::new();
-    if let Ok(sum) = store.catalog_summary() {
-        let values: Vec<String> = sum
-            .dictionaries
-            .iter()
-            .filter(|d| d.owner == owner && d.key == key)
-            .flat_map(|d| d.values.iter().map(|v| v.value.clone()))
-            .collect();
-        for v in values {
-            let id = store.text_find(&v, 1000).ok().and_then(|hits| {
-                hits.into_iter().find_map(|h| match h {
-                    Hit::Value { id, owner: o, key: k, value, .. } if o == owner && k == key && value == v => Some(id),
-                    _ => None,
-                })
-            });
-            out.push((v, id.unwrap_or(i64::MAX)));
-        }
-        out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    }
-    Arc::new(out)
+    // The values in insertion order, one read of the dictionary (CONTRACT-round-0.7-P HP7): the position is the order.
+    let values = store.dictionary_values_ordered(owner, key, DICTIONARY_VALUES).unwrap_or_default();
+    Arc::new(values.into_iter().enumerate().map(|(i, v)| (v, i as i64)).collect())
 }
+
+/// The most values of a dictionary the overview reads.
+const DICTIONARY_VALUES: usize = 100_000;
 
 /// The columns of a keyed series: the dictionary's values in dictionary order, then any value the cells
 /// have that the dictionary does not list (sorted).
@@ -935,7 +940,11 @@ fn period_page(
     inm: Option<&str>,
 ) -> Out {
     let (lo, _) = days;
-    let Some(members) = members(inner, b, page, Span::Days(days.0, days.1)) else { return not_found() };
+    // At most `slice_max` members, read as `/slice` reads them: `slice_max + 1` to know it is cut
+    // (CONTRACT-round-0.7-P HP8).
+    let cap = inner.config.slice_max;
+    let Some(mut members) = members(inner, b, page, Span::Days(days.0, days.1), cap + 1) else { return not_found() };
+    members.truncate(cap);
     if members.is_empty() {
         return not_found();
     }

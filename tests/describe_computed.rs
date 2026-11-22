@@ -76,6 +76,12 @@ async fn an_object_is_known_through_its_stored_method() {
     let a = Node::start(A, |c| c.budget = std::time::Duration::from_secs(30)).await;
     let (class, hash) = pair_world(&a).await;
     assert_eq!(a.get(&describe_path(&class)).await.status, 200);
+    // HP1 to HP3 (CONTRACT-round-0.7-P): the describe indexes nothing, so the mesh is told of the stored version
+    for quote in ["USD", "GBP"] {
+        let id =
+            a.cell_id(&format!("{class}/rate"), &args(&[("base", s("EUR")), ("date", d(DAY)), ("quote", s(quote))]));
+        bl(|| a.mesh.stored_version_added(&id));
+    }
     let known = short_id(&class, &hash, "EUR", "GBP");
     let r = a.get(&describe_path(&known)).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -104,10 +110,12 @@ async fn a_computed_only_object_is_known_after_a_computation() {
     assert!(doc.get("object").is_some(), "{}", r.text());
 }
 
-/// 3. After a restart (a new `Mesh` over the same store, the class heard of again through describe
-///    of the class name) the short id still resolves, from the computed version in the store.
+/// 3. After a restart (a new `Mesh` over the same store, the class heard of again through describe of the class
+///    name) a computed-only object is no longer known by id: the index does not read `computed_cells`
+///    (CONTRACT-round-0.7-P HP2), and a class without `extent.keys` is indexed from its first method's stored
+///    cells. It still describes by its key encoding, and is known again once it is computed again (test 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_computed_object_survives_a_restart() {
+async fn a_computed_object_is_not_known_by_id_after_a_restart() {
     let a = Node::start(A, |c| c.budget = std::time::Duration::from_secs(30)).await;
     let (class, hash, _) = only_world(&a).await;
     let short = short_id(&class, &hash, "EUR", "GBP");
@@ -121,6 +129,9 @@ async fn a_computed_object_survives_a_restart() {
     let r = bl(|| restarted.describe(&class));
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     let r = bl(|| restarted.describe(&short));
+    assert!(matches!(r.status, 404 | 503), "{} {}", r.status, String::from_utf8_lossy(&r.body));
+    let enc = format!(r#"{class}(base:"EUR",quote:"GBP")"#);
+    let r = bl(|| restarted.describe(&enc));
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
 }
 

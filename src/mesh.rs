@@ -179,7 +179,7 @@ impl MeshBuilder {
             relays: Mutex::new(HashMap::new()),
             takeover: Mutex::new(None),
             find: Mutex::new(None),
-            value_counts_at: Mutex::new(None),
+            value_counts_at: Mutex::new(Some(Instant::now())),
             unnamed: Mutex::new(HashSet::new()),
             series: Mutex::new(crate::series::Memo::default()),
             catalog: Mutex::new(None),
@@ -214,8 +214,8 @@ impl MeshBuilder {
             let inner = mesh.inner.clone();
             let _ = s.spawn(move || crate::find::sync_operator_catalog(&inner)).join();
         });
-        // The object index (describe of an object id, CONTRACT-0.4.9 H3): on a thread of its own, after its first
-        // delay, then when it is due (dirty, or older than 30 s). Requests read the last build.
+        // The object index (describe of an object id, CONTRACT-round-0.7-P HP2, HP3): on a thread of its own, after
+        // its first delay, then every DATUMESH_INDEX_SECS. Requests read the last build.
         let weak = Arc::downgrade(&mesh.inner);
         let delay = mesh.inner.config.index_first_build_delay;
         if delay.is_zero() {
@@ -911,7 +911,6 @@ impl Inner {
         self.engine.stored_version_added(cell_id);
         self.latest.forget(cell_id);
         self.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
-        self.known.lock().unwrap_or_else(|p| p.into_inner()).announce(cell_id);
         self.index_stored_now(cell_id);
     }
 
@@ -1103,7 +1102,6 @@ impl Inner {
             }
             // A formula cell answered: the describe index learns of it (CONTRACT-1.8b H4).
             if !stored && matches!(r, Ok(Answer::Receipt(_))) {
-                self.known.lock().unwrap_or_else(|p| p.into_inner()).note_computed(&target.cell);
                 self.index_cell_now(&target.cell);
             }
             return match r {

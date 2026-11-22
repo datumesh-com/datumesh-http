@@ -258,8 +258,14 @@ impl<'a> Run<'a> {
         ]);
         let core = Slice::from_value(&sv).map_err(store_err)?;
         let t = self.asof.clone();
+        // At most the fuel left plus one is read: more members than that is the budget (CONTRACT-round-0.7-P HP8).
+        let remaining = FUEL.saturating_sub(self.used) as usize;
+        let values = self.store.slice_values_limit(&core, &t, remaining.saturating_add(1)).map_err(store_err)?;
+        if values.len() > remaining {
+            return Err(CalcError::Budget);
+        }
         let mut out = Vec::new();
-        for sv in self.store.slice_values(&core, &t).map_err(store_err)? {
+        for sv in values {
             self.tick().map_err(|_| CalcError::Budget)?;
             let args = testrun::plain_args(&sv.cell.args);
             let receipt = sv.version.receipt_hash.clone();

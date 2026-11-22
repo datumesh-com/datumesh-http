@@ -64,19 +64,33 @@ fn add_words(g: &mut HashSet<String>, text: &str) {
     }
 }
 
-/// The generic words: the fixed list, and every word of every catalogue name, label and description.
+/// The most catalogue entries the generic words are read from (CONTRACT-round-0.7-P HP6: one bounded read, on the
+/// find thread's cycle).
+const GENERIC_ENTRIES: usize = 100_000;
+
+/// The generic words: the fixed list, and every word of every catalogue name, label and description. One read of
+/// the entries (`catalog_entries_all`), not one lookup per entry.
 pub(crate) fn generic_words(store: &dyn Store) -> HashSet<String> {
     let mut g = stopwords();
-    if let Ok(s) = store.catalog_summary() {
-        for e in &s.entries {
-            add_words(&mut g, &e.name);
-            add_words(&mut g, &e.label);
-            if let Some(full) = entry_by_name(store, &e.name) {
-                add_words(&mut g, &full.description);
-            }
+    if let Ok(entries) = store.catalog_entries_all(GENERIC_ENTRIES) {
+        for (_, name, label, description) in &entries {
+            add_words(&mut g, name);
+            add_words(&mut g, label);
+            add_words(&mut g, description);
         }
     }
     g
+}
+
+/// Words of a query that are read: the first of them (CONTRACT-round-0.7-P HP6).
+const QUERY_WORDS: usize = 8;
+
+/// Most words a span of the query has (CONTRACT-round-0.7-P HP6).
+const SPAN_WORDS: usize = 4;
+
+/// The query cut to its first [`QUERY_WORDS`] words.
+fn first_words(qn: &str) -> String {
+    qn.split_whitespace().take(QUERY_WORDS).collect::<Vec<_>>().join(" ")
 }
 
 /// Whether the store has the dictionary value `value` of `key` of `owner` (exact, CONTRACT-0.4.9 H7).
@@ -225,7 +239,8 @@ fn is_range(q: &str) -> bool {
 
 /// The spans `(start, end)` of `n` tokens, longest first, then by start.
 fn spans(n: usize) -> Vec<(usize, usize)> {
-    let mut v: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..=n).map(move |j| (i, j))).collect();
+    let mut v: Vec<(usize, usize)> =
+        (0..n).flat_map(|i| (i + 1..=n.min(i + SPAN_WORDS)).map(move |j| (i, j))).collect();
     v.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)).then(a.0.cmp(&b.0)));
     v
 }
@@ -803,6 +818,7 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     let ctx = ctx_of(inner);
     let mut lk = Lookup::default();
     let qn = nfc(query.trim());
+    let qn = first_words(&qn);
     if qn.is_empty() {
         // The empty query is answered from the find thread's build (see `empty_answer`); this is never reached
         // from the handler, which routes it there.
@@ -1070,7 +1086,7 @@ fn summary_value(inner: &Inner, ctx: &Ctx<'_>) -> Value {
 /// The stored cells of the function `name` (hash `hash`), counted by name (one indexed count, S6).
 fn cells_of_name(store: &dyn Store, name: &str, hash: &str) -> Option<u64> {
     let (ns, f) = name.rsplit_once('/')?;
-    store.stored_cell_count(ns, f, hash).ok()
+    store.cell_count(ns, f, hash).ok()
 }
 
 /// Index maintenance (R3): the generic words, the value counts, and the embeddings of the entries
@@ -1081,7 +1097,8 @@ const INDEX_BATCH: usize = 16;
 pub(crate) fn reindex(inner: &Inner) {
     let Ok(_guard) = inner.reindex.lock() else { return };
     let store: &dyn Store = &*inner.store;
-    // The value counts once at start, then at most once per `DATUMESH_VALUE_COUNTS_SECS` (CONTRACT-0.4.9 H4).
+    // The value counts first `DATUMESH_VALUE_COUNTS_SECS` after start, then at most once per that interval
+    // (CONTRACT-0.4.9 H4; CONTRACT-round-0.7-P HP6: not in the first build).
     let due = {
         let mut at = inner.value_counts_at.lock().unwrap_or_else(|p| p.into_inner());
         let due = at.is_none_or(|t| t.elapsed() >= inner.config.value_counts_refresh);

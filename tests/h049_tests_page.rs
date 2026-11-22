@@ -283,10 +283,13 @@ async fn a_background_thread_names_the_old_tests() {
     loop {
         let a = page_json(&m, &fn_path(A)).await["tests"]["count"].as_u64();
         let b = page_json(&m, &fn_path(B)).await["tests"]["count"].as_u64();
-        if (a, b) == (Some(2), Some(3)) {
+        // the counts reach their values through the transitional unnamed-row path before the naming thread has
+        // named every row: wait for the rows too
+        let unnamed = m.lite.store.unnamed_function_tests(100).unwrap().len();
+        if (a, b) == (Some(2), Some(3)) && unnamed == 0 {
             break;
         }
-        assert!(Instant::now() < end, "the old tests were not named in 40 s: A {a:?}, B {b:?}");
+        assert!(Instant::now() < end, "the old tests were not named in 40 s: A {a:?}, B {b:?}, {unnamed} unnamed");
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(m.lite.store.unnamed_function_tests(100).unwrap().is_empty(), "every row is named");

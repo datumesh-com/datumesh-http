@@ -26,6 +26,8 @@ pub(crate) struct Metrics {
     catalog_builds: Mutex<BTreeMap<&'static str, u64>>,
     /// The open dictionary keys the find thread last counted (CONTRACT-0.4.9 H7).
     open_keys: std::sync::atomic::AtomicU64,
+    /// The classes the object index cut at a cap, counted by each build (CONTRACT-round-0.7-P HP2).
+    index_truncated: std::sync::atomic::AtomicU64,
 }
 
 impl Metrics {
@@ -79,6 +81,11 @@ impl Metrics {
         self.open_keys.store(n, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// One class the object index cut at a cap (`DATUMESH_INDEX_CLASS_MAX` or `DATUMESH_INDEX_MAX`).
+    pub(crate) fn index_truncated(&self) {
+        self.index_truncated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The requests counted for `route` (any status).
     pub(crate) fn requests_of(&self, route: &str) -> u64 {
         self.requests
@@ -123,6 +130,13 @@ impl Metrics {
             out,
             "datumesh_dictionary_open_keys_total {}",
             self.open_keys.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let _ = writeln!(out, "# HELP datumesh_object_index_truncated_total Classes the object index cut at a cap (DATUMESH_INDEX_CLASS_MAX, DATUMESH_INDEX_MAX), by each build.");
+        let _ = writeln!(out, "# TYPE datumesh_object_index_truncated_total counter");
+        let _ = writeln!(
+            out,
+            "datumesh_object_index_truncated_total {}",
+            self.index_truncated.load(std::sync::atomic::Ordering::Relaxed)
         );
         let _ = writeln!(out, "# HELP datumesh_http_request_seconds Request latency, by route.");
         let _ = writeln!(out, "# TYPE datumesh_http_request_seconds histogram");

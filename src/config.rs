@@ -279,6 +279,15 @@ pub struct Config {
     /// How long the first build of the object index (`describe` of an object id) waits after start
     /// (`DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`; default 0). Until it is built, such a request is `503`.
     pub index_first_build_delay: Duration,
+    /// How often the object index is built again (`DATUMESH_INDEX_SECS`; default 300 s, at least 1 s). A full build
+    /// reads each heard-of class's declared list in pages (CONTRACT-round-0.7-P HP2, HP3); nothing else rebuilds it.
+    pub index_secs: Duration,
+    /// The most objects one class holds in the object index (`DATUMESH_INDEX_CLASS_MAX`; default 50,000, at least 1).
+    /// A class past it keeps its first objects in cell-id order and is counted in
+    /// `datumesh_object_index_truncated_total`.
+    pub index_class_max: usize,
+    /// The most objects the object index holds in all (`DATUMESH_INDEX_MAX`; default 200,000, at least 1).
+    pub index_max: usize,
     /// How long the first build of the `find` summary and the empty query waits after start
     /// (`DATUMESH_FIND_FIRST_BUILD_DELAY_SECS`; default 0). Until it is built, those requests are `503`.
     pub find_first_build_delay: Duration,
@@ -371,6 +380,9 @@ impl Config {
             catalog_first_build_delay: Duration::ZERO,
             catalog_refresh: Duration::from_secs(300),
             index_first_build_delay: Duration::ZERO,
+            index_secs: Duration::from_secs(300),
+            index_class_max: 50_000,
+            index_max: 200_000,
             find_first_build_delay: Duration::ZERO,
             value_counts_refresh: Duration::from_secs(3600),
             dictionary_max: 1000,
@@ -456,6 +468,9 @@ impl Config {
         c.catalog_first_build_delay = secs("DATUMESH_CATALOG_FIRST_BUILD_DELAY_SECS", c.catalog_first_build_delay)?;
         c.catalog_refresh = secs("DATUMESH_CATALOG_REFRESH_SECS", c.catalog_refresh)?;
         c.index_first_build_delay = secs("DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS", c.index_first_build_delay)?;
+        c.index_secs = secs("DATUMESH_INDEX_SECS", c.index_secs)?;
+        c.index_class_max = num("DATUMESH_INDEX_CLASS_MAX", c.index_class_max)?.max(1);
+        c.index_max = num("DATUMESH_INDEX_MAX", c.index_max)?.max(1);
         c.find_first_build_delay = secs("DATUMESH_FIND_FIRST_BUILD_DELAY_SECS", c.find_first_build_delay)?;
         c.value_counts_refresh = secs("DATUMESH_VALUE_COUNTS_SECS", c.value_counts_refresh)?;
         c.dictionary_max = num("DATUMESH_DICTIONARY_MAX", c.dictionary_max)?;
