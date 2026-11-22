@@ -371,7 +371,16 @@ impl<'a, S: Store + ?Sized> Run<'a, S> {
             ("args".into(), Value::Object(obj.into_iter().collect())),
         ]);
         let core_slice = Slice::from_value(&sv).map_err(|e| RunError(e.to_string()))?;
-        for sv in self.store.slice_values(&core_slice, &t).map_err(|e| RunError(e.to_string()))? {
+        // At most the fuel left plus one is read; more is the budget (CONTRACT-round-0.7-P HP8).
+        let remaining = FUEL.saturating_sub(self.used) as usize;
+        let values = self
+            .store
+            .slice_values_limit(&core_slice, &t, remaining.saturating_add(1))
+            .map_err(|e| RunError(e.to_string()))?;
+        if values.len() > remaining {
+            return Err(RunError("E_EVAL_BUDGET: the slice is larger than the fuel left".into()));
+        }
+        for sv in values {
             let args = plain_args(&sv.cell.args);
             let id = sv.cell.id();
             let ver = Version {
@@ -799,13 +808,13 @@ fn scan_rows<S: Store + ?Sized>(
     name: &str,
     unnamed: bool,
     now: &str,
+    page_size: usize,
     mut f: impl FnMut(&FunctionTest, Option<&TestSpec>) -> bool,
 ) -> Result<(), String> {
-    const PAGE: usize = 1_000;
     let by = if unnamed { None } else { Some(name) };
     let mut after: Option<String> = None;
     loop {
-        let page = store.function_tests_page(hash, by, after.as_deref(), PAGE).map_err(|e| e.to_string())?;
+        let page = store.function_tests_page(hash, by, after.as_deref(), page_size).map_err(|e| e.to_string())?;
         let Some(last) = page.last() else { return Ok(()) };
         after = Some(last.case.clone());
         for row in &page {
@@ -820,7 +829,7 @@ fn scan_rows<S: Store + ?Sized>(
                 return Ok(());
             }
         }
-        if page.len() < PAGE {
+        if page.len() < page_size {
             return Ok(());
         }
     }
@@ -880,7 +889,7 @@ pub(crate) fn summary_of<S: Store + ?Sized>(
         return store.function_test_summary(hash, Some(name)).map_err(|e| e.to_string());
     }
     let mut s = TestSummary::default();
-    scan_rows(store, hash, name, true, now, |row, _| {
+    scan_rows(store, hash, name, true, now, 1_000, |row, _| {
         accumulate(&mut s, row);
         true
     })?;
@@ -898,7 +907,7 @@ pub(crate) fn rows_page<S: Store + ?Sized>(
     limit: usize,
 ) -> Result<Vec<(FunctionTest, TestSpec)>, String> {
     let mut out = Vec::new();
-    scan_rows(store, hash, name, unnamed, now, |row, spec| {
+    scan_rows(store, hash, name, unnamed, now, limit.max(1), |row, spec| {
         if let Some(spec) = spec {
             out.push((row.clone(), spec.clone()));
         }
@@ -1080,20 +1089,25 @@ pub(crate) fn rerun_stored_tests<S: Store + ?Sized>(
     Ok(changed)
 }
 
+/// Most counterexamples a page or a describe lists or counts from foreign test cells (CONTRACT-round-0.7-P HP5).
+pub(crate) const COUNTEREXAMPLES_SHOWN: usize = 100;
+
 /// The counts of the tests of the function `name` (hash `hash`), for `describe` and the function page, from
 /// the store's aggregate: `(count, branches, covered, counterexamples)`. A counterexample is an open one
-/// ([`open_counterexamples`]): a failing or erroring test of this mesh, or a `false` test cell of any host for
-/// the function's hash (spec 7.3, 16.8). Runs nothing.
+/// ([`counterexamples`]): a failing or erroring test of this mesh, or a `false` test cell of any host for
+/// the function's hash (spec 7.3, 16.8). Runs nothing; the foreign ones are counted to
+/// [`COUNTEREXAMPLES_SHOWN`].
 pub fn counts<S: Store + ?Sized>(
     store: &S,
+    host: &str,
     name: &str,
     hash: &str,
     unnamed: bool,
     now: &str,
 ) -> Result<(u64, u64, u64, u64), String> {
     let s = summary_of(store, hash, name, unnamed, now)?;
-    let foreign = foreign_counterexamples(store, hash, now)?.len() as u64;
-    Ok((s.count, s.branches_total as u64, s.branches_covered as u64, s.fail + s.error + foreign))
+    let open = counterexamples(store, host, name, hash, unnamed, now, &s, false)?;
+    Ok((s.count, s.branches_total as u64, s.branches_covered as u64, open.number()))
 }
 
 /// An open counterexample of a function (spec 7.3): who says the function gives a wrong result,
@@ -1106,72 +1120,85 @@ pub struct Counterexample {
     pub case: String,
 }
 
-/// The open counterexamples of the function `hash` as of `now`: this mesh's own failing or
-/// erroring tests of `name` (signed by `host`), and the `false` `<host>/test_case` cells of every host
-/// this mesh holds for `hash`, the latest version of each cell (`asof` `now`), each cell once. The own ones
-/// are read only when the aggregate says there are some.
-///
-/// The cells are read as the store reads a slice (5.6): for each held namespace `N`, the binding of
-/// `N/test_case` now, and the slice of its cells whose `function_hash` argument is `hash` and whose
-/// `case` is open. The store's typed-argument index (`cell_args`, on fn_hash, name, type, value)
-/// serves the `function_hash` argument, so no cell of another function is read. Computed test cells
-/// are not counted: a test cell this mesh computes is a test of its own, already counted as one.
-pub fn open_counterexamples<S: Store + ?Sized>(
+/// The open counterexamples of a function, bounded (CONTRACT-round-0.7-P HP5): the stored failing and
+/// erroring tests of this mesh, counted exactly from the counter and listed to [`COUNTEREXAMPLES_SHOWN`]; then the
+/// `false` `<host>/test_case` cells of every host held for the hash, listed (and counted) to
+/// [`COUNTEREXAMPLES_SHOWN`], with `foreign_more` when there are more.
+pub(crate) struct Counterexamples {
+    /// The stored failing and erroring tests (exact).
+    pub stored: u64,
+    /// The first of them by case, at most [`COUNTEREXAMPLES_SHOWN`].
+    pub stored_list: Vec<Counterexample>,
+    /// The foreign `false` test cells, at most [`COUNTEREXAMPLES_SHOWN`].
+    pub foreign: Vec<Counterexample>,
+    /// Whether there are more foreign ones than are listed.
+    pub foreign_more: bool,
+}
+
+impl Counterexamples {
+    /// The number of counterexamples: the stored count and the foreign ones read (see `foreign_more`).
+    pub(crate) fn number(&self) -> u64 {
+        self.stored + self.foreign.len() as u64
+    }
+
+    /// The listed ones: the stored, then the foreign.
+    pub(crate) fn listed(&self) -> impl Iterator<Item = &Counterexample> {
+        self.stored_list.iter().chain(self.foreign.iter())
+    }
+}
+
+/// The open counterexamples of the function `name` (hash `hash`), given its summary `s` (read once by the
+/// caller). The stored ones are read by `function_tests_failing` (a SQL limit) when the function's rows are named;
+/// the foreign ones by `false_test_cells`, one query. Nothing is run.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn counterexamples<S: Store + ?Sized>(
     store: &S,
     host: &str,
     name: &str,
     hash: &str,
     unnamed: bool,
     now: &str,
-) -> Result<Vec<Counterexample>, String> {
-    let mut out: Vec<Counterexample> = Vec::new();
-    let s = summary_of(store, hash, name, unnamed, now)?;
-    if s.fail + s.error > 0 {
-        scan_rows(store, hash, name, unnamed, now, |row, _| {
-            if matches!(row.last_result.as_deref(), Some("fail") | Some("error")) {
-                out.push(Counterexample { signer: host.to_string(), case: row.case.clone() });
-            }
-            true
-        })?;
+    s: &TestSummary,
+    list: bool,
+) -> Result<Counterexamples, String> {
+    let stored = s.fail + s.error;
+    let mut stored_list = Vec::new();
+    if stored > 0 && list {
+        if unnamed {
+            scan_rows(store, hash, name, true, now, 1_000, |row, _| {
+                if matches!(row.last_result.as_deref(), Some("fail") | Some("error")) {
+                    stored_list.push(Counterexample { signer: host.to_string(), case: row.case.clone() });
+                }
+                stored_list.len() < COUNTEREXAMPLES_SHOWN
+            })?;
+        } else {
+            let rows =
+                store.function_tests_failing(hash, Some(name), COUNTEREXAMPLES_SHOWN).map_err(|e| e.to_string())?;
+            stored_list.extend(rows.into_iter().map(|t| Counterexample { signer: host.to_string(), case: t.case }));
+        }
     }
-    out.extend(foreign_counterexamples(store, hash, now)?);
-    Ok(out)
+    let (foreign, foreign_more) = foreign_counterexamples(store, hash)?;
+    Ok(Counterexamples { stored, stored_list, foreign, foreign_more })
 }
 
-/// The `false` `<host>/test_case` cells of every host this mesh holds for `hash`, as of `now` (see
-/// [`open_counterexamples`]).
+/// The `false` `<host>/test_case` cells of every host this mesh holds for `hash`, at most
+/// [`COUNTEREXAMPLES_SHOWN`] of them, and whether there are more (see [`counterexamples`]). One query of the store,
+/// no namespace loop.
 pub(crate) fn foreign_counterexamples<S: Store + ?Sized>(
     store: &S,
     hash: &str,
-    now: &str,
-) -> Result<Vec<Counterexample>, String> {
+) -> Result<(Vec<Counterexample>, bool), String> {
     let mut out = Vec::new();
     // Spec 7.3 gives a cell the function hash and the case only, so for stored functions of one signature a
     // foreign counterexample applies to each of them; a later spec round may add the name (D23).
-    let subject = Scalar::from_lexical(Type::String, hash).map_err(|e| e.to_string())?;
-    for ns in store.namespaces().map_err(|e| e.to_string())? {
-        let name = format!("{}/{TEST_CASE_NAME}", ns.host);
-        let Some(binding) = store.resolve_binding(&name, now).map_err(|e| e.to_string())? else { continue };
-        let cell = Cell {
-            ns: ns.host.clone(),
-            fn_name: TEST_CASE_NAME.into(),
-            fn_hash: binding.fn_hash.clone(),
-            args: CoreArgs::from([
-                (TEST_CASE_HASH_ARG.to_string(), Arg::Value(subject.clone())),
-                ("case".to_string(), Arg::Slice),
-            ]),
-        };
-        // A binding of another shape (not `function_hash` and `case`) holds no test cell of ours.
-        let Ok(slice) = Slice::from_value(&cell.to_value()) else { continue };
-        for v in store.slice_values(&slice, now).map_err(|e| e.to_string())? {
-            if v.value.lexical() != "false" {
-                continue;
-            }
-            let Some(Arg::Value(case)) = v.cell.args.get("case") else { continue };
-            out.push(Counterexample { signer: ns.host.clone(), case: case.lexical().to_string() });
-        }
+    let cells = store.false_test_cells(hash, COUNTEREXAMPLES_SHOWN + 1).map_err(|e| e.to_string())?;
+    let more = cells.len() > COUNTEREXAMPLES_SHOWN;
+    for (_, bytes) in cells.iter().take(COUNTEREXAMPLES_SHOWN) {
+        let Ok(r) = datumesh_core::Receipt::from_json(bytes) else { continue };
+        let Some(Arg::Value(case)) = r.cell().args.get("case") else { continue };
+        out.push(Counterexample { signer: r.cell().ns.clone(), case: case.lexical().to_string() });
     }
-    Ok(out)
+    Ok((out, more))
 }
 
 /// Puts the test-case function `<host>/test_case(function_hash, case) -> boolean` (E5, mesh-test) in
@@ -1234,8 +1261,13 @@ impl Runtime for TestCases {
         let hash = text(TEST_CASE_HASH_ARG)?;
         let case = text("case")?;
         let asof = inputs.asof();
-        let held = held_tests(&*self.store, &hash).map_err(EvalError::Runtime)?;
-        let Some((_, spec)) = held.into_iter().find(|(_, s)| s.case == case) else {
+        // One row by its key (CONTRACT-round-0.7-P HP5): a test cell does not read every test of the function.
+        let row = self.store.function_test(&hash, &case).map_err(|e| EvalError::Runtime(e.to_string()))?;
+        let spec = row
+            .and_then(|t| json::parse(&t.test_json).ok())
+            .and_then(|v| parse_test(&v).ok())
+            .filter(|s| s.case == case);
+        let Some(spec) = spec else {
             return Err(EvalError::Runtime(format!("no test {case} of {hash}")));
         };
         let overlay = Overlay::default();

@@ -79,6 +79,9 @@ fn read_relay(inner: &Inner, name: &str, fn_hash: &str) -> Option<Relay> {
 /// The most tests a function page lists (its JSON `cases` and its HTML "Each test"); the total is given beside.
 pub(crate) const CASES_SHOWN: usize = 100;
 
+/// The dependants a function page lists (the first [`DEPENDANTS_SHOWN`]); more say "and more" (CONTRACT-round-0.7-P HP5).
+pub(crate) const DEPENDANTS_SHOWN: usize = 100;
+
 /// The cases a function page shows (the first [`CASES_SHOWN`]) and the total of them.
 #[cfg(test)]
 fn shown_cases(all: Vec<Value>) -> (Vec<Value>, usize) {
@@ -198,12 +201,16 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
 
     // The tests: the stored results only (CONTRACT-0.4.9 H1); a request runs nothing.
     let unnamed = inner.is_unnamed(&fn_hash);
+    // The counts are read once: from the store's counter (CONTRACT-round-0.7-P HP5), not from the rows.
     let summary = testrun::summary_of(store, &fn_hash, name, unnamed, &now).unwrap_or_default();
-    let open: Vec<Value> = testrun::open_counterexamples(store, &inner.config.host, name, &fn_hash, unnamed, &now)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| obj(vec![("signer", s(&c.signer)), ("case", s(&c.case))]))
-        .collect();
+    let counterexamples =
+        testrun::counterexamples(store, &inner.config.host, name, &fn_hash, unnamed, &now, &summary, true).unwrap_or(
+            testrun::Counterexamples { stored: 0, stored_list: vec![], foreign: vec![], foreign_more: false },
+        );
+    let number = counterexamples.number();
+    let more = counterexamples.foreign_more;
+    let open: Vec<Value> =
+        counterexamples.listed().map(|c| obj(vec![("signer", s(&c.signer)), ("case", s(&c.case))])).collect();
     // Each case with its last result (`pass`, `fail`, `error`; null before its first run), the first 100.
     let held = testrun::rows_page(store, &fn_hash, name, unnamed, &now, CASES_SHOWN).unwrap_or_default();
     let cases: Vec<Value> = held
@@ -219,7 +226,8 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         ("count", num(summary.count)),
         ("branches", num(summary.branches_total as u64)),
         ("covered", num(summary.branches_covered as u64)),
-        ("counterexamples", num(open.len() as u64)),
+        ("counterexamples", num(number)),
+        ("counterexamples_more", Value::Bool(more)),
         ("open_counterexamples", Value::Array(open)),
         ("cases", Value::Array(cases)),
         ("cases_total", num(cases_total)),
@@ -238,19 +246,17 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
 
     // The lineage: inputs, dependants on this mesh, the relay's source.
     let inputs: Vec<Value> = d.inputs.iter().map(|n| link(n)).collect();
-    let mut dependants: Vec<String> = Vec::new();
-    for h in store.function_readers(name).unwrap_or_default() {
-        for n in store.bound_names(&h).unwrap_or_default() {
-            let bound_now = store.resolve_binding(&n, &now).ok().flatten().is_some_and(|b| b.fn_hash == h);
-            if bound_now && !dependants.contains(&n) {
-                dependants.push(n);
-            }
-        }
-    }
-    dependants.sort();
+    // At most DEPENDANTS_SHOWN dependants (CONTRACT-round-0.7-P HP5): one more is read, to say there are more.
+    let mut found: Vec<String> =
+        store.dependants_of(name, &now, DEPENDANTS_SHOWN + 1).unwrap_or_default().into_iter().map(|(n, _)| n).collect();
+    found.sort();
+    found.dedup();
+    let dependants_more = found.len() > DEPENDANTS_SHOWN;
+    found.truncate(DEPENDANTS_SHOWN);
     let mut lineage = vec![
         ("inputs", Value::Array(inputs)),
-        ("dependants", Value::Array(dependants.iter().map(|n| link(n)).collect())),
+        ("dependants", Value::Array(found.iter().map(|n| link(n)).collect())),
+        ("dependants_more", Value::Bool(dependants_more)),
     ];
     let relay = relay_of(inner, name, &fn_hash);
     if let Some(r) = &relay {
@@ -446,7 +452,11 @@ fn render(d: &Value, unnamed: bool) -> String {
         n("count"),
         n("covered"),
         n("branches"),
-        n("counterexamples")
+        if matches!(get(t, "counterexamples_more"), Value::Bool(true)) {
+            format!("{} or more", n("counterexamples"))
+        } else {
+            n("counterexamples").to_string()
+        }
     ));
     let last = get(t, "last_run");
     h.push_str(&format!(
@@ -501,6 +511,9 @@ fn render(d: &Value, unnamed: bool) -> String {
                     esc(n)
                 ));
             }
+        }
+        if key == "dependants" && matches!(get(lin, "dependants_more"), Value::Bool(true)) {
+            h.push_str("<li>and more</li>\n");
         }
         h.push_str("</ul>\n");
     }

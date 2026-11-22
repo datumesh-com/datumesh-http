@@ -1,30 +1,34 @@
 //! describe (SPEC 16.8, 9.6) and short ids.
 //!
-//! `GET /describe/{id}`: `{id}` is a class name, a cell id, an object id or a short id (12 hex
-//! digits), or an object's key encoding (16.5); never a class hash. A class answers with the
+//! `GET /describe/{id}`: `{id}` is a class name, an object id or a short id (12 hex digits), or an
+//! object's key encoding (16.5); never a class hash. A cell id names no object (404). A class answers with the
 //! `describe-class` document, an object with the `describe-object` one.
 //!
 //! # Known objects
 //!
-//! Objects are never stored, so the objects the mesh *knows* (the ones an object id or a short id
-//! can name) are the objects of the recorded cells of a class bound in the store (as of now): for
-//! every method `N/m` of the class, stored or computed (a formula), every recorded cell with every
-//! argument open. The stored cells come from the store's `slice_values` over `N/m`; the computed
-//! ones from its `computed_cells` over the same slice, at most [`INDEX_LIMIT`] per method (reaching
-//! it logs one warning and keeps what was read). The class's `extent` function is one of its
-//! methods, so its recorded cells are covered the same way. Nothing is evaluated to build the index,
-//! and no product of argument extents is formed.
+//! Objects are never stored, so the objects the mesh *knows* (the ones an object id or a short id can
+//! name) are the objects of the declared list of each class the mesh has heard of: the stored cells of
+//! the class's `extent.keys` function (or of its first method in name order, when it declares none), read
+//! in pages of [`INDEX_PAGE`] by cell id. A class holds at most `DATUMESH_INDEX_CLASS_MAX` objects and the
+//! index at most `DATUMESH_INDEX_MAX`; past a cap the class is cut (its first objects in cell-id order are
+//! kept, the cut is logged and counted in `datumesh_object_index_truncated_total`), and its other objects are
+//! reached by key encoding. Computed cells are not read: a computed cell (and a stored version added to the
+//! mesh) is put into the last build at once.
 //!
-//! The index is kept in memory (object id to object, cell id to cell). A thread of the mesh builds it
-//! (CONTRACT-0.4.9 H3): at start (after `DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`), again when the mesh is told of a
-//! stored version ([`Mesh::stored_version_added`](crate::Mesh::stored_version_added)), when it learns of a class,
-//! and after [`INDEX_TTL`]. A request for an object id reads the last build and never builds one: before the
-//! first build it is `503` with `Retry-After` and `no-store`.
+//! The index is kept in memory, as a map of object id to object. A thread of the mesh builds it at start
+//! (after `DATUMESH_INDEX_FIRST_BUILD_DELAY_SECS`) and then every `DATUMESH_INDEX_SECS`. Between two full builds
+//! the same thread, on each tick ([`INDEX_TICK`]), indexes each class the mesh has heard of that the last build
+//! does not hold (the `held` record of [`Built`]): that class only, within the same caps (the total cap counts
+//! the objects the build already holds), merged into the last build. A class whose index came out empty is
+//! held too, so it is not read again. Nothing is indexed on a request. A request for an object id reads the
+//! last build and never builds one, nor reads a cell: before the first build it is `503` with `Retry-After` and
+//! `no-store`; a hex id the build does not hold is `404` with the reason "not in the object index yet". A
+//! describe of a class reads its descriptor only and hears of the class for the next index tick.
 //!
-//! The store cannot list the classes it holds, so the classes the index covers are the ones the
-//! mesh has *heard of*: a class a stored version was added under, a class a request or a describe
-//! resolved, and the classes of the configured aliases. A class published by another process and
-//! never named to this mesh is unknown until one of those happens.
+//! The classes the index covers are the ones the mesh has *heard of*: a class a stored version or a
+//! computed cell was added under, a class a request or a describe resolved, and the classes of the configured
+//! aliases. A class published by another process and never named to this mesh is unknown until one of those
+//! happens.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -40,79 +44,40 @@ use crate::call::{Bindings, BoundClass};
 use crate::envelope::{self, Cache, Reply};
 use crate::mesh::Inner;
 
-/// How long an index is used before it is built again (a stored version another process added is
-/// not announced to this mesh). A full build reads every recorded cell of every class's methods, so it
-/// runs every five minutes, as the series overview does; what this mesh writes or hears of is indexed at once.
-pub(crate) const INDEX_TTL: Duration = Duration::from_secs(300);
-
 /// How often the index thread looks at the index (it builds one when it is due).
 pub(crate) const INDEX_TICK: Duration = Duration::from_millis(500);
 
-/// The most recorded cells of one method the index reads from the store (per method, per build).
-pub(crate) const INDEX_LIMIT: usize = 1_000_000;
+/// The objects one page of a class's declared list reads from the store (`slice_values_page`).
+pub(crate) const INDEX_PAGE: usize = 10_000;
 
-/// An object the mesh knows.
+/// An object the mesh knows. Its class hash is shared by every object of the class.
 #[derive(Clone, Debug)]
 struct Known {
     key: ObjectKey,
-    class_hash: String,
+    class_hash: Arc<str>,
 }
 
 /// The index of known objects.
 #[derive(Default)]
 pub(crate) struct Index {
-    /// The class names to look at.
+    /// The class names the next build holds (heard of by a stored version, a computed cell, an alias, or a describe).
     classes: BTreeSet<String>,
-    /// Cell ids announced since the index was built: the classes they are of are looked at.
-    announced: Vec<String>,
-    dirty: bool,
     built: Option<Built>,
 }
 
 pub(crate) struct Built {
-    /// The classes whose objects this build holds.
-    classes: BTreeSet<String>,
     at: Instant,
-    /// Object id to object.
+    /// Object id to object, in id order (a short id is a range read).
     objects: BTreeMap<String, Known>,
-    /// Cell id to the id of the object whose method cell it is.
-    cells: BTreeMap<String, String>,
+    /// The classes this build has indexed (an empty one too): a heard-of class not here is indexed on the next tick.
+    held: BTreeSet<String>,
 }
 
 impl Index {
-    /// A class the mesh has heard of.
+    /// A class the mesh has heard of: the next build holds its objects. Nothing is indexed now.
     pub(crate) fn hear_of_class(&mut self, name: &str) {
-        if self.classes.insert(name.to_string()) {
-            self.dirty = true;
-        }
+        self.classes.insert(name.to_string());
     }
-
-    /// A stored version was added for `cell_id`.
-    pub(crate) fn announce(&mut self, cell_id: &str) {
-        if self.announced.len() < 100_000 {
-            self.announced.push(cell_id.to_string());
-        }
-        self.dirty = true;
-    }
-
-    /// A formula cell was computed: the index is built again unless it already holds the cell.
-    pub(crate) fn note_computed(&mut self, cell: &Cell) {
-        let id = cell.id();
-        if self.built.as_ref().is_some_and(|b| b.cells.contains_key(&id)) {
-            return;
-        }
-        self.hear_of_class(&cell.ns);
-        self.announce(&id);
-    }
-}
-
-/// The class a cell's receipt names: its function's namespace, which is the class name when the
-/// function is a method.
-fn class_of_cell(inner: &Inner, cell_id: &str) -> Option<String> {
-    let far = "9999-12-31T23:59:59.999999Z";
-    let (_, bytes) = inner.store.stored_asof_with_receipt(cell_id, far).ok().flatten()?;
-    let r = datumesh_core::Receipt::from_json(&bytes).ok()?;
-    Some(r.cell().ns.clone())
 }
 
 /// The object whose keys are `args`' class keys: a key declared as a class holds the encoding of
@@ -133,145 +98,167 @@ fn object_of(class: &str, d: &ClassDescriptor, args: &datumesh_core::Args) -> Op
     ObjectKey::new(class, keys).ok()
 }
 
+/// The slice of every cell of the function `name_of` (`<class>/<method>`, hash `fn_hash`, descriptor `d`), every
+/// argument open.
+fn method_slice(name_of: &str, fn_hash: &str, d: &datumesh_core::FunctionDescriptor) -> Option<Slice> {
+    let (ns, f) = name_of.rsplit_once('/')?;
+    let args: datumesh_core::Args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
+    let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: fn_hash.into(), args };
+    Slice::from_value(&cell.to_value()).ok()
+}
+
 impl Inner {
     /// Remembers a class name for the index.
     pub(crate) fn hear_of_class(&self, name: &str) {
         self.known.lock().unwrap_or_else(|p| p.into_inner()).hear_of_class(name);
     }
 
-    /// The recorded cells of the function `fn_hash` (its descriptor `d`, named `name`) with every
-    /// argument open, as of `now`: its stored cells and its computed ones (at most [`INDEX_LIMIT`]).
-    fn recorded_cells(&self, name: &str, fn_hash: &str, d: &datumesh_core::FunctionDescriptor, now: &str) -> Vec<Cell> {
-        let Some((ns, f)) = name.rsplit_once('/') else { return vec![] };
-        let args: datumesh_core::Args = d.signature.args.keys().map(|k| (k.clone(), Arg::Slice)).collect();
-        let cell = Cell { ns: ns.into(), fn_name: f.into(), fn_hash: fn_hash.into(), args };
-        let Ok(slice) = Slice::from_value(&cell.to_value()) else { return vec![] };
-        let mut out = match self.store.slice_values(&slice, now) {
-            Ok(vs) => vs.into_iter().map(|v| v.cell).collect(),
-            Err(e) => {
-                tracing::warn!(target: "datumesh_http", error = %e, "describe index: slice_values");
-                vec![]
-            }
-        };
-        match self.store.computed_cells(&slice, now, INDEX_LIMIT) {
-            Ok(cells) => {
-                if cells.len() >= INDEX_LIMIT {
-                    tracing::warn!(target: "datumesh_http", "describe index: {name} reached the limit");
-                }
-                out.extend(cells);
-            }
-            Err(e) => tracing::warn!(target: "datumesh_http", error = %e, "describe index: computed_cells"),
-        }
-        out
-    }
-
-    /// Builds the index of known objects as of `now` and makes it the one requests read, when it is missing,
-    /// dirty or old (the index thread's work; a request never calls this). The store is read without the lock
-    /// held, so a request is not held up by a build.
+    /// The index thread's tick: builds the index of known objects as of `now` when it is missing or older than
+    /// `DATUMESH_INDEX_SECS`; otherwise indexes the heard-of classes the last build does not hold and merges them
+    /// into it. A request never calls this. The store is read without the lock held, so a request is not held
+    /// up by a build.
     pub(crate) fn refresh_index(&self) {
-        let (mut classes, announced) = {
-            let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-            let due = ix.built.as_ref().is_none_or(|b| b.at.elapsed() > INDEX_TTL) || ix.dirty;
-            if !due {
-                return;
+        let (mut classes, missing) = {
+            let ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+            match ix.built.as_ref() {
+                Some(b) if b.at.elapsed() <= self.config.index_secs => {
+                    let missing: Vec<String> = ix.classes.iter().filter(|c| !b.held.contains(*c)).cloned().collect();
+                    if missing.is_empty() {
+                        return;
+                    }
+                    (BTreeSet::new(), Some((missing, b.objects.len())))
+                }
+                _ => (ix.classes.clone(), None),
             }
-            ix.dirty = false;
-            (ix.classes.clone(), std::mem::take(&mut ix.announced))
         };
         let now = self.now();
-        let built = self.build_index(&mut classes, announced, &now);
-        let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-        ix.classes = classes;
-        ix.built = Some(built);
-    }
-
-    /// Builds the index from the classes heard of (`classes`, and the ones the announced cells are of).
-    fn build_index(&self, classes: &mut BTreeSet<String>, announced: Vec<String>, now: &str) -> Built {
-        // The classes announced cells were of, and the classes of the configured aliases.
-        for id in announced {
-            if let Some(c) = class_of_cell(self, &id) {
-                classes.insert(c);
+        match missing {
+            Some((missing, base)) => self.add_classes(&missing, base, &now),
+            None => {
+                let built = self.build_index(&mut classes, &now);
+                let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+                ix.classes.extend(classes);
+                ix.built = Some(built);
             }
         }
+    }
+
+    /// Indexes the classes `names` (heard of, not held by the last build) with the same caps, and merges their
+    /// objects into the last build. `base` is the number of objects the build holds (the total cap counts them).
+    fn add_classes(&self, names: &[String], base: usize, now: &str) {
+        let (class_max, index_max) = (self.config.index_class_max, self.config.index_max);
+        let mut added = BTreeMap::new();
+        for name in names {
+            if self.index_class(name, now, class_max, index_max, base, &mut added) {
+                self.metrics.index_truncated();
+            }
+        }
+        let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(b) = ix.built.as_mut() {
+            for (id, k) in added {
+                if b.objects.len() >= index_max {
+                    break;
+                }
+                b.objects.entry(id).or_insert(k);
+            }
+            b.held.extend(names.iter().cloned());
+        }
+    }
+
+    /// Builds the index from the classes heard of: each one's declared list, within the caps.
+    fn build_index(&self, classes: &mut BTreeSet<String>, now: &str) -> Built {
+        // The classes of the configured aliases are heard of from the start.
         for target in self.config.aliases.values() {
             if let Some((ns, _)) = target.rsplit_once('/') {
                 classes.insert(ns.to_string());
             }
         }
         let mut objects = BTreeMap::new();
-        let mut cells = BTreeMap::new();
+        let (class_max, index_max) = (self.config.index_class_max, self.config.index_max);
         for name in classes.iter() {
-            self.index_class(name, now, &mut objects, &mut cells);
+            if self.index_class(name, now, class_max, index_max, 0, &mut objects) {
+                self.metrics.index_truncated();
+            }
         }
-        Built { classes: classes.clone(), at: Instant::now(), objects, cells }
+        Built { at: Instant::now(), objects, held: classes.clone() }
     }
 
-    /// The objects of the class `name` and its recorded cells, into `objects` and `cells`: the class's methods,
-    /// stored or computed (its `extent.keys` function among them), each cell with every argument open.
+    /// The objects of the class `name` into `objects`, from its declared list: the stored cells of its
+    /// `extent.keys` function, or of its first method in name order when it declares none. Read in pages of
+    /// [`INDEX_PAGE`] by cell id, so the first objects of a class are the ones kept when it is cut. `base` is the
+    /// number of objects already in the build, which count against `index_max` with `objects`. Returns whether
+    /// the class was cut at `class_max` objects or at `index_max` objects in all.
     fn index_class(
         &self,
         name: &str,
         now: &str,
+        class_max: usize,
+        index_max: usize,
+        base: usize,
         objects: &mut BTreeMap<String, Known>,
-        cells: &mut BTreeMap<String, String>,
-    ) {
-        let Ok(Some(c)) = self.class_binding(name, now) else { return };
+    ) -> bool {
+        let Ok(Some(c)) = self.class_binding(name, now) else { return false };
         let d = &c.descriptor;
-        for (m, hash) in &d.methods {
-            let name_of = format!("{name}/{m}");
-            let Ok(fd) = self.descriptor(hash) else { continue };
-            for cell in self.recorded_cells(&name_of, hash, &fd, now) {
-                let Some(object) = object_of(name, d, &cell.args) else { continue };
+        let declared = d.extent.as_ref().and_then(|e| e.keys.as_deref());
+        let method =
+            declared.and_then(|h| d.methods.iter().find(|(_, v)| v.as_str() == h)).or_else(|| d.methods.iter().next());
+        let Some((m, hash)) = method else { return false };
+        let name_of = format!("{name}/{m}");
+        let Ok(fd) = self.descriptor(hash) else { return false };
+        let Some(slice) = method_slice(&name_of, hash, &fd) else { return false };
+        let class_hash: Arc<str> = Arc::from(c.class_hash.as_str());
+        let mut mine = 0usize;
+        let mut after: Option<String> = None;
+        loop {
+            let page = match self.store.slice_values_page(&slice, now, after.as_deref(), INDEX_PAGE) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(target: "datumesh_http", error = %e, class = name, "describe index: slice_values_page");
+                    return false;
+                }
+            };
+            let n = page.len();
+            after = page.last().map(|v| v.version.cell_id.clone());
+            for v in &page {
+                let Some(object) = object_of(name, d, &v.cell.args) else { continue };
                 let Ok(id) = object.object_id(&c.class_hash) else { continue };
-                cells.insert(cell.id(), id.clone());
-                objects.insert(id, Known { key: object, class_hash: c.class_hash.clone() });
+                if objects.contains_key(&id) {
+                    continue;
+                }
+                if mine == class_max || base + objects.len() >= index_max {
+                    tracing::warn!(target: "datumesh_http", class = name, kept = mine,
+                        "describe index: the class is cut at a cap (DATUMESH_INDEX_CLASS_MAX, DATUMESH_INDEX_MAX)");
+                    return true;
+                }
+                objects.insert(id, Known { key: object, class_hash: class_hash.clone() });
+                mine += 1;
+            }
+            if n < INDEX_PAGE {
+                return false;
             }
         }
     }
 
-    /// A class a describe names for the first time is indexed at once, into the last build (CONTRACT-0.4.9 H3, as
-    /// 0.4.8 made a named class known to the next describe): the class's own objects only, once per class. A request
-    /// never rebuilds the whole index. Before the first build nothing is done (the build will include the class).
-    pub(crate) fn index_named_class(&self, name: &str) {
-        let now = self.now();
-        let covered = {
-            let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-            ix.classes.insert(name.to_string());
-            ix.built.as_ref().is_none_or(|b| b.classes.contains(name))
-        };
-        if covered {
-            return;
-        }
-        let mut objects = BTreeMap::new();
-        let mut cells = BTreeMap::new();
-        self.index_class(name, &now, &mut objects, &mut cells);
-        let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(b) = ix.built.as_mut() {
-            b.objects.extend(objects);
-            b.cells.extend(cells);
-            b.classes.insert(name.to_string());
-        }
-    }
-
-    /// Puts the object of `cell` into the last build at once (O(1), CONTRACT-0.4.9 H3): a formula cell just computed,
-    /// or a stored version just added, is known to describe straight away, as 0.4.8's rebuild made it. The
-    /// cell's class is heard of from now on; nothing is done before the first build (it will include the cell).
+    /// Puts the object of `cell` into the last build at once (O(1), within the caps): a formula cell just
+    /// computed is known to describe straight away. The cell's class is heard of from now on; nothing is done
+    /// before the first build (it will hold the class).
     pub(crate) fn index_cell_now(&self, cell: &Cell) {
         let class = cell.ns.clone();
         let now = self.now();
         let Ok(Some(c)) = self.class_binding(&class, &now) else { return };
         let Some(object) = object_of(&class, &c.descriptor, &cell.args) else { return };
         let Ok(id) = object.object_id(&c.class_hash) else { return };
+        let index_max = self.config.index_max;
         let mut ix = self.known.lock().unwrap_or_else(|p| p.into_inner());
-        // The class is one the mesh has heard of from now on (a rebuild would find it through the cell as well).
         ix.classes.insert(class);
         if let Some(b) = ix.built.as_mut() {
-            b.cells.insert(cell.id(), id.clone());
-            b.objects.insert(id, Known { key: object, class_hash: c.class_hash.clone() });
+            if b.objects.contains_key(&id) || b.objects.len() < index_max {
+                b.objects.insert(id, Known { key: object, class_hash: Arc::from(c.class_hash.as_str()) });
+            }
         }
     }
 
-    /// As [`Inner::index_cell_now`] for a stored version of `cell_id`, read from its receipt.
+    /// As [`Inner::index_cell_now`] for the stored version of `cell_id`, read from its receipt.
     pub(crate) fn index_stored_now(&self, cell_id: &str) {
         let far = "9999-12-31T23:59:59.999999Z";
         let Some((_, bytes)) = self.store.stored_asof_with_receipt(cell_id, far).ok().flatten() else { return };
@@ -292,7 +279,7 @@ impl Inner {
         if lexical::check_function_name(id, "$").is_ok() {
             return match Bindings::class(self, id, &now) {
                 Ok(Some(c)) => {
-                    self.index_named_class(id);
+                    self.hear_of_class(id);
                     self.class_answer(id, &c)
                 }
                 Ok(None) => {
@@ -322,37 +309,29 @@ impl Inner {
         }
         let hex = |s: &str, n: usize| s.len() == n && lexical::check_hex(s, n, "$").is_ok();
         if hex(id, 64) {
-            let answer = self.with_index(|b| {
-                let object = b.objects.get(id).or_else(|| b.cells.get(id).and_then(|o| b.objects.get(o)));
-                match object {
-                    Some(k) => self.object_answer(&k.key, &k.class_hash),
-                    None => not_found(),
-                }
+            let answer = self.with_index(|b| match b.objects.get(id) {
+                Some(k) => self.object_answer(&k.key, &k.class_hash),
+                None => index_miss(),
             });
-            return answer.unwrap_or_else(index_not_yet);
+            return answer.unwrap_or_else(|| index_not_yet(self.config.index_secs.as_secs()));
         }
         if hex(id, 12) {
             let answer = self.with_index(|b| {
-                let mut found: BTreeSet<&String> = BTreeSet::new();
-                for o in b.objects.keys().filter(|o| o.starts_with(id)) {
-                    found.insert(o);
-                }
-                for (c, o) in &b.cells {
-                    if c.starts_with(id) {
-                        found.insert(o);
-                    }
-                }
-                let mut it = found.into_iter();
-                match (it.next(), it.next()) {
-                    (None, _) => not_found(),
-                    (Some(o), None) => match b.objects.get(o) {
-                        Some(k) => self.object_answer(&k.key, &k.class_hash),
-                        None => not_found(),
-                    },
-                    (Some(_), Some(_)) => envelope::bad_request_reply(ErrorCode::ShortIdAmbiguous),
+                // The objects whose id begins with `id`: a range read of the sorted map, the first two.
+                let hits: Vec<&Known> = b
+                    .objects
+                    .range(id.to_string()..)
+                    .take_while(|(o, _)| o.starts_with(id))
+                    .take(2)
+                    .map(|(_, k)| k)
+                    .collect();
+                match hits.as_slice() {
+                    [] => index_miss(),
+                    [k] => self.object_answer(&k.key, &k.class_hash),
+                    _ => envelope::bad_request_reply(ErrorCode::ShortIdAmbiguous),
                 }
             });
-            return answer.unwrap_or_else(index_not_yet);
+            return answer.unwrap_or_else(|| index_not_yet(self.config.index_secs.as_secs()));
         }
         not_found()
     }
@@ -365,7 +344,7 @@ impl Inner {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
         let unnamed = self.is_unnamed(fn_hash);
-        let counts = crate::testrun::counts(&*self.store, name, fn_hash, unnamed, &self.now());
+        let counts = crate::testrun::counts(&*self.store, &self.config.host, name, fn_hash, unnamed, &self.now());
         let Ok((count, branches, covered, counterexamples)) = counts else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
@@ -492,8 +471,17 @@ fn bad_key() -> Reply {
 }
 
 /// `503` for an object id before the index's first build.
-fn index_not_yet() -> Reply {
-    envelope::not_yet_reply(INDEX_TTL.as_secs(), "The index of objects")
+fn index_not_yet(secs: u64) -> Reply {
+    envelope::not_yet_reply(secs, "The index of objects")
+}
+
+/// `404` for a hex id the last build does not hold: the reason says so (CONTRACT-round-0.7-P HP1).
+fn index_miss() -> Reply {
+    let body = Value::Object(vec![
+        ("error".into(), Value::String("no such object".into())),
+        ("reason".into(), Value::String("not in the object index yet".into())),
+    ]);
+    Reply::json(404, body.to_jcs(), Cache::NoStore)
 }
 
 fn not_found() -> Reply {

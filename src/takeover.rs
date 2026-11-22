@@ -36,16 +36,20 @@ fn obj(members: Vec<(&str, Value)>) -> Value {
     Value::Object(members.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
+/// The most catalogue entries a takeover build reads.
+const TAKEOVER_ENTRIES: usize = 100_000;
+
 /// The relayed functions of every source domain, from the names bound now (the thread's build, never a request's):
 /// each function that has a relay source is listed under its domain.
 pub(crate) fn build(inner: &Inner) -> Lists {
     let mut out: Lists = BTreeMap::new();
-    let Ok(summary) = inner.store.catalog_summary() else { return out };
+    // The names come from one read of the entries, with no counts (CONTRACT-round-0.7-P HP7).
+    let Ok(entries) = inner.store.catalog_entries_all(TAKEOVER_ENTRIES) else { return out };
     let now = inner.now();
-    for e in summary.entries.iter().filter(|e| e.kind == CatalogKind::Function) {
-        let Ok(Some(b)) = inner.store.resolve_binding(&e.name, &now) else { continue };
-        if let Some(r) = relay_of(inner, &e.name, &b.fn_hash) {
-            out.entry(r.name).or_default().push((e.name.clone(), b.fn_hash));
+    for (_, name, _, _) in entries.iter().filter(|e| e.0 == CatalogKind::Function) {
+        let Ok(Some(b)) = inner.store.resolve_binding(name, &now) else { continue };
+        if let Some(r) = relay_of(inner, name, &b.fn_hash) {
+            out.entry(r.name).or_default().push((name.clone(), b.fn_hash));
         }
     }
     for list in out.values_mut() {
