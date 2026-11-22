@@ -439,11 +439,7 @@ pub async fn shop(label: &str, withdrawn: bool) -> Served {
     v.extend(shop_cells());
     publish(&lite, "classes.jsonl", &v, NOW).unwrap_or_else(|e| panic!("classes and cells: {e}"));
     if withdrawn {
-        let w = withdrawal_line(
-            &format!("{}/from_label", product()),
-            &[("label", "string", "old")],
-            OLD_WITHDRAWN,
-        );
+        let w = withdrawal_line(&format!("{}/from_label", product()), &[("label", "string", "old")], OLD_WITHDRAWN);
         publish(&lite, "withdraw.jsonl", &[w], T2).unwrap_or_else(|e| panic!("withdrawal: {e}"));
     }
     build_served(lite, None, |_| {}).await
