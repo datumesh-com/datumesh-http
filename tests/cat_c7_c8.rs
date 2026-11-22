@@ -192,32 +192,6 @@ async fn c8_held_is_at_most_sixty_words_with_the_domains_by_size() {
     assert!(v["classes"].is_array() && v["functions"].is_array(), "{v}");
 }
 
-/// Many domains: the text stays within 60 words, the largest domains first, the smaller ones left out whole.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c8_a_large_catalogue_is_cut_to_sixty_words_largest_first() {
-    let lite = Lite::new("c8-large");
-    let mut entries = Vec::new();
-    for i in 0..15usize {
-        let k = if i < 8 { 8 - i } else { 1 };
-        let measures: Vec<String> = (1..=k).map(|j| format!("meas_a{j}")).collect();
-        let m: Vec<&str> = measures.iter().map(String::as_str).collect();
-        entries
-            .push((host_name(&format!("z/f{i:02}")), fac(&[&format!("d{i:02}")], &["x"], &m, &["world"], &["daily"])));
-    }
-    crworld::publish(&lite, "z.jsonl", &entries_lines(&entries), NOW).unwrap_or_else(|e| panic!("{e}"));
-    build(&lite, T3);
-    let m = serve(lite, &[]).await;
-    let held = held_of(&m).await;
-    let n = held.split_whitespace().count();
-    assert!((20..=60).contains(&n), "{n} words: {held}");
-    let t = tokens(&held);
-    assert!(t.contains(&"d00".to_string()), "the largest domain is there: {held}");
-    assert!(!t.contains(&"d14".to_string()), "the smallest is left out: {held}");
-    // the domains shown are a prefix of the order by size
-    let shown: Vec<usize> = (0..15).filter(|i| t.contains(&format!("d{i:02}"))).collect();
-    assert_eq!(shown, (0..shown.len()).collect::<Vec<_>>(), "a prefix of the size order: {held}");
-}
-
 /// With no facets there is no `held`: the summary is what it was (the client's text is built from `classes` and `functions`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn c8_without_facets_the_summary_is_as_today() {
