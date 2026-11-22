@@ -76,6 +76,14 @@ async fn an_object_is_known_through_its_stored_method() {
     let a = Node::start(A, |c| c.budget = std::time::Duration::from_secs(30)).await;
     let (class, hash) = pair_world(&a).await;
     assert_eq!(a.get(&describe_path(&class)).await.status, 200);
+    // HP1 to HP3 (CONTRACT-round-0.7-P): the describe indexes nothing, so the mesh is told of the stored version
+    for quote in ["USD", "GBP"] {
+        let id = a.cell_id(
+            &format!("{class}/rate"),
+            &args(&[("base", s("EUR")), ("date", d(DAY)), ("quote", s(quote))]),
+        );
+        bl(|| a.mesh.stored_version_added(&id));
+    }
     let known = short_id(&class, &hash, "EUR", "GBP");
     let r = a.get(&describe_path(&known)).await;
     assert_eq!(r.status, 200, "{}", r.text());
