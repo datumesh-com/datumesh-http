@@ -302,9 +302,31 @@ async fn c2_a_bundle_with_facets_imports() {
     assert!(lite.store.catalog_entry_ext(CatalogKind::Function, BF).unwrap().unwrap().facets.is_empty());
 }
 
-/// An unknown facet key, and every bound of the line, are refused in a bundle too; nothing is written.
+/// A bundle with `facets` written into its catalogue entry by hand and the manifest signed again by `HOST`'s key. The
+/// bundle builder stays strict (coordinator decision), so a bad facet cannot be built: it is built valid, then changed
+/// and re-signed, so that the import's refusal is what a test sees (the signature is good).
+fn resigned_bundle_with_facets(facets: Value) -> Vec<u8> {
+    use datumesh_core::json;
+    use ed25519_dalek::Signer;
+    let mut b: Value = serde_json::from_slice(&bundle_with(Some(json!({"domain": ["finance"]})))).unwrap();
+    b["catalog"][0]["facets"] = facets;
+    // the manifest signs: names, namespace, receipts (hashes) and catalog, as JCS
+    let manifest = json!({"names": b["names"], "namespace": b["namespace"], "receipts": [], "catalog": b["catalog"]});
+    assert_eq!(b["receipts"], json!([]), "the manifest above lists no receipts");
+    let jcs = json::parse(manifest.to_string().as_bytes()).unwrap().to_jcs();
+    let sig = ed25519_dalek::SigningKey::from_bytes(&seed_for(HOST)).sign(&jcs).to_bytes();
+    b["manifest"]["signature"] = Value::String(sig.iter().map(|x| format!("{x:02x}")).collect());
+    json::parse(b.to_string().as_bytes()).unwrap().to_jcs()
+}
+
+/// An unknown facet key, and every bound of the line, are refused in a bundle too; nothing is written. The bundle is
+/// well signed (the control imports): it is the import that refuses the facets.
 #[test]
 fn c2_a_bundle_with_bad_facets_is_refused() {
+    // control: re-signing by hand with good facets imports, so a refusal below is the facets' and not the signature's
+    let control = Lite::new("c2-bundle-resigned-ok");
+    import(&control, &resigned_bundle_with_facets(json!({"domain": ["finance"], "region": ["ea"]})))
+        .unwrap_or_else(|e| panic!("the hand-signed control bundle must import: {e}"));
     let cases: Vec<(&str, Value)> = vec![
         ("an unknown key", json!({"colour": ["red"]})),
         ("an empty list", json!({"domain": []})),
@@ -315,7 +337,8 @@ fn c2_a_bundle_with_bad_facets_is_refused() {
     ];
     for (what, facets) in cases {
         let lite = Lite::new("c2-bundle-bad");
-        let e = import(&lite, &bundle_with(Some(facets))).expect_err(what);
+        let e = import(&lite, &resigned_bundle_with_facets(facets)).expect_err(what);
+        assert!(!matches!(e, BundleError::Manifest(_)), "{what}: refused for its signature, not its facets: {e:?}");
         eprintln!("{what}: {e}");
         nothing_written(&lite);
     }
