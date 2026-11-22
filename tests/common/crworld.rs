@@ -62,6 +62,16 @@ pub fn bool_cell_line(function: &str, args: &[(&str, &str, &str)], value: bool) 
     .to_string()
 }
 
+/// A withdrawal line (CONTRACT-round-0.7 R1, SPEC 8.1): the stored cell `function(args)` has no value from this run's clock on.
+/// `args` are `(name, type, lexical)`.
+pub fn withdrawal_line(function: &str, args: &[(&str, &str, &str)], reason: &str) -> String {
+    let a: serde_json::Map<String, Value> =
+        args.iter().map(|(k, t, v)| (k.to_string(), json!({"type": t, "value": v}))).collect();
+    json!({"cell": {"fn": function, "args": a}, "licence": "CC0-1.0", "summary": "Synthetic test data.",
+        "withdrawn": reason})
+    .to_string()
+}
+
 /// A catalogue line of a function.
 pub fn catalog_line_of(name: &str, kind: &str, extra: Value) -> String {
     let mut v = json!({"catalog": name, "kind": kind, "label": "A synthetic name", "description": "A synthetic description.",
@@ -417,8 +427,11 @@ pub fn shop_cells() -> Vec<String> {
     ]
 }
 
-/// The shop, served. With `withdrawn`, a second run at `T2` withdraws the label `old` (a new version of its lookup cell whose
-/// value is the empty string, K8).
+/// The reason the shop's label `old` is withdrawn for.
+pub const OLD_WITHDRAWN: &str = "the label old is retired";
+
+/// The shop, served. With `withdrawn`, a second run at `T2` withdraws the label `old` (a withdrawal of its lookup cell, R1,
+/// which replaces K8's empty string).
 pub async fn shop(label: &str, withdrawn: bool) -> Served {
     let lite = Lite::new(label);
     publish(&lite, "functions.jsonl", &shop_functions(), BEFORE).unwrap_or_else(|e| panic!("functions: {e}"));
@@ -426,7 +439,12 @@ pub async fn shop(label: &str, withdrawn: bool) -> Served {
     v.extend(shop_cells());
     publish(&lite, "classes.jsonl", &v, NOW).unwrap_or_else(|e| panic!("classes and cells: {e}"));
     if withdrawn {
-        publish(&lite, "withdraw.jsonl", &[label_cell("old", "")], T2).unwrap_or_else(|e| panic!("withdrawal: {e}"));
+        let w = withdrawal_line(
+            &format!("{}/from_label", product()),
+            &[("label", "string", "old")],
+            OLD_WITHDRAWN,
+        );
+        publish(&lite, "withdraw.jsonl", &[w], T2).unwrap_or_else(|e| panic!("withdrawal: {e}"));
     }
     build_served(lite, None, |_| {}).await
 }

@@ -115,9 +115,9 @@ async fn k8_keys_are_not_folded() {
     assert_eq!(a.value(), Some(pk("A1").as_str()), "{}", a.text);
 }
 
-/// A label is withdrawn by a new version of its lookup cell whose value is the empty string: as of now the label is
-/// `E_NAME_UNBOUND` as an unknown one is; as of an instant before the withdrawal it still names the object (a cell's history
-/// stays).
+/// A label is withdrawn by a withdrawal of its lookup cell (R1, SPEC 16.1, 16.7): as of now a request through the label is
+/// `not_covered` with `reason`, the withdrawal's text, and no receipt (no cell of the request was resolved); as of an instant
+/// before the withdrawal it still names the object (a cell's history stays). An unknown label stays `E_NAME_UNBOUND`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn k8_a_withdrawn_label_is_e_name_unbound() {
     let m = shop("cr-k8-withdrawn", true).await;
@@ -125,21 +125,23 @@ async fn k8_a_withdrawn_label_is_e_name_unbound() {
     assert_eq!((was.outcome(), was.value()), ("ok", Some("7")), "as of {BETWEEN}: {}", was.text);
     for asof in [None, Some(T2)] {
         let a = ask(&m, &path(&price_call("old"), asof)).await;
-        assert_eq!(
-            (a.status, a.outcome(), a.error()),
-            (404, "not_covered", Some("E_NAME_UNBOUND")),
-            "{asof:?}: {}",
-            a.text
-        );
+        assert_eq!((a.status, a.outcome()), (404, "not_covered"), "{asof:?}: {}", a.text);
+        assert_eq!(a.v["reason"], OLD_WITHDRAWN, "{asof:?}: the withdrawal's text: {}", a.text);
+        assert!(a.v.get("receipt").is_none() && a.v.get("trust").is_none(), "{asof:?}: no receipt: {}", a.text);
+        assert_eq!(a.error(), None, "{asof:?}: a withdrawn label is not an unbound name: {}", a.text);
     }
-    // an unknown label is the same, and a label that was not withdrawn is unaffected
+    // an unknown label is E_NAME_UNBOUND with no reason, and a label that was not withdrawn is unaffected
     let nope = ask(&m, &path(&price_call("nope"), None)).await;
     assert_eq!((nope.status, nope.error()), (404, Some("E_NAME_UNBOUND")), "{}", nope.text);
+    assert!(nope.v.get("reason").is_none(), "{}", nope.text);
     let apple = ask(&m, &path(&price_call("apple"), None)).await;
     assert_eq!(apple.value(), Some("1.5"));
-    // the lookup cell itself holds the empty string now
+    // the lookup cell itself is withdrawn: not_covered with the withdrawal as its receipt, its trust, and the same reason
     let cell = ask(&m, &format!("/cell/{}/from_label?label=old", product())).await;
-    assert_eq!((cell.outcome(), cell.value()), ("ok", Some("")), "{}", cell.text);
+    assert_eq!((cell.status, cell.outcome()), (404, "not_covered"), "{}", cell.text);
+    assert_eq!(cell.v["receipt"]["withdrawn"], OLD_WITHDRAWN, "{}", cell.text);
+    assert!(cell.v["receipt"].get("value").is_none() && cell.v["receipt"].get("type").is_none(), "{}", cell.text);
+    assert_eq!((cell.v["trust"].as_str(), cell.v["reason"].as_str()), (Some("primary"), Some(OLD_WITHDRAWN)));
 }
 
 /// `describe/{id}` accepts `N[label]` and answers the object's describe, with `resolved` (the lookup resolution, whose `to` is
