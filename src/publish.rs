@@ -771,7 +771,10 @@ struct Pending {
     line: usize,
     ns: String,
     cell: Cell,
-    value: Scalar,
+    /// The value; `None` for a withdrawal.
+    value: Option<Scalar>,
+    /// The reason of a withdrawal (R1), which takes the value's place.
+    withdrawn: Option<String>,
     valid: Args,
     tx: String,
     asof: String,
@@ -817,7 +820,6 @@ impl Pending {
         let err = move |d: String| PublishError::at(line, d);
         let b = ReceiptBuilder::new()
             .cell(self.cell.clone())
-            .value(self.value)
             .valid(self.valid)
             .asof(self.asof.as_str())
             .tx(self.tx.as_str())
@@ -830,7 +832,22 @@ impl Pending {
             Some(s) => b.source(s),
             None => b,
         };
-        let r = b.sign(key).map_err(|e| err(e.to_string()))?;
+        if let Some(reason) = &self.withdrawn {
+            // A withdrawal is signed as a receipt is (SPEC 8.1, R1); its canonical bytes are the stored receipt.
+            let w = b.withdrawn(reason).sign_withdrawal(key).map_err(|e| err(e.to_string()))?;
+            let id = self.cell.id();
+            return Ok(Signed {
+                line,
+                has_tx: self.has_tx,
+                tx: self.tx,
+                id,
+                hash: w.hash().to_string(),
+                receipt: w.canonical().to_vec(),
+                blob: None,
+            });
+        }
+        let Some(value) = self.value else { return Err(err("a cell without value".into())) };
+        let r = b.value(value).sign(key).map_err(|e| err(e.to_string()))?;
         let receipt = receipt_json(&r);
         let hash = Receipt::from_json(&receipt).map_err(|e| err(e.to_string()))?.hash().to_string();
         let id = self.cell.id();
@@ -1357,10 +1374,6 @@ impl<S: Store + ?Sized> Planner<'_, S> {
     /// instants, the function as of `tx`, the descriptor, the arguments and the value (and its blob).
     fn prepare_cell(&mut self, n: usize, v: &Value) -> Result<Pending, PublishError> {
         let err = |d: String| PublishError::at(n, d);
-        if v.get("withdrawn").is_some() {
-            // R1: a withdrawal is signed like a receipt, and core 0.3.13 has no signer for one yet (CONTRACT-round-0.7 R1).
-            return Err(err("a withdrawal line is not published yet: core has no signer for a withdrawal".into()));
-        }
         let cell_v = v.get("cell").ok_or_else(|| err("a cell without fn".into()))?;
         let name = cell_v.get("fn").and_then(Value::as_str).ok_or_else(|| err("a cell without fn".into()))?;
         let (ns, f) = name.rsplit_once('/').ok_or_else(|| err(format!("{name}: not a function name")))?;
@@ -1407,35 +1420,50 @@ impl<S: Store + ?Sized> Planner<'_, S> {
             Some(sv) => Some(source_of_line(sv).map_err(err)?),
             None => None,
         };
-        let value_v = v.get("value").ok_or_else(|| err("a cell without value".into()))?;
-        let (value, blob) = match value_v.get("blob").and_then(Value::as_str) {
-            Some(file) => {
-                let media = value_v.get("media_type").and_then(Value::as_str).unwrap_or("application/octet-stream");
-                let bytes = match self.ctx.blobs.get(file) {
-                    Some(b) => b.clone(),
-                    None => std::fs::read(self.ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?,
-                };
-                let sha = sha256_hex(&bytes);
-                let scalar = Scalar::from_lexical(Type::Blob, &format!("{sha}:{}:{media}", bytes.len()))
-                    .map_err(|e| err(e.to_string()))?;
-                (scalar, Some(bytes))
-            }
-            None => (Scalar::from_json(&value_v.to_jcs()).map_err(|e| err(e.to_string()))?, None),
+        // A withdrawal (R1, SPEC 8.1): `withdrawn` is the reason, in place of `value`; a line has one or the other.
+        let withdrawn = match v.get("withdrawn") {
+            None => None,
+            Some(Value::String(reason)) => Some(reason.clone()),
+            Some(_) => return Err(err("E_SCHEMA: withdrawn is a non-empty string: the reason".into())),
         };
-        // A lookup returns an object's key, never the empty string (R1, D116 as amended: no withdrawal by "").
-        if let Scalar::String(text) = &value {
-            if text.is_empty() && lookup_method(self.store, &self.sim, name).map_err(err)? {
-                return Err(err(format!(
-                    "E_KEY_NORMALISATION: {name} is a lookup, and its value is not the empty string"
-                )));
-            }
+        if withdrawn.is_some() && v.get("value").is_some() {
+            return Err(err("E_SCHEMA: a cell line has withdrawn or value, not both".into()));
         }
+        let (value, blob) = if withdrawn.is_some() {
+            (None, None)
+        } else {
+            let value_v = v.get("value").ok_or_else(|| err("a cell without value".into()))?;
+            let (scalar, blob) = match value_v.get("blob").and_then(Value::as_str) {
+                Some(file) => {
+                    let media = value_v.get("media_type").and_then(Value::as_str).unwrap_or("application/octet-stream");
+                    let bytes = match self.ctx.blobs.get(file) {
+                        Some(b) => b.clone(),
+                        None => std::fs::read(self.ctx.base.join(file)).map_err(|e| err(format!("{file}: {e}")))?,
+                    };
+                    let sha = sha256_hex(&bytes);
+                    let scalar = Scalar::from_lexical(Type::Blob, &format!("{sha}:{}:{media}", bytes.len()))
+                        .map_err(|e| err(e.to_string()))?;
+                    (scalar, Some(bytes))
+                }
+                None => (Scalar::from_json(&value_v.to_jcs()).map_err(|e| err(e.to_string()))?, None),
+            };
+            // A lookup returns an object's key, never the empty string (R1, D116 as amended: no withdrawal by "").
+            if let Scalar::String(text) = &scalar {
+                if text.is_empty() && lookup_method(self.store, &self.sim, name).map_err(err)? {
+                    return Err(err(format!(
+                        "E_KEY_NORMALISATION: {name} is a lookup, and its value is not the empty string"
+                    )));
+                }
+            }
+            (Some(scalar), blob)
+        };
         let cell = Cell { ns: ns.to_string(), fn_name: f.to_string(), fn_hash, args };
         Ok(Pending {
             line: n,
             ns: ns.to_string(),
             cell,
             value,
+            withdrawn,
             valid,
             tx,
             asof,
@@ -1462,7 +1490,10 @@ impl<S: Store + ?Sized> Planner<'_, S> {
                 if let Some(old) = self.reads.receipt(self.store, &latest) {
                     let old = json::parse(&old).map_err(|e| err(e.to_string()))?;
                     let new = json::parse(&s.receipt).map_err(|e| err(e.to_string()))?;
-                    if ["type", "value", "valid", "licence", "summary"].iter().all(|k| old.get(k) == new.get(k)) {
+                    if ["type", "value", "withdrawn", "valid", "licence", "summary"]
+                        .iter()
+                        .all(|k| old.get(k) == new.get(k))
+                    {
                         return Ok(());
                     }
                 }

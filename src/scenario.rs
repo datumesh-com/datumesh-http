@@ -64,6 +64,25 @@ fn override_value(o: &ScenarioOverride) -> Value {
         ScenarioOverride::Value { cell, value } => {
             Value::Object(vec![("cell".into(), cell_value(cell)), ("value".into(), value.to_value())])
         }
+        ScenarioOverride::Members { slice, members } => {
+            // The echo (5.9): the members sorted by cell id, present even when empty, no `add` or `remove`.
+            let mut sorted: Vec<&(Cell, Scalar)> = members.iter().collect();
+            sorted.sort_by_key(|(c, _)| c.id());
+            Value::Object(vec![
+                ("slice".into(), cell_value(slice)),
+                (
+                    "members".into(),
+                    Value::Array(
+                        sorted
+                            .into_iter()
+                            .map(|(c, v)| {
+                                Value::Object(vec![("cell".into(), cell_value(c)), ("value".into(), v.to_value())])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ])
+        }
         ScenarioOverride::Slice { slice, add, remove } => Value::Object(vec![
             ("slice".into(), cell_value(slice)),
             (
@@ -161,11 +180,38 @@ impl Inner {
         for item in overrides {
             let Value::Object(_) = item else { return bad(ErrorCode::Schema) };
             if item.get("slice").is_some() {
-                // R3: `members` excludes `add` and `remove`. Its evaluation needs the engine's members override,
-                // which the engine does not take yet: until it does, a members override is refused.
+                // R3: `members` replaces the slice's whole member set and excludes `add` and `remove` (5.9).
                 if item.get("members").is_some() {
-                    let excluded = item.get("add").is_some() || item.get("remove").is_some();
-                    return bad(if excluded { ErrorCode::SliceMember } else { ErrorCode::Schema });
+                    if item.get("add").is_some() || item.get("remove").is_some() {
+                        return bad(ErrorCode::SliceMember);
+                    }
+                    if let Err(c) = exactly(item, &["slice", "members"]) {
+                        return bad(c);
+                    }
+                    let slice = match self.cell_ref_of(item.get("slice").unwrap_or(&Value::Null), &at, principal, true)
+                    {
+                        Ok(c) => c,
+                        Err(r) => return r,
+                    };
+                    let Some(Value::Array(items)) = item.get("members") else { return bad(ErrorCode::Schema) };
+                    let mut members = Vec::new();
+                    for m in items {
+                        if let Err(c) = exactly(m, &["cell", "value"]) {
+                            return bad(c);
+                        }
+                        let cell = match self.cell_ref_of(m.get("cell").unwrap_or(&Value::Null), &at, principal, false)
+                        {
+                            Ok(c) => c,
+                            Err(r) => return r,
+                        };
+                        let value = match typed(m.get("value").unwrap_or(&Value::Null)) {
+                            Ok(s) => s,
+                            Err(c) => return bad(c),
+                        };
+                        members.push((cell, value));
+                    }
+                    ov = ov.slice_members(slice, members);
+                    continue;
                 }
                 if let Err(c) = exactly(item, &["slice", "add", "remove"]) {
                     return bad(c);

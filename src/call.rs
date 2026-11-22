@@ -245,6 +245,21 @@ pub(crate) fn take_fault() -> Option<datumesh_core::Fault> {
     CALL_FAULT.with(|f| f.take())
 }
 
+thread_local! {
+    /// The reason of a label whose lookup cell is withdrawn (R1, SPEC 16.7), set by the lookup of this thread's request.
+    static LABEL_WITHDRAWN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Records that a label of the request is withdrawn, with its reason (the lookup cell's withdrawal).
+pub(crate) fn set_label_withdrawn(reason: String) {
+    LABEL_WITHDRAWN.with(|l| *l.borrow_mut() = Some(reason));
+}
+
+/// The reason of the withdrawn label of this thread's request, if one was looked up (taken: given once).
+pub(crate) fn take_label_withdrawn() -> Option<String> {
+    LABEL_WITHDRAWN.with(|l| l.borrow_mut().take())
+}
+
 /// Whether `rest` (the text after `/cell/`, query included, as received) is a call rather
 /// than a cell URI's rest: its path (before the first `?`) has a `(` or a `%`, or starts with
 /// `@`, none of which a cell URI's path (namespace and name) has.
@@ -510,6 +525,7 @@ pub fn resolve_call(
     }
     let env = Env { bindings, aliases, now };
     CALL_FAULT.with(|f| f.set(None));
+    LABEL_WITHDRAWN.with(|l| *l.borrow_mut() = None);
     let call = datumesh_formula::call::parse_call(text.trim_start(), &env).map_err(|e| match e {
         datumesh_formula::call::CallError::Code("E_FORMULA_DISPATCH_KEY", _) => {
             CALL_FAULT.with(|f| f.set(Some(datumesh_core::Fault::DispatchKey)));

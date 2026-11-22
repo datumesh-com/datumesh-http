@@ -672,6 +672,11 @@ impl Bindings for Inner {
                 Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
                 _ => Ok(None),
             },
+            // The lookup cell is withdrawn (R1, SPEC 16.7): the label is not_covered with the reason, no receipt.
+            Ok(Answer::Withdrawn { reason, .. }) => {
+                crate::call::set_label_withdrawn(reason);
+                Ok(None)
+            }
             Err(EngineError::Store(_)) => Err(ErrorCode::InputUnavailable),
             _ => Ok(None),
         }
@@ -968,9 +973,13 @@ impl Inner {
                 let fault = crate::call::take_fault();
                 Reply::json(404, envelope::not_covered(fault), Cache::Public(self.config.ttl.latest_max_age.as_secs()))
             }
-            Rejection::Error(ErrorCode::NameUnbound) => {
-                envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs())
-            }
+            Rejection::Error(ErrorCode::NameUnbound) => match crate::call::take_label_withdrawn() {
+                Some(reason) => match datumesh_core::Answer::label_withdrawn(&reason) {
+                    Ok(a) => envelope::answer_reply(&a, Cache::Public(self.config.ttl.latest_max_age.as_secs())),
+                    Err(_) => envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs()),
+                },
+                None => envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs()),
+            },
             Rejection::Error(ErrorCode::ForeignUnavailable) => {
                 // The other mesh could not be reached while resolving the name (spec-0.4.3).
                 let d = FOREIGN_DETAIL.with(|d| d.take()).unwrap_or(datumesh_core::ForeignDetail::Network);
@@ -1121,6 +1130,27 @@ impl Inner {
                         self.remember_latest(target, &info, a);
                     }
                     self.ok_reply(target, info, a, now, private, link)
+                }
+                Ok(Answer::Withdrawn { receipt, reason: _ }) => {
+                    // R1: the cell's latest version is a withdrawal: `not_covered` with the withdrawal, its trust and reason.
+                    let built = datumesh_core::Withdrawal::from_json(&receipt).ok().and_then(|w| {
+                        let trust = envelope::trust_label_of_withdrawal(&w, &self.config.host);
+                        datumesh_core::Answer::withdrawn(w, trust).ok()
+                    });
+                    let Some(ans) = built else {
+                        return envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash));
+                    };
+                    let ans = envelope::with_fn_hash(ans, Some(&target.bound.fn_hash));
+                    let mut reply = envelope::answer_reply(&ans, Cache::Public(0));
+                    self.cache_rules(&mut reply, target, a, now, private, link);
+                    if target.asof().is_some() {
+                        reply.cache = if private {
+                            Cache::Private
+                        } else {
+                            Cache::Public(self.config.ttl.latest_max_age.as_secs())
+                        };
+                    }
+                    reply
                 }
                 Ok(Answer::NotCovered { fault }) => {
                     let mut ans =

@@ -353,3 +353,20 @@ pub fn not_yet_reply(retry_after: u64, what: &str) -> Reply {
     r.retry_after = Some(retry_after.clamp(1, 300));
     r
 }
+
+/// `trust` for a withdrawal (R1, SPEC 5.5): as [`trust_label_of`] for a receipt with no value. A withdrawal has no
+/// inputs, so it is `primary` when its signer's host is the namespace's host; a relayed one (its canonical bytes carry
+/// `source`) is `relayed`.
+pub fn trust_label_of_withdrawal(w: &datumesh_core::Withdrawal, mesh_host: &str) -> datumesh_core::TrustLabel {
+    let ns_host = w.cell().ns.split('/').next().unwrap_or("");
+    let relayed = datumesh_core::json::parse(w.canonical()).ok().is_some_and(|v| v.get("source").is_some());
+    if relayed {
+        datumesh_core::TrustLabel::Relayed
+    } else if w.signer_host() == ns_host {
+        datumesh_core::TrustLabel::Primary
+    } else if w.signer_host() == mesh_host {
+        datumesh_core::TrustLabel::Computed
+    } else {
+        datumesh_core::TrustLabel::Unverified
+    }
+}

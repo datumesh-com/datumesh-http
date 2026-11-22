@@ -221,24 +221,45 @@ pub struct PlannedCell {
     pub receipt_hash: String,
     /// The arguments.
     pub args: Args,
-    /// The value.
-    pub value: Scalar,
+    /// The value; `None` for a withdrawal (R1), which has no value from its tx on.
+    pub value: Option<Scalar>,
+}
+
+/// The value a stored receipt or withdrawal gives: `Some` for a receipt, `None` for a withdrawal (R1).
+pub(crate) fn version_value(bytes: &[u8]) -> Result<Option<Scalar>, String> {
+    match Receipt::from_json(bytes) {
+        Ok(r) => Ok(Some(r.value().clone())),
+        Err(e) => match datumesh_core::Withdrawal::from_json(bytes) {
+            Ok(_) => Ok(None),
+            Err(_) => Err(e.to_string()),
+        },
+    }
 }
 
 impl Overlay {
     /// Records a planned receipt (its JSON as the run signs it).
     pub fn cell(&mut self, receipt: &[u8]) -> Result<(), String> {
-        let r = Receipt::from_json(receipt).map_err(|e| e.to_string())?;
-        let cell = r.cell();
-        let name = format!("{}/{}", cell.ns, cell.fn_name);
-        let args = plain_args(&cell.args);
+        if let Ok(r) = Receipt::from_json(receipt) {
+            let cell = r.cell();
+            self.cells.push(PlannedCell {
+                name: format!("{}/{}", cell.ns, cell.fn_name),
+                id: cell.id(),
+                tx: r.tx().to_string(),
+                receipt_hash: r.hash().to_string(),
+                args: plain_args(&cell.args),
+                value: Some(r.value().clone()),
+            });
+            return Ok(());
+        }
+        let w = datumesh_core::Withdrawal::from_json(receipt).map_err(|e| e.to_string())?;
+        let cell = w.cell();
         self.cells.push(PlannedCell {
-            name,
+            name: format!("{}/{}", cell.ns, cell.fn_name),
             id: cell.id(),
-            tx: r.tx().to_string(),
-            receipt_hash: r.hash().to_string(),
-            args,
-            value: r.value().clone(),
+            tx: w.tx().to_string(),
+            receipt_hash: w.hash().to_string(),
+            args: plain_args(&cell.args),
+            value: None,
         });
         Ok(())
     }
@@ -410,14 +431,13 @@ impl<'a, S: Store + ?Sized> Run<'a, S> {
         if let Some(p) =
             self.overlay.cells.iter().filter(|p| p.id == id && p.tx.as_str() <= t).max_by(|a, b| a.tx.cmp(&b.tx))
         {
-            return Ok(Some(p.value.clone()));
+            return Ok(p.value.clone());
         }
         let Some(v) = self.store.version_asof(id, t).map_err(|e| RunError(e.to_string()))? else {
             return Ok(None);
         };
         let bytes = self.store.receipt(&v.receipt_hash).ok_or_else(|| RunError("a version has no receipt".into()))?;
-        let r = Receipt::from_json(&bytes).map_err(|e| RunError(e.to_string()))?;
-        Ok(Some(r.value().clone()))
+        version_value(&bytes).map_err(RunError)
     }
 
     /// The members of a stored function's slice: the store's, and the overlay's (the later version
@@ -489,13 +509,21 @@ impl<'a, S: Store + ?Sized> Run<'a, S> {
             }
             let newer = members.get(&p.id).is_none_or(|(_, v)| v.tx < p.tx);
             if newer {
-                let ver = Version {
-                    value: p.value.clone(),
-                    receipt_hash: p.receipt_hash.clone(),
-                    tx: p.tx.clone(),
-                    asof: p.tx.clone(),
-                };
-                members.insert(p.id.clone(), (p.args.clone(), ver));
+                match &p.value {
+                    Some(value) => {
+                        let ver = Version {
+                            value: value.clone(),
+                            receipt_hash: p.receipt_hash.clone(),
+                            tx: p.tx.clone(),
+                            asof: p.tx.clone(),
+                        };
+                        members.insert(p.id.clone(), (p.args.clone(), ver));
+                    }
+                    // A withdrawal leaves the cell out of the slice (R1)
+                    None => {
+                        members.remove(&p.id);
+                    }
+                }
             }
         }
         // A withdrawn input is no member (R1), whatever the store and the file give.
