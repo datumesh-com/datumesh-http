@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use common::*;
 use datumesh_core::json::{self, Value};
-use datumesh_core::{ClassDescriptor, ErrorCode, FunctionDescriptor, Resolved};
+use datumesh_core::{Arg, CellRef, ClassDescriptor, ErrorCode, FunctionDescriptor, Resolved, Scalar};
 use datumesh_http::call::{self, Bindings, Bound, BoundClass, Rejection};
 
 const NOW: &str = "2026-06-01T00:00:00.000000Z";
@@ -31,6 +31,10 @@ struct VectorEnv {
     classes: BTreeMap<String, Arc<ClassDescriptor>>,
     lookups: BTreeMap<String, BTreeMap<String, String>>,
     aliases_tx: Option<String>,
+    /// The classes round (K5): flattened class descriptors held by hash only, no name bound (`class_descriptors`).
+    held: Vec<Arc<ClassDescriptor>>,
+    /// The classes round (K10): the values of the cells a chain reads, by canonical call without `?asof=`.
+    cells: BTreeMap<String, String>,
 }
 
 impl VectorEnv {
@@ -60,6 +64,16 @@ impl VectorEnv {
                 })
                 .collect(),
             aliases_tx: env.get("aliases_tx").and_then(Value::as_str).map(str::to_string),
+            held: match env.get("class_descriptors") {
+                Some(Value::Array(ds)) => {
+                    ds.iter().map(|d| Arc::new(ClassDescriptor::from_value(d).unwrap())).collect()
+                }
+                _ => Vec::new(),
+            },
+            cells: object("cells")
+                .into_iter()
+                .filter_map(|(call, k)| k.as_str().map(|k| (call, k.to_string())))
+                .collect(),
         }
     }
 }
@@ -83,6 +97,28 @@ impl Bindings for VectorEnv {
     fn aliases_tx(&self) -> Option<String> {
         self.aliases_tx.clone()
     }
+    fn class_name_of(&self, class_hash: &str, _asof: &str) -> Result<Option<String>, ErrorCode> {
+        Ok(self.classes.iter().find(|(_, d)| d.hash() == class_hash).map(|(n, _)| n.clone()))
+    }
+    fn class_by_hash(&self, class_hash: &str) -> Result<Option<ClassDescriptor>, ErrorCode> {
+        let named = self.classes.values().find(|d| d.hash() == class_hash);
+        Ok(named.or_else(|| self.held.iter().find(|d| d.hash() == class_hash)).map(|d| (**d).clone()))
+    }
+    fn chain(&self, cell: &CellRef, _asof: &str) -> Result<Option<String>, ErrorCode> {
+        Ok(self.cells.get(&canonical_cell(cell)).cloned())
+    }
+}
+
+/// A cell's canonical call without `?asof=`: its full name and its arguments, each labelled, in ascending order of
+/// names (16.7), as the `cells` of a vector's environment write it.
+fn canonical_cell(cell: &CellRef) -> String {
+    let literal = |a: &Arg| match a {
+        Arg::Slice => "*".to_string(),
+        Arg::Value(Scalar::String(t)) | Arg::Value(Scalar::Blob(t)) => format!("\"{}\"", t.replace('"', "\"\"")),
+        Arg::Value(s) => s.lexical().to_string(),
+    };
+    let parts: Vec<String> = cell.args.iter().map(|(k, a)| format!("{k}: {}", literal(a))).collect();
+    format!("{}/{}({})", cell.ns, cell.fn_name, parts.join(", "))
 }
 
 /// `resolved` as the envelope carries it.
@@ -186,6 +222,10 @@ fn run(repin: bool) {
             let want = v.get("error").and_then(Value::as_str).unwrap();
             match r {
                 Err(e) if code_of(&e) == want => {}
+                // A fault is answered `not_covered` with `fault`: `resolve` returns `Rejection::NotCovered` and hands the
+                // fault to the mesh through the crate-private `take_fault`, which this harness cannot read. The envelope's
+                // `fault` is pinned over HTTP by cr_chain.rs (k10_a_key_outside_the_declared_classes_is_a_fault).
+                Err(Rejection::NotCovered) if want == "E_FORMULA_DISPATCH_KEY" => {}
                 other => failures
                     .push(format!("{id}: {:?} for {want}", other.map(|t| t.uri.clone()).map_err(|e| code_of(&e)))),
             }
