@@ -8,6 +8,7 @@
 //!   body of the `404` (HP1: "404 with the reason ..."), compared in lower case.
 //! * A cell id is not an object id any more: HP2 "the `cells` map goes: an object's id comes from its keys, not
 //!   from a cell id". `GET /describe/<64 or 12 hex of a method cell>` is `404`.
+//!
 //! Decisions of the contract's owner (2026-11-22), which these tests follow:
 //!
 //! 1. A class describe still marks the class as heard of, so the next background build includes it; it indexes
@@ -70,7 +71,8 @@ async fn the_index_holds_the_extent_keys_objects_and_no_others() {
     for i in 0..6 {
         let r = w.get(&format!("/describe/{}", cls.id(&named(i, "E"), "Q"))).await;
         assert_eq!(r.status, 200, "E{i}: {}", r.text());
-        let by_key = w.get(&format!("/describe/{}", common::world::call_path(&cls.encoding(&named(i, "E"), "Q")))).await;
+        let by_key =
+            w.get(&format!("/describe/{}", common::world::call_path(&cls.encoding(&named(i, "E"), "Q")))).await;
         assert_eq!(r.body, by_key.body, "E{i}: the id and the key encoding answer the same");
     }
     // the objects of the other methods are not in the index: 404 with the reason; by key encoding they answer
@@ -82,7 +84,8 @@ async fn the_index_holds_the_extent_keys_objects_and_no_others() {
             assert!(says_not_in_index(&r.text()), "{p}{i}: the reason: {}", r.text());
             let short = w.get(&format!("/describe/{}", &id[..12])).await;
             assert_eq!(short.status, 404, "{p}{i} short: {}", short.text());
-            let by_key = w.get(&format!("/describe/{}", common::world::call_path(&cls.encoding(&named(i, p), "Q")))).await;
+            let by_key =
+                w.get(&format!("/describe/{}", common::world::call_path(&cls.encoding(&named(i, p), "Q")))).await;
             assert_eq!(by_key.status, 200, "{p}{i} by key: {}", by_key.text());
         }
     }
@@ -225,7 +228,8 @@ async fn the_index_as_a_whole_is_capped_too() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_class_within_the_caps_is_not_counted_as_cut() {
     let (fx, cls) = extent_class("hp2-no-cut");
-    let w = serve_with(fx, &[("DATUMESH_INDEX_CLASS_MAX", "50"), ("DATUMESH_INDEX_MAX", "100")], &[(A, "members")]).await;
+    let w =
+        serve_with(fx, &[("DATUMESH_INDEX_CLASS_MAX", "50"), ("DATUMESH_INDEX_MAX", "100")], &[(A, "members")]).await;
     assert_eq!(w.describe_until_found(&cls.id(&named(0, "E"), "Q")).await.status, 200);
     assert_eq!(found_count(&w, &cls, "E", 6).await, 6);
     let v = w.metric("datumesh_object_index_truncated_total").await;

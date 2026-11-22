@@ -33,7 +33,8 @@ const FXR: &str = "mesh-test.datumesh.com/relay/ecb.europa.eu/fx_reference";
 const CLOCK: &str = "2026-01-01T00:00:00.000000Z";
 
 fn date_sig() -> String {
-    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#.to_string()
+    r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"1"}}"#
+        .to_string()
 }
 
 fn fx_sig() -> String {
@@ -82,8 +83,9 @@ async fn month_page(w: &W, path: &str) -> Rep {
 fn policy_fx(label: &str) -> (Fx, String) {
     let fx = Fx::lite(label);
     fx.publish(&[function_line(POLICY, &date_sig(), None)], CLOCK);
-    let mut v: Vec<String> =
-        (1..=20).map(|d| daily(POLICY, json!({"date": date(&format!("2026-03-{d:02}"))}), "4", &format!("2026-03-{d:02}"))).collect();
+    let mut v: Vec<String> = (1..=20)
+        .map(|d| daily(POLICY, json!({"date": date(&format!("2026-03-{d:02}"))}), "4", &format!("2026-03-{d:02}")))
+        .collect();
     v.push(catalog_line(POLICY, "function", "Policy rate", "The rate.", json!({"date": "the day"}), json!({})));
     fx.publish(&v, NOW);
     let path = series_file(
@@ -106,7 +108,12 @@ async fn a_period_page_shows_at_most_the_slice_cap() {
     let w = fx.serve(config(&[("DATUMESH_SERIES_FILE", &path), ("DATUMESH_SLICE_MAX", "5")], &[])).await;
     let r = month_page(&w, &format!("/series/{POLICY}/2026-03.csv")).await;
     if r.status == 200 {
-        assert!(data_rows(&r.text()) <= 5, "the page shows {} of the month's 20 days: {}", data_rows(&r.text()), r.text());
+        assert!(
+            data_rows(&r.text()) <= 5,
+            "the page shows {} of the month's 20 days: {}",
+            data_rows(&r.text()),
+            r.text()
+        );
     } else {
         assert!(matches!(r.status, 404 | 413 | 422), "a refused page: {} {}", r.status, r.text());
     }
@@ -132,10 +139,12 @@ async fn the_overview_orders_dictionary_values_without_a_scan_of_the_catalogue_p
     }
     fx.publish(&early, CLOCK);
     let mut v = Vec::new();
-    for (d, cur, val) in [("2026-03-02", "USD", "1.08"), ("2026-03-02", "JPY", "160.2"), ("2026-03-03", "USD", "1.07")] {
+    for (d, cur, val) in [("2026-03-02", "USD", "1.08"), ("2026-03-02", "JPY", "160.2"), ("2026-03-03", "USD", "1.07")]
+    {
         v.push(daily(FXR, json!({"currency": {"type": "string", "value": cur}, "date": date(d)}), val, d));
     }
-    let dict: Vec<Value> = CURRENCIES.iter().map(|c| json!({"value": c, "label": format!("The {c} currency")})).collect();
+    let dict: Vec<Value> =
+        CURRENCIES.iter().map(|c| json!({"value": c, "label": format!("The {c} currency")})).collect();
     v.push(catalog_line(
         FXR,
         "function",

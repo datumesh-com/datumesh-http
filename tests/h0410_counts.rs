@@ -36,7 +36,12 @@ fn class(label: &str) -> (Fx, Cls) {
         &[formula_of(&format!("{K}/twice"), &format!("{BASE}(base: base, quote: quote) * 2"), &sig_of(Kind::Rate))],
         NOW,
     );
-    let cls = define_class_with(&fx, K, &[("members", Kind::Extent), ("rate", Kind::Rate)], &[("twice", &format!("{K}/twice"))]);
+    let cls = define_class_with(
+        &fx,
+        K,
+        &[("members", Kind::Extent), ("rate", Kind::Rate)],
+        &[("twice", &format!("{K}/twice"))],
+    );
     let mut lines = cells_of(&cls, "members", Kind::Extent, "E", 0..EXTENT);
     lines.extend(cells_of(&cls, "rate", Kind::Rate, "R", 0..RATE));
     fx.publish(&lines, T2);

@@ -26,7 +26,8 @@ use serde_json::json;
 const CATALOG: usize = 20;
 
 fn sig() -> String {
-    r#"{"args":{"site":{"type":"string","valid":false}},"order":["site"],"returns":{"type":"number","unit":"1"}}"#.to_string()
+    r#"{"args":{"site":{"type":"string","valid":false}},"order":["site"],"returns":{"type":"number","unit":"1"}}"#
+        .to_string()
 }
 
 fn name(i: usize) -> String {

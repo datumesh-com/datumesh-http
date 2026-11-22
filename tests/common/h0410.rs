@@ -126,7 +126,8 @@ impl Probe {
             for g in ALL {
                 c.batch_execute(&format!("CREATE SEQUENCE IF NOT EXISTS {}", g.seq())).unwrap();
             }
-            c.batch_execute(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"{role}\"")).unwrap();
+            c.batch_execute(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"{role}\""))
+                .unwrap();
             for g in ALL {
                 for t in g.tables() {
                     c.batch_execute(&format!(
@@ -232,9 +233,8 @@ impl Fx {
             let (_, after) = rest.split_once('@').unwrap();
             format!("{scheme}://{role}:probe@{after}")
         };
-        let store: Arc<PgStore> = on_thread(move || {
-            Arc::new(PgStore::connect_with(&role_url, PoolOptions::new().max_size(8)).unwrap())
-        });
+        let store: Arc<PgStore> =
+            on_thread(move || Arc::new(PgStore::connect_with(&role_url, PoolOptions::new().max_size(8)).unwrap()));
         let key = key_for(HOST);
         {
             let (store, key) = (store.clone(), key.clone());
@@ -282,7 +282,9 @@ impl Fx {
     /// The hash `name` is bound to now.
     pub fn hash_of(&self, name: &str) -> String {
         let (store, name) = (self.store.clone(), name.to_string());
-        on_thread(move || store.resolve_binding(&name, END).unwrap().unwrap_or_else(|| panic!("{name} unbound")).fn_hash)
+        on_thread(move || {
+            store.resolve_binding(&name, END).unwrap().unwrap_or_else(|| panic!("{name} unbound")).fn_hash
+        })
     }
 
     pub fn class_hash(&self, class: &str) -> String {
@@ -294,11 +296,7 @@ impl Fx {
     pub async fn serve(self, cfg: Config) -> W {
         let (store, key) = (self.store.clone(), self.key.clone());
         let mesh = on_thread(move || {
-            Mesh::builder(cfg, store)
-                .signing_key(key)
-                .clock(Arc::new(FixedClock(MESH_NOW)))
-                .build()
-                .unwrap()
+            Mesh::builder(cfg, store).signing_key(key).clock(Arc::new(FixedClock(MESH_NOW))).build().unwrap()
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -493,10 +491,7 @@ impl Cls {
     pub fn cell_id(&self, method: &str, kind: Kind, base: &str, quote: &str) -> String {
         let mut a = crate::common::args(&[("base", crate::common::s(base)), ("quote", crate::common::s(quote))]);
         if kind == Kind::Rate {
-            a.insert(
-                "date".into(),
-                datumesh_core::Arg::Value(Scalar::from_lexical(Type::Date, "2026-03-02").unwrap()),
-            );
+            a.insert("date".into(), datumesh_core::Arg::Value(Scalar::from_lexical(Type::Date, "2026-03-02").unwrap()));
         }
         Cell { ns: self.name.clone(), fn_name: method.into(), fn_hash: self.method_hash(method).into(), args: a }.id()
     }
@@ -546,8 +541,7 @@ pub fn define_class_with(fx: &Fx, class: &str, methods: &[(&str, Kind)], formula
             store.put_descriptor(&c).unwrap();
         }
     });
-    let mut hashes: Vec<(String, String)> =
-        sigs.iter().map(|(m, _, d)| (m.clone(), descriptor_hash(d))).collect();
+    let mut hashes: Vec<(String, String)> = sigs.iter().map(|(m, _, d)| (m.clone(), descriptor_hash(d))).collect();
     for (m, full) in formulas {
         hashes.push((m.to_string(), fx.hash_of(full)));
     }

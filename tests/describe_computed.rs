@@ -78,10 +78,8 @@ async fn an_object_is_known_through_its_stored_method() {
     assert_eq!(a.get(&describe_path(&class)).await.status, 200);
     // HP1 to HP3 (CONTRACT-round-0.7-P): the describe indexes nothing, so the mesh is told of the stored version
     for quote in ["USD", "GBP"] {
-        let id = a.cell_id(
-            &format!("{class}/rate"),
-            &args(&[("base", s("EUR")), ("date", d(DAY)), ("quote", s(quote))]),
-        );
+        let id =
+            a.cell_id(&format!("{class}/rate"), &args(&[("base", s("EUR")), ("date", d(DAY)), ("quote", s(quote))]));
         bl(|| a.mesh.stored_version_added(&id));
     }
     let known = short_id(&class, &hash, "EUR", "GBP");

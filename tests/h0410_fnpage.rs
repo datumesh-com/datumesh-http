@@ -180,7 +180,8 @@ fn hold_foreign(fx: &Fx, fn_hash: &str, n: usize) {
         if store.namespace(OTHER).unwrap().is_none() {
             store.put_namespace(OTHER, &common::key_doc(OTHER, &key), K_FROM).unwrap();
         }
-        let d = datumesh_core::FunctionDescriptor::from_json(stored_descriptor(&test_case_signature()).as_bytes()).unwrap();
+        let d =
+            datumesh_core::FunctionDescriptor::from_json(stored_descriptor(&test_case_signature()).as_bytes()).unwrap();
         store.put_descriptor(&d.canonical()).unwrap();
         for i in 0..n {
             let tx = format!("2026-11-15T11:00:00.{i:06}Z");
