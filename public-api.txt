@@ -311,7 +311,10 @@ pub datumesh_http::config::Config::embed_url: core::option::Option<alloc::string
 pub datumesh_http::config::Config::explain_depth: usize
 pub datumesh_http::config::Config::find_first_build_delay: core::time::Duration
 pub datumesh_http::config::Config::host: alloc::string::String
+pub datumesh_http::config::Config::index_class_max: usize
 pub datumesh_http::config::Config::index_first_build_delay: core::time::Duration
+pub datumesh_http::config::Config::index_max: usize
+pub datumesh_http::config::Config::index_secs: core::time::Duration
 pub datumesh_http::config::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::config::Config::key_names: bool
 pub datumesh_http::config::Config::log_dir: core::option::Option<std::path::PathBuf>
@@ -695,7 +698,10 @@ pub datumesh_http::Config::embed_url: core::option::Option<alloc::string::String
 pub datumesh_http::Config::explain_depth: usize
 pub datumesh_http::Config::find_first_build_delay: core::time::Duration
 pub datumesh_http::Config::host: alloc::string::String
+pub datumesh_http::Config::index_class_max: usize
 pub datumesh_http::Config::index_first_build_delay: core::time::Duration
+pub datumesh_http::Config::index_max: usize
+pub datumesh_http::Config::index_secs: core::time::Duration
 pub datumesh_http::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::Config::key_names: bool
 pub datumesh_http::Config::log_dir: core::option::Option<std::path::PathBuf>
