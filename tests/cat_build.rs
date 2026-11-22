@@ -517,8 +517,9 @@ async fn c5_a_change_writes_new_versions_and_a_second_run_nothing() {
     let new = cell(&m, &sc("finance", "rate", "interest_rate", "us", "exists()")).await;
     assert_eq!(truth(&new), Some(true), "{}", new.text);
     assert_eq!(ok_value(&cell(&m, &sc("finance", "rate", "interest_rate", "us", "source(1)")).await, "source"), bank);
+    // the old subject is gone: exists() is withdrawn, not false (R10)
     let old = cell(&m, &sc("finance", "rate", "interest_rate", "gb", "exists()")).await;
-    assert_eq!(truth(&old), Some(false), "{}", old.text);
+    assert_withdrawn(&old, GONE);
 }
 
 /// A removed facet: the entry is republished without its facets, so its only subject disappears (R1, R10): every method cell of
