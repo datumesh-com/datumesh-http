@@ -118,14 +118,14 @@ async fn r5_unrelated_classes_keep_the_binding_order() {
     assert_eq!(sources_list(&m, FAM).await, [host_name("fam/zebra"), host_name("fam/aardvark")]);
 }
 
-/// A mix: an unrelated class bound first stays first; the subclass is above its parent but not above what it is unrelated to:
+/// A mix (the unrelated class has a method of another name, so its class hash differs from the parent's): an unrelated class bound first stays first; the subclass is above its parent but not above what it is unrelated to:
 /// `[unrelated (bound first), child, parent]`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r5_an_unrelated_class_keeps_its_place_between_the_family() {
     let lite = family(
         "r5-mixed",
         &[
-            fam("fam/other", None, "", "rate", NOW),
+            fam("fam/other", None, "", "other", NOW),
             fam("fam/parent", None, "", "rate", T1),
             fam("fam/child", Some(1), "fixing", "fixed", T2),
         ],
