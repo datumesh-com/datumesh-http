@@ -120,6 +120,9 @@ impl Probe {
         let (url, role) = (self.db_url.clone(), self.role.clone());
         on_thread(move || {
             let mut c = admin_client(&url);
+            // statistics as production's autovacuum keeps them: a freshly loaded fixture has none, and the
+            // planner then chooses plans production does not
+            c.batch_execute("ANALYZE").unwrap();
             for g in ALL {
                 c.batch_execute(&format!("CREATE SEQUENCE IF NOT EXISTS {}", g.seq())).unwrap();
             }
