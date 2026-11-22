@@ -114,7 +114,12 @@ impl Ans {
         let bytes = serde_json::to_vec(&self.v["receipt"]).unwrap();
         datumesh_core::Receipt::from_json(&bytes).unwrap_or_else(|e| panic!("{e}: {}", self.text)).cell().id()
     }
-    /// The cell ids the receipt lists as its inputs.
+    /// The receipt's hash: what another receipt lists as its input (SPEC 3 and 8.1: receipt inputs are receipt hashes).
+    pub fn receipt_hash(&self) -> String {
+        let bytes = serde_json::to_vec(&self.v["receipt"]).unwrap();
+        datumesh_core::Receipt::from_json(&bytes).unwrap_or_else(|e| panic!("{e}: {}", self.text)).hash().to_string()
+    }
+    /// The receipt hashes the receipt lists as its inputs.
     pub fn inputs(&self) -> Vec<String> {
         self.v["receipt"]["inputs"].as_array().map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect()).unwrap_or_default()
     }

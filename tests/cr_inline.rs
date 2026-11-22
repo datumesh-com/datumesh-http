@@ -148,10 +148,10 @@ async fn k7_this_and_a_method_reading_another() {
     assert_eq!(price.value(), Some("10"), "{}", price.text);
     let double = ask(&m, &format!("/cell/{n}/double?sku=A")).await;
     assert_eq!((double.outcome(), double.value()), ("ok", Some("20")), "{}", double.text);
-    assert_eq!(double.inputs(), vec![price.cell_id()], "`this.price()` is the read of `{n}/price(sku: sku)`");
+    assert_eq!(double.inputs(), vec![price.receipt_hash()], "`this.price()` is the read of `{n}/price(sku: sku)`: its receipt is the input");
     let quad = ask(&m, &path(&format!("{n}(A).quad()"), None)).await;
     assert_eq!((quad.outcome(), quad.value()), ("ok", Some("40")), "{}", quad.text);
-    assert_eq!(quad.inputs(), vec![double.cell_id()], "`this.double()` is the read of `{n}/double(sku: sku)`");
+    assert_eq!(quad.inputs(), vec![double.receipt_hash()], "`this.double()` is the read of `{n}/double(sku: sku)`");
     // an absent input is the fault of the cell
     let zz = ask(&m, &format!("/cell/{n}/quad?sku=ZZ")).await;
     assert_eq!((zz.outcome(), zz.fault()), ("not_covered", Some("E_FORMULA_ABSENT")), "{}", zz.text);
@@ -246,7 +246,7 @@ async fn k7_a_variable_key_receiver_in_a_body() {
     let plain = ask(&m, &format!("/cell/{n}/price?sku=A")).await;
     let v = ask(&m, &format!("/cell/{HOST}/shop/price_of?sku=A")).await;
     assert_eq!((v.outcome(), v.value()), ("ok", Some("10")), "{}", v.text);
-    assert_eq!(v.inputs(), vec![plain.cell_id()], "sugar for the plain read with those expressions");
+    assert_eq!(v.inputs(), vec![plain.receipt_hash()], "sugar for the plain read with those expressions");
     // computed keys are expressions as well: `upper("A")` is "A"
     let w = ask(&m, &format!("/cell/{HOST}/shop/price_plus?sku=A")).await;
     assert_eq!((w.outcome(), w.value()), ("ok", Some("30")), "{}", w.text);
@@ -281,7 +281,7 @@ async fn k7_this_reads_an_inherited_method_of_the_defining_class() {
     let a = ask(&m, &path(&format!("{s}(EUR, USD, F1).via_this({DAY})"), None)).await;
     assert_eq!((a.outcome(), a.value()), ("ok", Some("2.4")), "{}", a.text);
     let plain = ask(&m, &format!("/cell/{p}/rate?base=EUR&date={DAY}&quote=USD")).await;
-    assert_eq!(a.inputs(), vec![plain.cell_id()], "the read through this is the defining class's cell");
+    assert_eq!(a.inputs(), vec![plain.receipt_hash()], "the read through this is the defining class's cell");
 }
 
 /// The first file's clock of the last test: before the second's, so that the subclass binds after its parent.

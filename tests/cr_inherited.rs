@@ -92,13 +92,13 @@ async fn an_override_stays_the_subclasss_own() {
 async fn a_body_reads_the_defining_class_in_a_dispatch_and_in_an_object() {
     let m = rates_with("cr-k5-body", false, true).await;
     let (p, s) = (rates_p(), rates_s());
-    let (id, _) = plain_id(&m, &format!("{p}/rate"), &format!("base=EUR&date={DAY}&quote=USD")).await;
+    let (_id, plain) = plain_id(&m, &format!("{p}/rate"), &format!("base=EUR&date={DAY}&quote=USD")).await;
     let d = ask(&m, &path(&format!("{}(pair: {s}(EUR, USD, F1), date: {DAY})", via_pair()), None)).await;
     assert_eq!((d.outcome(), d.value()), ("ok", Some("1.2")), "dispatch: {}", d.text);
-    assert_eq!(d.inputs(), vec![id.clone()], "the dispatch read the parent's cell");
+    assert_eq!(d.inputs(), vec![plain.receipt_hash()], "the dispatch read the parent's cell: its receipt is the input");
     let o = ask(&m, &path(&format!("{}(date: {DAY})", via_object()), None)).await;
     assert_eq!((o.outcome(), o.value()), ("ok", Some("1.2")), "object: {}", o.text);
-    assert_eq!(o.inputs(), vec![id], "the object read the parent's cell");
+    assert_eq!(o.inputs(), vec![plain.receipt_hash()], "the object read the parent's cell: its receipt is the input");
 }
 
 /// Binding a subclass binds only its own methods: `fx_ndf/cross` and `fx_ndf/fixed`, not `fx_ndf/rate` or `/inverse`.
