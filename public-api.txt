@@ -76,6 +76,7 @@ pub fn datumesh_http::bundle::Imported::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::marker::StructuralPartialEq for datumesh_http::bundle::Imported
 pub fn datumesh_http::bundle::build(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::build_with_catalog(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
+pub fn datumesh_http::bundle::build_with_close(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::string::String>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::build_with_tests(&str, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>, &[u8; 32]) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::import_signed<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &[alloc::string::String], &dyn datumesh_engine::clock::Clock, &[u8]) -> core::result::Result<datumesh_http::bundle::Imported, datumesh_http::bundle::BundleError>
 pub fn datumesh_http::bundle::manifest_bytes(&str, &[(alloc::string::String, alloc::string::String)], &[alloc::string::String]) -> alloc::vec::Vec<u8>
@@ -541,6 +542,7 @@ pub fn datumesh_http::envelope::rate_limited(u64) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::rate_limited_reply(u64) -> datumesh_http::envelope::Reply
 pub fn datumesh_http::envelope::stale(&[u8], datumesh_core::envelope::Trust, u64) -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::trust_label_of(&datumesh_core::receipt::Receipt, &str) -> datumesh_core::answer::TrustLabel
+pub fn datumesh_http::envelope::trust_label_of_withdrawal(&datumesh_core::receipt::Withdrawal, &str) -> datumesh_core::answer::TrustLabel
 pub fn datumesh_http::envelope::trust_of(&datumesh_core::receipt::Receipt, &str) -> datumesh_core::envelope::Trust
 pub fn datumesh_http::envelope::unlicensed() -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::with_fn_hash(datumesh_core::answer::Answer, core::option::Option<&str>) -> datumesh_core::answer::Answer
