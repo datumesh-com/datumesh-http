@@ -23,7 +23,7 @@ path = "src/bin/datumesh-mesh.rs"
 [dependencies]
 # Envelopes (check_envelope_any, Pending), cell URIs, mesh documents (resolve_mesh), verify;
 # `sign` for the keys the binary generates.
-datumesh-core = { version = "0.3.13", features = ["sign"] }
+datumesh-core = { version = "0.3.14", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
 datumesh-store = { version = "0.6.0", default-features = false }
 datumesh-engine = "0.6.0"
