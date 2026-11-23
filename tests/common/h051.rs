@@ -91,7 +91,8 @@ $f$;
 GRANT EXECUTE ON FUNCTION p051_row() TO PUBLIC"#,
         )
         .unwrap_or_else(|e| panic!("arming the statement maximum: {e} {:?}", e.as_db_error()));
-        c.batch_execute(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"{role}\"")).unwrap();
+        c.batch_execute(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"{role}\""))
+            .unwrap();
         for t in &tables {
             // a restrictive policy is ANDed with the permissive ones (the counting policies of `Probe::arm`), so
             // every row a statement visits goes through the function
@@ -117,7 +118,9 @@ GRANT EXECUTE ON FUNCTION p051_row() TO PUBLIC"#,
 
 pub fn statement_max(fx: &Fx) -> u64 {
     let url = fx.probe().db_url.clone();
-    on_thread(move || admin(&url).query_one("SELECT n FROM p051_stmt WHERE id = 1", &[]).unwrap().get::<_, i64>(0) as u64)
+    on_thread(move || {
+        admin(&url).query_one("SELECT n FROM p051_stmt WHERE id = 1", &[]).unwrap().get::<_, i64>(0) as u64
+    })
 }
 
 pub fn statement_reset(fx: &Fx) {

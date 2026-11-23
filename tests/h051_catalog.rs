@@ -80,7 +80,10 @@ async fn h2_the_job_and_the_thread_never_read_more_than_a_page_at_a_time() {
     assert_eq!(subjects_in(&root), 6144, "{root}");
     let thread = h051::statement_max(&w.fx);
     assert!(thread > 100, "the probe counted nothing for the thread ({thread})");
-    assert!(thread <= PAGE_BOUND, "the catalogue thread asked for a statement that visited {thread} rows of cells; at most {PAGE_BOUND}");
+    assert!(
+        thread <= PAGE_BOUND,
+        "the catalogue thread asked for a statement that visited {thread} rows of cells; at most {PAGE_BOUND}"
+    );
 }
 
 fn run_job(fx: &h0410::Fx, clock: &'static str) -> datumesh_http::catalog_build::CatalogBuilt {
@@ -127,7 +130,10 @@ async fn h2_the_cap_cuts_the_view_and_is_counted() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(subjects_in(&r.json()), 100, "the view lists the cap's worth of subjects: {}", r.text());
     let metrics = page(&m, "/metrics").await.text();
-    assert!(cut_counted(&metrics) >= 1.0, "the cut is counted (a counter named catalog ... trunc|cut|capped):\n{metrics}");
+    assert!(
+        cut_counted(&metrics) >= 1.0,
+        "the cut is counted (a counter named catalog ... trunc|cut|capped):\n{metrics}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

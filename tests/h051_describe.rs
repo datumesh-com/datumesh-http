@@ -89,7 +89,15 @@ async fn h5_a_class_of_twenty_methods_and_three_parents_is_one_walk() {
             assert_eq!(ms[&format!("own{i}")]["fn"], format!("{}/own{i}", c(i)), "own{i} is its level's");
         }
         assert!(k1 - k0 > 0 || b1 - b0 > 0, "the {round} describe read neither table: the counters are not armed");
-        assert!(k1 - k0 <= 16, "the {round} describe of the leaf visited {} rows of classes; one walk of a chain of 3 is at most 16", k1 - k0);
-        assert!(b1 - b0 <= 24, "the {round} describe of the leaf visited {} rows of class_bindings; at most 24", b1 - b0);
+        assert!(
+            k1 - k0 <= 16,
+            "the {round} describe of the leaf visited {} rows of classes; one walk of a chain of 3 is at most 16",
+            k1 - k0
+        );
+        assert!(
+            b1 - b0 <= 24,
+            "the {round} describe of the leaf visited {} rows of class_bindings; at most 24",
+            b1 - b0
+        );
     }
 }

@@ -49,7 +49,8 @@ async fn page(w: &h0410::W, path: &str) -> Page {
     assert_eq!(v["outcome"], "ok", "a page envelope (5.6): {v}");
     let keys = v["members"].as_array().unwrap_or_else(|| panic!("no members: {v}")).iter().map(key_of).collect();
     let next = v["next"].as_str().map(|n| n.replacen(&format!("https://{}", common::lite::HOST), "", 1));
-    let next_after = v["next"].as_str().and_then(|n| n.split("after=").nth(1)).map(|a| a.split('&').next().unwrap().to_string());
+    let next_after =
+        v["next"].as_str().and_then(|n| n.split("after=").nth(1)).map(|a| a.split('&').next().unwrap().to_string());
     Page { keys, next, next_after }
 }
 
@@ -82,14 +83,19 @@ async fn h1_the_pages_of_a_slice_of_ten_thousand_cells_are_complete_and_in_order
         assert!(!p.keys.is_empty() && p.keys.len() <= 1000, "page {pages}: {} members", p.keys.len());
         // `next` is the last member's key: hex of the JCS of its typed scalars, open arguments in name order
         if let (Some(after), Some(last)) = (&p.next_after, p.keys.last()) {
-            let key: Value = serde_json::from_str(&unhex(after)).unwrap_or_else(|e| panic!("after is not hex of JSON: {e}"));
+            let key: Value =
+                serde_json::from_str(&unhex(after)).unwrap_or_else(|e| panic!("after is not hex of JSON: {e}"));
             let got: Vec<(&str, &str)> = key
                 .as_array()
                 .unwrap_or_else(|| panic!("{key}"))
                 .iter()
                 .map(|s| (s["type"].as_str().unwrap(), s["value"].as_str().unwrap()))
                 .collect();
-            assert_eq!(got, vec![("string", last.0.as_str()), ("date", last.1.as_str())], "next is the last member's key");
+            assert_eq!(
+                got,
+                vec![("string", last.0.as_str()), ("date", last.1.as_str())],
+                "next is the last member's key"
+            );
         }
         all.extend(p.keys);
         pages += 1;
@@ -119,7 +125,11 @@ async fn h1_a_page_reads_at_most_limit_plus_one_members_whichever_page_it_is() {
     let b1 = probe.reads(h0410::Group::Cells);
     assert_eq!(first.keys.len() as u64, limit);
     assert!(b1 - b0 > 0, "the probe counted nothing: it is not armed");
-    assert!(b1 - b0 <= bound, "the first page of {limit} visited {} rows of cells; at most {bound} (limit + 1 members)", b1 - b0);
+    assert!(
+        b1 - b0 <= bound,
+        "the first page of {limit} visited {} rows of cells; at most {bound} (limit + 1 members)",
+        b1 - b0
+    );
 
     // a page in the middle, by `next`
     let mid = page(&w, first.next.as_deref().expect("a next link")).await;
@@ -129,7 +139,8 @@ async fn h1_a_page_reads_at_most_limit_plus_one_members_whichever_page_it_is() {
     assert!(b2 - b1 <= bound, "the second page visited {} rows; at most {bound}", b2 - b1);
 
     // a page near the end: the cursor of the 9,900th member
-    let tail = page(&w, &format!("/slice/{FXR}{SLICE_ALL}?limit={limit}&after={}", cursor_hex(&currency(98), &day(99)))).await;
+    let tail =
+        page(&w, &format!("/slice/{FXR}{SLICE_ALL}?limit={limit}&after={}", cursor_hex(&currency(98), &day(99)))).await;
     let b3 = probe.reads(h0410::Group::Cells);
     assert_eq!(tail.keys.len() as u64, limit, "C099's 100 days follow C098's last");
     assert_eq!(tail.keys[0], (currency(99), day(0)));
@@ -140,7 +151,12 @@ async fn h1_a_page_reads_at_most_limit_plus_one_members_whichever_page_it_is() {
     let dflt = page(&w, &format!("/slice/{FXR}{SLICE_ALL}")).await;
     let b4 = probe.reads(h0410::Group::Cells);
     assert_eq!(dflt.keys.len(), 1000);
-    assert!(b4 - b3 <= ROWS_PER_MEMBER * 1001, "the default page visited {} rows; at most {}", b4 - b3, ROWS_PER_MEMBER * 1001);
+    assert!(
+        b4 - b3 <= ROWS_PER_MEMBER * 1001,
+        "the default page visited {} rows; at most {}",
+        b4 - b3,
+        ROWS_PER_MEMBER * 1001
+    );
 }
 
 fn cursor_hex(cur: &str, d: &str) -> String {
@@ -209,19 +225,34 @@ async fn h1_an_interval_reads_in_proportion_to_the_slice_it_names() {
     assert_eq!(v["truncated"], true, "the answer says it is cut");
     assert!(b1 - b0 > 0, "the probe counted nothing");
     let (bound, half) = (ROWS_PER_MEMBER * (slice + 1) + 1000, ROWS_PER_MEMBER * function / 4);
-    assert!(b1 - b0 < bound, "the interval of a 1,000-member slice visited {} rows; less than {bound} (20 per member of the slice)", b1 - b0);
-    assert!(b1 - b0 < half, "and far fewer than the function's own {} cells' rows: visited {}, less than {half}", function, b1 - b0);
+    assert!(
+        b1 - b0 < bound,
+        "the interval of a 1,000-member slice visited {} rows; less than {bound} (20 per member of the slice)",
+        b1 - b0
+    );
+    assert!(
+        b1 - b0 < half,
+        "and far fewer than the function's own {} cells' rows: visited {}, less than {half}",
+        function,
+        b1 - b0
+    );
 
     // One key, a month: a sort-key prefix, so a page's worth: inside the cap, whole, by date
     let r = w.get(&format!("/x/interval/{FXR}?currency=C007&from=2026-03-01&to=2026-03-31")).await;
     let b2 = probe.reads(h0410::Group::Cells);
     assert_eq!(r.status, 200, "{}", r.text());
     let v = r.json();
-    let dates: Vec<&str> = v["members"].as_array().unwrap().iter().map(|m| m["keys"]["date"].as_str().unwrap()).collect();
+    let dates: Vec<&str> =
+        v["members"].as_array().unwrap().iter().map(|m| m["keys"]["date"].as_str().unwrap()).collect();
     let want: Vec<String> = (59..90).map(day).collect();
     assert_eq!(dates, want.iter().map(String::as_str).collect::<Vec<_>>(), "the 31 days of March, whole and in order");
     assert!(v.get("truncated").is_none_or(|t| t != &Value::Bool(true)), "{v}");
-    assert!(b2 - b1 <= ROWS_PER_MEMBER * 101, "a month of one currency visited {} rows; at most {}", b2 - b1, ROWS_PER_MEMBER * 101);
+    assert!(
+        b2 - b1 <= ROWS_PER_MEMBER * 101,
+        "a month of one currency visited {} rows; at most {}",
+        b2 - b1,
+        ROWS_PER_MEMBER * 101
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

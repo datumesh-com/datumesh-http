@@ -103,15 +103,20 @@ async fn held_of_lite(label: &str, entries: &[Ent]) -> String {
 }
 
 fn production() -> Vec<Ent> {
-    let mut rain = ent(
-        "earth/monthly_rainfall",
-        f("earth", "region", &["rainfall"], "world", "monthly"),
-        Some("CHIRPS"),
-    );
+    let mut rain =
+        ent("earth/monthly_rainfall", f("earth", "region", &["rainfall"], "world", "monthly"), Some("CHIRPS"));
     rain.formula = Some(format!("{}(date: date)", host_name(RAW)));
     vec![
-        ent("relay/ecb.europa.eu/fx_reference", f("finance", "currency", &["exchange_rate"], "ea", "daily"), Some("the ECB")),
-        ent("relay/ecb.europa.eu/policy_rate", f("finance", "rate", &["interest_rate"], "ea", "on_change"), Some("the ECB")),
+        ent(
+            "relay/ecb.europa.eu/fx_reference",
+            f("finance", "currency", &["exchange_rate"], "ea", "daily"),
+            Some("the ECB"),
+        ),
+        ent(
+            "relay/ecb.europa.eu/policy_rate",
+            f("finance", "rate", &["interest_rate"], "ea", "on_change"),
+            Some("the ECB"),
+        ),
         ent(
             "relay/bankofengland.co.uk/bank_rate",
             f("finance", "rate", &["interest_rate"], "gb", "daily"),
@@ -146,7 +151,11 @@ async fn h4_a_relay_still_reads_from_and_a_computed_entry_reads_computed_from() 
     let held = held_of_lite("h4-sources", &[calc]).await;
     assert_eq!(held, format!("This mesh holds earth (monthly rainfall computed from CHIRPS). {TAIL}"));
     // the same measure given by a relay with the same source name: "from"
-    let relay = ent("relay/chirps.ucsb.edu/rainfall_raw2", f("earth", "region", &["rainfall"], "world", "monthly"), Some("CHIRPS"));
+    let relay = ent(
+        "relay/chirps.ucsb.edu/rainfall_raw2",
+        f("earth", "region", &["rainfall"], "world", "monthly"),
+        Some("CHIRPS"),
+    );
     let held = held_of_lite("h4-relay", &[relay]).await;
     assert_eq!(held, format!("This mesh holds earth (monthly rainfall from CHIRPS). {TAIL}"));
 }

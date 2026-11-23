@@ -87,7 +87,11 @@ async fn h3_a_query_of_one_letter_words_is_the_empty_query() {
     let (c2, k2) = (p.reads(Group::Catalog), p.reads(Group::Cells));
     assert_eq!(v["results"], empty["results"], "26 one-letter words are the empty query's listing");
     assert_eq!(v["vector"], empty["vector"]);
-    assert_eq!((c2 - c1, k2 - k1), (c1 - c0, k1 - k0), "and cost what the empty query costs, as to catalogue and cell rows");
+    assert_eq!(
+        (c2 - c1, k2 - k1),
+        (c1 - c0, k1 - k0),
+        "and cost what the empty query costs, as to catalogue and cell rows"
+    );
     // a long run of letters is the same
     let v = find(&w, &format!("{q}%20{q}")).await;
     assert_eq!(v["results"], empty["results"]);
