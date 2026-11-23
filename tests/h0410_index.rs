@@ -178,13 +178,13 @@ async fn a_class_past_the_class_cap_is_cut_and_the_metric_says_so() {
     }
     assert!(built, "no object of the class is in the index");
     assert_eq!(found_count(&w, &cls, "E", 12).await, 5, "the class cap is 5");
-    // decision 2: the kept ones are the first 5 by cell id of the extent method's cells
-    let mut by_cell: Vec<(String, usize)> =
-        (0..12).map(|i| (cls.cell_id("members", Kind::Extent, &named(i, "E"), "Q"), i)).collect();
-    by_cell.sort();
-    for (rank, (_, i)) in by_cell.iter().enumerate() {
+    // decision 2 (0.5.1): the index walks the class's list by slice_page, in the slice key order of SPEC 5.6 (the keys in
+    // ascending name order, each by its type: `base` as a string, then `quote`), so the kept ones are the first 5 in key order
+    let mut by_key: Vec<(String, usize)> = (0..12).map(|i| (named(i, "E"), i)).collect();
+    by_key.sort();
+    for (rank, (_, i)) in by_key.iter().enumerate() {
         let r = w.get(&format!("/describe/{}", cls.id(&named(*i, "E"), "Q"))).await;
-        assert_eq!(r.status == 200, rank < 5, "E{i} has cell-id rank {rank}: {}", r.status);
+        assert_eq!(r.status == 200, rank < 5, "E{i} has key rank {rank}: {}", r.status);
     }
     // the others are reached by key encoding
     for i in 0..12 {
