@@ -252,7 +252,7 @@ async fn r3_whatif_members_replace_the_member_set_and_are_echoed_sorted() {
     let slice = slice_json(&m, &c.reading, &[], &["site"]);
     // A = 7 and W = 5, given in the opposite order of their cell ids
     let (a, w) = (reading(&c, &m, "A"), reading(&c, &m, "W"));
-    let mut by_id = vec![("A", "7", a.clone()), ("W", "5", w.clone())];
+    let mut by_id = [("A", "7", a.clone()), ("W", "5", w.clone())];
     by_id.sort_by_key(|x| core_id(&x.2));
     let given: Vec<Value> =
         by_id.iter().rev().map(|(site, v, _)| json!({"cell": q(&c, site), "value": nv(v)})).collect();

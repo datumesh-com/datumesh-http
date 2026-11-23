@@ -68,7 +68,11 @@ fn json_of(p: &Page, what: &str) -> Value {
 
 fn html_of(p: &Page, what: &str) -> String {
     assert_eq!(p.status, 200, "{what}: {}", p.text());
-    assert!(p.header("content-type").unwrap_or_default().starts_with("text/html"), "{what}: {:?}", p.header("content-type"));
+    assert!(
+        p.header("content-type").unwrap_or_default().starts_with("text/html"),
+        "{what}: {:?}",
+        p.header("content-type")
+    );
     p.text()
 }
 
@@ -82,7 +86,12 @@ fn methods_of(v: &Value) -> Vec<(String, String)> {
         .as_array()
         .unwrap_or_else(|| panic!("no methods: {v}"))
         .iter()
-        .map(|m| (m["name"].as_str().unwrap().to_string(), local(m["page"].as_str().unwrap_or_else(|| panic!("no page: {m}")))))
+        .map(|m| {
+            (
+                m["name"].as_str().unwrap().to_string(),
+                local(m["page"].as_str().unwrap_or_else(|| panic!("no page: {m}"))),
+            )
+        })
         .collect()
 }
 
@@ -101,7 +110,17 @@ async fn r9_a_class_page_has_its_sections_and_links() {
     let p = until_built(&m, &class_path(&c)).await;
     let body = html_of(&p, &c);
     let text = plain(&body);
-    for want in ["A synthetic name", "A synthetic description.", "cik", "string", "filed", "finance", "annual", HOST, "classes/change"] {
+    for want in [
+        "A synthetic name",
+        "A synthetic description.",
+        "cik",
+        "string",
+        "filed",
+        "finance",
+        "annual",
+        HOST,
+        "classes/change",
+    ] {
         assert!(text.contains(want) || body.contains(want), "{want:?} is not on the page: {text}");
     }
     let links: Vec<String> = hrefs(&body).into_iter().map(|h| local(&h)).collect();
@@ -142,7 +161,19 @@ async fn r9_the_json_has_the_same_data() {
     keys.sort();
     assert_eq!(
         keys,
-        ["description", "facets", "keys", "label", "labels", "methods", "name", "objects", "steward", "subclasses", "subjects"],
+        [
+            "description",
+            "facets",
+            "keys",
+            "label",
+            "labels",
+            "methods",
+            "name",
+            "objects",
+            "steward",
+            "subclasses",
+            "subjects"
+        ],
         "{v}"
     );
 }
@@ -156,13 +187,16 @@ async fn r9_parent_subclasses_and_inherited_methods() {
     let pv = class_json(&m, &p).await;
     let cv = class_json(&m, &c).await;
     assert!(pv.get("parent").is_none_or(Value::is_null), "{pv}");
-    assert_eq!(names(&pv["subclasses"]), [c.clone()], "{pv}");
+    assert_eq!(names(&pv["subclasses"]), std::slice::from_ref(&c), "{pv}");
     assert_eq!(cv["parent"], p.as_str(), "{cv}");
     assert_eq!(cv["subclasses"], json!([]), "{cv}");
     assert_eq!(methods_of(&pv), [("rate".to_string(), format!("/fn/{p}/rate"))], "{pv}");
     let mc = methods_of(&cv);
     assert!(mc.contains(&("fixed".to_string(), format!("/fn/{c}/fixed"))), "its own method: {mc:?}");
-    assert!(mc.contains(&("rate".to_string(), format!("/fn/{p}/rate"))), "an inherited method links to the defining class: {mc:?}");
+    assert!(
+        mc.contains(&("rate".to_string(), format!("/fn/{p}/rate"))),
+        "an inherited method links to the defining class: {mc:?}"
+    );
     assert_eq!(mc.len(), 2, "{mc:?}");
     // the keys: the subclass's own and the inherited
     let ck: Vec<&str> = cv["keys"].as_array().unwrap().iter().map(|k| k["name"].as_str().unwrap()).collect();
@@ -299,7 +333,11 @@ async fn r9_rebuilds_only_when_the_job_changed_something() {
     let unrelated = common::pub031::write(&m.lite, "unrelated.jsonl", &[fn_line(&host_name("misc/unrelated"))]);
     common::pub031::run(&m.lite, &unrelated, T4).unwrap_or_else(|e| panic!("{e}"));
     tokio::time::sleep(Duration::from_millis(3500)).await;
-    assert_eq!(builds(&m, "background").await, n0, "a job that changed nothing and an unrelated publication build nothing");
+    assert_eq!(
+        builds(&m, "background").await,
+        n0,
+        "a job that changed nothing and an unrelated publication build nothing"
+    );
 
     // a change: the class becomes a source of a second subject
     let facets = fac(&["finance"], &["company"], &["fundamentals"], &["gb", "us"], &["annual"]);

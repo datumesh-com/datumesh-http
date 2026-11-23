@@ -88,7 +88,10 @@ async fn r11_a_domain_page_is_paged_at_200_subjects() {
         seen.extend(links);
         match next_link(&body) {
             Some(n) => {
-                assert!(n.starts_with("/catalog/wide?") && n.contains("after="), "the next page of the same domain: {n}");
+                assert!(
+                    n.starts_with("/catalog/wide?") && n.contains("after="),
+                    "the next page of the same domain: {n}"
+                );
                 at = n;
             }
             None => break,
@@ -99,7 +102,9 @@ async fn r11_a_domain_page_is_paged_at_200_subjects() {
     assert_eq!(uniq.len(), 216, "each subject once: {}", seen.len());
     let want: BTreeSet<String> = (1..=6)
         .flat_map(|t| {
-            (1..=6).flat_map(move |me| (1..=6).map(move |r| subject_page("wide", &format!("t{t}"), &format!("m{me}"), &format!("r{r}"))))
+            (1..=6).flat_map(move |me| {
+                (1..=6).map(move |r| subject_page("wide", &format!("t{t}"), &format!("m{me}"), &format!("r{r}")))
+            })
         })
         .collect();
     assert_eq!(seen.into_iter().collect::<BTreeSet<_>>(), want, "all the subjects of the domain");
@@ -118,7 +123,12 @@ async fn r11_the_thread_reads_every_subject_of_a_large_catalogue() {
     until_built(&m, "/catalog").await;
     let d = describe(&m, &format!("{HOST}/catalog")).await;
     assert_eq!(d.status, 200, "{}", d.text);
-    let wide = d.v["domains"].as_array().unwrap().iter().find(|x| x["domain"] == "wide").unwrap_or_else(|| panic!("{}", d.text));
+    let wide = d.v["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["domain"] == "wide")
+        .unwrap_or_else(|| panic!("{}", d.text));
     assert_eq!(wide["subjects"], 216, "{}", d.text);
     assert_eq!(builds(&m, "request").await, 0);
 }
@@ -159,7 +169,8 @@ fn r11_no_unbounded_receipt_reads_in_the_catalogue_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r11_an_entry_gives_at_most_256_subjects() {
     let exact = Lite::new("r11-cap-256");
-    crworld::publish(&exact, "c.jsonl", &product_lines("capd", "cap/f", 8, 8, 4), NOW).unwrap_or_else(|e| panic!("256 is accepted: {e}"));
+    crworld::publish(&exact, "c.jsonl", &product_lines("capd", "cap/f", 8, 8, 4), NOW)
+        .unwrap_or_else(|e| panic!("256 is accepted: {e}"));
     let b = build(&exact, T3);
     assert_eq!(b.subjects, 256, "{b:?}");
 
@@ -179,7 +190,8 @@ async fn r11_an_entry_gives_at_most_256_subjects() {
 async fn r11_a_subject_keeps_at_most_20_sources() {
     let lite = Lite::new("r11-ranks");
     let f = fac(&["rk"], &["tt"], &["mm"], &["world"], &["static"]);
-    let entries: Vec<(String, serde_json::Value)> = (1..=25).map(|i| (host_name(&format!("cap/n{i:02}")), f.clone())).collect();
+    let entries: Vec<(String, serde_json::Value)> =
+        (1..=25).map(|i| (host_name(&format!("cap/n{i:02}")), f.clone())).collect();
     crworld::publish(&lite, "r.jsonl", &entries_lines(&entries), NOW).unwrap_or_else(|e| panic!("{e}"));
     build(&lite, T3);
     let m = serve(lite, &[]).await;
@@ -199,7 +211,8 @@ async fn r11_a_subject_keeps_at_most_20_sources() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r11_a_chain_is_at_most_8_methods_long() {
     let lite = Lite::new("r11-chain");
-    publish(&lite, "functions.jsonl", &shop_functions(), common::pub031::BEFORE).unwrap_or_else(|e| panic!("functions: {e}"));
+    publish(&lite, "functions.jsonl", &shop_functions(), common::pub031::BEFORE)
+        .unwrap_or_else(|e| panic!("functions: {e}"));
     let mut v = shop_classes(&lite);
     v.extend(shop_cells());
     v.push(successor_cell("Z1", &pk("Z1")));
@@ -228,7 +241,8 @@ fn margin_sig() -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r11_the_extensions_of_an_object_are_at_most_100() {
     let lite = Lite::new("r11-ext");
-    publish(&lite, "functions.jsonl", &shop_functions(), common::pub031::BEFORE).unwrap_or_else(|e| panic!("functions: {e}"));
+    publish(&lite, "functions.jsonl", &shop_functions(), common::pub031::BEFORE)
+        .unwrap_or_else(|e| panic!("functions: {e}"));
     let mut v = shop_classes(&lite);
     v.extend(shop_cells());
     publish(&lite, "classes.jsonl", &v, NOW).unwrap_or_else(|e| panic!("classes and cells: {e}"));
@@ -242,8 +256,12 @@ async fn r11_the_extensions_of_an_object_are_at_most_100() {
     let m = build_served(lite, None, |_| {}).await;
     let a = ask(&m, &format!("/describe/{}", common::world::call_path(&pk("A1")))).await;
     assert_eq!(a.status, 200, "{}", a.text);
-    let got: Vec<String> =
-        a.v["extensions"].as_array().unwrap_or_else(|| panic!("{}", a.text)).iter().map(|e| e["fn"].as_str().unwrap().to_string()).collect();
+    let got: Vec<String> = a.v["extensions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", a.text))
+        .iter()
+        .map(|e| e["fn"].as_str().unwrap().to_string())
+        .collect();
     let want: Vec<String> = (0..100).map(|i| format!("{HOST}/ext/e{i:03}")).collect();
     assert_eq!(got, want, "the first 100 by name");
 }

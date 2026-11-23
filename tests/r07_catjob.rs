@@ -28,7 +28,6 @@ use catjob::*;
 use catworld::*;
 use common::lite::*;
 use common::pub031::{snapshot, write};
-use common::readpath::*;
 use crworld::*;
 use r07world::*;
 use serde_json::json;
@@ -51,7 +50,11 @@ fn removed(label: &str) -> Lite {
 }
 
 fn labels_of_gb() -> [&'static str; 3] {
-    ["interest rate · rate · united kingdom · finance", "interest rate united kingdom", "rate interest rate united kingdom"]
+    [
+        "interest rate · rate · united kingdom · finance",
+        "interest rate united kingdom",
+        "rate interest rate united kingdom",
+    ]
 }
 
 // ---- a removed subject -----------------------------------------------------------------------------------------------
@@ -102,7 +105,11 @@ async fn r10_the_labels_of_a_removed_subject_are_withdrawn() {
         let b = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), None)).await;
         assert_eq!((b.status, b.outcome()), (404, "not_covered"), "{label}: {}", b.text);
         assert_eq!(b.v["reason"], GONE, "{label}: {}", b.text);
-        assert!(b.v.get("receipt").is_none_or(|r| r.is_null()), "{label}: no cell was resolved, so no receipt: {}", b.text);
+        assert!(
+            b.v.get("receipt").is_none_or(|r| r.is_null()),
+            "{label}: no cell was resolved, so no receipt: {}",
+            b.text
+        );
         let was = ask(&m, &path(&format!("{}[\"{label}\"].label()", subject_class()), Some(T4))).await;
         assert_ok(&was, &format!("{label} as of {T4}"));
     }

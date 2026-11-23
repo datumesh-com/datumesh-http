@@ -93,10 +93,8 @@ pub fn family(label: &str, list: &[Fam], more: &[String]) -> Lite {
         };
         let h = fn_hash(&lite, &format!("{}/{}", c.name, c.method));
         let d = class_json(&keys, &order, &[(c.method, &h)], HOST, &extra);
-        let lines = vec![
-            class_line(&c.name, &d, None),
-            catalog_line_of(&c.name, "class", json!({"facets": fam_facets()})),
-        ];
+        let lines =
+            vec![class_line(&c.name, &d, None), catalog_line_of(&c.name, "class", json!({"facets": fam_facets()}))];
         let at: &'static str = c.clock;
         publish(&lite, &format!("class{i}.jsonl"), &lines, at).unwrap_or_else(|e| panic!("class {}: {e}", c.name));
     }

@@ -100,7 +100,11 @@ fn production() -> Vec<(String, Value, Option<String>)> {
         ent("relay/treasury.gov/par_yield", f("finance", "yield", &["yield"], "us", "daily"), Some("the US Treasury")),
         ent("scripture/verse", f("scripture", "verse", &["text"], "world", "static"), None),
         ent("scripture/edition", f("scripture", "edition", &["provenance", "text"], "world", "static"), None),
-        ent("relay/chirps.ucsb.edu/monthly_rainfall", f("earth", "region", &["rainfall"], "world", "monthly"), Some("CHIRPS")),
+        ent(
+            "relay/chirps.ucsb.edu/monthly_rainfall",
+            f("earth", "region", &["rainfall"], "world", "monthly"),
+            Some("CHIRPS"),
+        ),
         ent("register/dataset", f("registry", "dataset", &["licence"], "world", "on_change"), None),
     ]
 }
@@ -152,7 +156,11 @@ async fn r8_without_a_source_name_the_source_domain_is_used() {
 /// The publisher's own data names no source, even when the entry carries a `source_name`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r8_the_publishers_own_data_names_no_source() {
-    let e = vec![ent("register/dataset", f("registry", "dataset", &["licence"], "world", "on_change"), Some("the Registry"))];
+    let e = vec![ent(
+        "register/dataset",
+        f("registry", "dataset", &["licence"], "world", "on_change"),
+        Some("the Registry"),
+    )];
     let held = held_of_lite("r8-own", &e).await;
     assert_eq!(held, format!("This mesh holds registry (licences). {TAIL}"));
 }
@@ -162,15 +170,29 @@ async fn r8_the_publishers_own_data_names_no_source() {
 async fn r8_the_source_names_are_joined_a_b_and_c() {
     let e = vec![
         ent("relay/ecb.europa.eu/estr", f("finance", "rate", &["interest_rate"], "ea", "daily"), Some("the ECB")),
-        ent("relay/bankofengland.co.uk/bank_rate", f("finance", "rate", &["interest_rate"], "gb", "daily"), Some("the Bank of England")),
-        ent("relay/treasury.gov/fed_funds", f("finance", "rate", &["interest_rate"], "us", "daily"), Some("the US Treasury")),
+        ent(
+            "relay/bankofengland.co.uk/bank_rate",
+            f("finance", "rate", &["interest_rate"], "gb", "daily"),
+            Some("the Bank of England"),
+        ),
+        ent(
+            "relay/treasury.gov/fed_funds",
+            f("finance", "rate", &["interest_rate"], "us", "daily"),
+            Some("the US Treasury"),
+        ),
         // a second source of the same subject is rank 2 and is not named
-        ent("relay/ecb.europa.eu/policy_rate", f("finance", "rate", &["interest_rate"], "ea", "daily"), Some("the ECB again")),
+        ent(
+            "relay/ecb.europa.eu/policy_rate",
+            f("finance", "rate", &["interest_rate"], "ea", "daily"),
+            Some("the ECB again"),
+        ),
     ];
     let held = held_of_lite("r8-join", &e).await;
     assert_eq!(
         held,
-        format!("This mesh holds finance (interest rates from the ECB, the Bank of England and the US Treasury). {TAIL}")
+        format!(
+            "This mesh holds finance (interest rates from the ECB, the Bank of England and the US Treasury). {TAIL}"
+        )
     );
 }
 
@@ -201,11 +223,15 @@ async fn r8_the_label_table_and_the_frequencies() {
     let (last, init) = parts.split_last().unwrap();
     assert_eq!(held, format!("This mesh holds {} and {last}. {TAIL}", init.join(", ")));
 
-    let freq = [("d1", "rainfall", "monthly"), ("d2", "rainfall", "weekly"), ("d3", "yield", "annual"), ("d4", "rainfall", "daily"), ("d5", "rainfall", "on_change"), ("d6", "text", "static")];
-    let e: Vec<_> = freq
-        .iter()
-        .map(|(d, m, q)| ent(&format!("w/{d}"), f(d, "x", &[m], "world", q), None))
-        .collect();
+    let freq = [
+        ("d1", "rainfall", "monthly"),
+        ("d2", "rainfall", "weekly"),
+        ("d3", "yield", "annual"),
+        ("d4", "rainfall", "daily"),
+        ("d5", "rainfall", "on_change"),
+        ("d6", "text", "static"),
+    ];
+    let e: Vec<_> = freq.iter().map(|(d, m, q)| ent(&format!("w/{d}"), f(d, "x", &[m], "world", q), None)).collect();
     let held = held_of_lite("r8-freq", &e).await;
     assert_eq!(
         held,
@@ -270,7 +296,10 @@ async fn r8_over_sixty_words_the_last_domains_measures_are_dropped_first() {
     }
     let held = held_of_lite("r8-trim-measures", &e).await;
     assert!(word_count(&held) <= 60, "{} words: {held}", word_count(&held));
-    assert!(held.starts_with("This mesh holds d00 (alpha from source 00"), "the largest domain keeps its measures: {held}");
+    assert!(
+        held.starts_with("This mesh holds d00 (alpha from source 00"),
+        "the largest domain keeps its measures: {held}"
+    );
     assert!(held.ends_with(TAIL), "{held}");
     let shown = shown_domains(&held);
     let names: Vec<&str> = shown.iter().map(|(n, _)| n.as_str()).collect();
@@ -360,14 +389,17 @@ fn r8_source_name_is_outside_every_hash() {
     crworld::publish(&with, "a.jsonl", &name_line_set(json!("the ECB")), NOW).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(common::pub031::snapshot(&with), before, "a republication of the same entry writes nothing");
     // a changed source name is a new entry version but the same function
-    crworld::publish(&with, "b.jsonl", &name_line_set(json!("the European Central Bank")), T2).unwrap_or_else(|e| panic!("{e}"));
+    crworld::publish(&with, "b.jsonl", &name_line_set(json!("the European Central Bank")), T2)
+        .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(fn_hash(&with, &n), fn_hash(&without, &n));
 }
 
 /// The sentence follows a changed `source_name` after the next job and build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn r8_the_sentence_follows_the_source_name() {
-    let mk = |s: &str| vec![ent("relay/ecb.europa.eu/rate", f("finance", "rate", &["interest_rate"], "ea", "daily"), Some(s))];
+    let mk = |s: &str| {
+        vec![ent("relay/ecb.europa.eu/rate", f("finance", "rate", &["interest_rate"], "ea", "daily"), Some(s))]
+    };
     let a = held_of_lite("r8-follow-a", &mk("the ECB")).await;
     let b = held_of_lite("r8-follow-b", &mk("the European Central Bank")).await;
     assert_eq!(a, format!("This mesh holds finance (interest rates from the ECB). {TAIL}"));
