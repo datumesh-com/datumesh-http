@@ -85,23 +85,26 @@ async fn rest(node: &Node, first: &Page) -> Vec<(i64, String, String)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_repeated_latest_first_page_reuses_the_members_and_pins_the_same_asof() {
+async fn each_latest_first_page_pins_its_own_instant_and_its_later_pages_stay_consistent() {
+    // 0.5.1 H1: no member list is reused between requests; a latest first page is answered as of its own now
     let (node, clock) = world(25).await;
     let url = format!("{}/slice/{A}/obs?i=*&limit=10", node.base);
     let p1 = page(&node, &url).await;
     assert_eq!(p1.members.len(), 10);
     assert_eq!(p1.asof().as_deref(), Some(C0), "the first page is answered as of now");
-    set(&clock, &plus(C0, H));
+    let later = plus(C0, H);
+    set(&clock, &later);
     let p2 = page(&node, &url).await;
-    assert_eq!(p2.members, p1.members);
+    assert_eq!(p2.asof().as_deref(), Some(later.as_str()), "the second first page pins its own instant");
+    assert_eq!(p2.members, p1.members, "nothing was written: the same members");
+    // each page's later pages follow the instant its `next` pins, whatever the clock says now
     let (r1, r2) = (rest(&node, &p1).await, rest(&node, &p2).await);
     assert_eq!(r1, r2);
     // Every member once, in key order.
     let all: Vec<i64> = p1.members.iter().chain(&r1).map(|m| m.0).collect();
     assert_eq!(all, (0..25).collect::<Vec<_>>());
-    // H4: the second first page is answered as of the first one's `at` (the clock has moved).
-    assert_eq!(p2.asof(), p1.asof(), "the second first page pins the first one's asof");
-    assert_eq!(p2.next, p1.next, "the next links are equal");
+    let all2: Vec<i64> = p2.members.iter().chain(&r2).map(|m| m.0).collect();
+    assert_eq!(all2, all);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
