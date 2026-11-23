@@ -105,8 +105,8 @@ impl Group {
 const ALL: [Group; 4] = [Group::Cells, Group::Tests, Group::Catalog, Group::KeyValues];
 
 pub struct Probe {
-    db_url: String,
-    role: String,
+    pub db_url: String,
+    pub role: String,
 }
 
 fn admin_client(url: &str) -> Client {
