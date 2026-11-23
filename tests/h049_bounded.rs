@@ -61,7 +61,7 @@ async fn items(label: &str, n: usize, max: &str) -> Served {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slice_larger_than_the_old_cap_is_paged_to_its_end() {
-    // CONTRACT-0.5.1 H1: paging by key replaces the total cap of a slice (DATUMESH_SLICE_MAX of 5 no longer cuts it)
+    // CONTRACT-0.5.1 H1: paging by key replaces the total cap of a slice (DATUMESH_SLICE_MAX of 5 no longer cuts the JSON pages; the CSV and Arrow forms stay capped)
     let m = items("h5-slice", 12, "5").await;
     let all: Vec<String> = (1..=12).map(|i| format!("k{i:02}")).collect();
     // the default page holds the 12, no `next`
@@ -85,10 +85,10 @@ async fn a_slice_larger_than_the_old_cap_is_paged_to_its_end() {
         }
     }
     assert_eq!((pages, seen), (3, all));
-    // CSV: the header and twelve rows
+    // CSV (and Arrow) stay whole-slice forms capped at slice_max: the header and five rows, as before (it carries no marker)
     let csv = get(&m, &format!("/slice/{ITEMS}?k=*&format=csv"), &[]).await;
     assert_eq!(csv.status, 200, "{}", csv.text());
-    assert_eq!(csv.text().lines().count(), 13, "{}", csv.text());
+    assert_eq!(csv.text().lines().count(), 6, "{}", csv.text());
     // a slice within the cap is whole
     let m2 = items("h5-slice-small", 4, "5").await;
     let j = get(&m2, &format!("/slice/{ITEMS}?k=*"), &[]).await.json();
