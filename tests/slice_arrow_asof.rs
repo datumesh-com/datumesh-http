@@ -63,6 +63,8 @@ async fn arrow_asof(node: &Node, path: &str) -> (String, usize) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_arrow_first_page_carries_the_instant_its_members_were_computed_for() {
+    // 0.5.1 H1: no member list is reused between requests, so a latest first page is answered as of its own now, in JSON
+    // (`next` pins it) and in Arrow (the metadata says it)
     let (node, clock) = world(25).await;
     let json = format!("{}/slice/{A}/obs?i=*&limit=10", node.base);
     let path = format!("/slice/{A}/obs?i=*");
@@ -70,18 +72,18 @@ async fn an_arrow_first_page_carries_the_instant_its_members_were_computed_for()
     // A latest first page in JSON, answered as of now (C0): its `next` pins C0.
     let pinned = json_next_asof(&node, &json).await;
     assert_eq!(pinned, C0);
+    let (asof, rows) = arrow_asof(&node, &path).await;
+    assert_eq!((asof.as_str(), rows), (C0, 25), "the Arrow first page says the instant the JSON next pins");
 
-    // An hour later, nothing written: the Arrow first page reuses those members, so its
-    // metadata is the instant of the JSON page's `next`, not the new now.
+    // An hour later, nothing written: both forms are answered as of the new now.
     let later = plus(C0, H);
     set(&clock, &later);
     let (asof, rows) = arrow_asof(&node, &path).await;
     assert_eq!(rows, 25);
-    assert_eq!(asof, pinned, "the Arrow asof is the instant the JSON next pins");
-    assert_ne!(asof, later, "and not the new now");
+    assert_eq!(asof, later, "the Arrow asof is the instant of its own request");
+    assert_eq!(json_next_asof(&node, &json).await, later, "and the JSON next pins the same instant");
 
-    // After a write to the series the members are recomputed, so the next Arrow first page
-    // carries the new now.
+    // After a write to the series the next Arrow first page carries the new now.
     node.put_value(&format!("{A}/obs"), &args(&[("i", n("3"))]), n("99.5"), &plus(C0, 30 * MIN));
     let (asof, rows) = arrow_asof(&node, &path).await;
     assert_eq!(rows, 25);
