@@ -42,6 +42,12 @@ fn ent(name: &str, facets: Value, source: Option<&str>) -> (String, Value, Optio
 fn lines_of(entries: &[(String, Value, Option<String>)]) -> Vec<String> {
     let mut v: Vec<String> = entries.iter().map(|(n, _, _)| fn_line(n)).collect();
     v.extend(entries.iter().filter(|(n, _, _)| n.contains("/relay/")).map(|(n, _, _)| relay_cell(n)));
+    // CONTRACT-0.5.1 H4 orders a domain's measures by their cells: the scripture text entry holds the cells (production's does)
+    for (n, _, _) in entries.iter().filter(|(n, _, _)| n.ends_with("/scripture/verse")) {
+        for d in ["2026-10-01", "2026-10-02", "2026-10-03"] {
+            v.push(crworld::cell_line(n, &[("date", "date", d)], ("number", "1")));
+        }
+    }
     v.extend(entries.iter().map(|(n, f, s)| {
         let mut extra = json!({"facets": f});
         if let Some(s) = s {
