@@ -10,8 +10,10 @@
 //! * `/slice`: the first page, a later page and a slice with one fixed argument read at most `limit + 1` members; the pages
 //!   across `next` are complete (every member once) and in slice key order; `next` is still the last member's key (hex of the
 //!   JCS bytes of the typed key scalars, SPEC 5.6).
-//! * `/x/interval` and a series period page, with `DATUMESH_SLICE_MAX=100` (their page size is the cap): at most 101
-//!   members read; the answer holds at most 100 and says it is cut. Which 100 members of a cut interval it shows is not
+//! * `/x/interval` and a series period page, with `DATUMESH_SLICE_MAX=100`: the answer holds at most 100 and says it is cut.
+//!   Every currency over a date range is not a sort-key prefix (coordinator decision for 0.5.1): such a request reads in
+//!   proportion to the members of the slice it names (20 rows a member), and far fewer than the whole function; a one-key
+//!   interval is a prefix and reads a page's worth (at most 101 members). Which 100 members of a cut interval it shows is not
 //!   pinned (the contract does not say); an interval inside the cap is whole and ordered by date then key.
 //!
 //! Not pinned here (the contract names a time, not a test): "cold first page under 200 ms on the restored copy" is the
@@ -186,7 +188,7 @@ async fn series_ready(w: &h0410::W) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn h1_an_interval_reads_at_most_the_cap_plus_one_members() {
+async fn h1_an_interval_reads_in_proportion_to_the_slice_it_names() {
     let fx = h0410::Fx::pg("h051-interval");
     publish_fx_world(&fx);
     let path = series_file(&fx);
@@ -194,20 +196,23 @@ async fn h1_an_interval_reads_at_most_the_cap_plus_one_members() {
     let w = fx.serve(cfg(&["series"], &[("DATUMESH_SERIES_FILE", &path), ("DATUMESH_SLICE_MAX", "100")])).await;
     series_ready(&w).await;
     let probe = w.fx.probe();
-    let bound = ROWS_PER_MEMBER * 101;
 
-    // every key, the whole of the data: cut at the cap of 100
+    // Every key over ten days: the slice names 1,000 of the function's 10,000 members and does not form a sort-key prefix
+    // (the date comes after the currency), so the read is bound by the slice (coordinator decision), not by the page.
+    let (slice, function) = (1_000u64, (CURRENCIES * DAYS) as u64);
     let b0 = probe.reads(h0410::Group::Cells);
-    let r = w.get(&format!("/x/interval/{FXR}?currency=*&from=2026-01-01&to=2026-04-10")).await;
+    let r = w.get(&format!("/x/interval/{FXR}?currency=*&from=2026-03-01&to=2026-03-10")).await;
     let b1 = probe.reads(h0410::Group::Cells);
     assert_eq!(r.status, 200, "{}", r.text());
     let v = r.json();
     assert_eq!(v["members"].as_array().unwrap().len(), 100, "cut at DATUMESH_SLICE_MAX: {}", v["count"]);
     assert_eq!(v["truncated"], true, "the answer says it is cut");
     assert!(b1 - b0 > 0, "the probe counted nothing");
-    assert!(b1 - b0 <= bound, "the interval of 10,000 cells visited {} rows; at most {bound} (cap + 1 members)", b1 - b0);
+    let (bound, half) = (ROWS_PER_MEMBER * (slice + 1) + 1000, ROWS_PER_MEMBER * function / 4);
+    assert!(b1 - b0 < bound, "the interval of a 1,000-member slice visited {} rows; less than {bound} (20 per member of the slice)", b1 - b0);
+    assert!(b1 - b0 < half, "and far fewer than the function's own {} cells' rows: visited {}, less than {half}", function, b1 - b0);
 
-    // one key, a month: inside the cap, whole, by date
+    // One key, a month: a sort-key prefix, so a page's worth: inside the cap, whole, by date
     let r = w.get(&format!("/x/interval/{FXR}?currency=C007&from=2026-03-01&to=2026-03-31")).await;
     let b2 = probe.reads(h0410::Group::Cells);
     assert_eq!(r.status, 200, "{}", r.text());
@@ -216,11 +221,11 @@ async fn h1_an_interval_reads_at_most_the_cap_plus_one_members() {
     let want: Vec<String> = (59..90).map(day).collect();
     assert_eq!(dates, want.iter().map(String::as_str).collect::<Vec<_>>(), "the 31 days of March, whole and in order");
     assert!(v.get("truncated").is_none_or(|t| t != &Value::Bool(true)), "{v}");
-    assert!(b2 - b1 <= bound, "a month of one currency visited {} rows; at most {bound}", b2 - b1);
+    assert!(b2 - b1 <= ROWS_PER_MEMBER * 101, "a month of one currency visited {} rows; at most {}", b2 - b1, ROWS_PER_MEMBER * 101);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn h1_a_period_page_reads_at_most_the_cap_plus_one_members() {
+async fn h1_a_period_page_reads_in_proportion_to_the_slice_it_names() {
     let fx = h0410::Fx::pg("h051-period");
     publish_fx_world(&fx);
     let path = series_file(&fx);
@@ -228,23 +233,23 @@ async fn h1_a_period_page_reads_at_most_the_cap_plus_one_members() {
     let w = fx.serve(cfg(&["series"], &[("DATUMESH_SERIES_FILE", &path), ("DATUMESH_SLICE_MAX", "100")])).await;
     series_ready(&w).await;
     let probe = w.fx.probe();
+    // January: 100 currencies by 31 days is 3,100 of the function's 10,000 members, the cap 100. Every currency over a date
+    // range is not a sort-key prefix: the read is bound by the slice (coordinator decision), not by the cap.
+    let (slice, function) = (3_100u64, (CURRENCIES * DAYS) as u64);
+    let bound = ROWS_PER_MEMBER * (slice + 1);
+    let half = ROWS_PER_MEMBER * function / 4;
     let b0 = probe.reads(h0410::Group::Cells);
-    // March: 100 currencies by 31 days is 3,100 members, the cap 100
-    let r = w.get(&format!("/series/{FXR}/2026-03.csv")).await;
+    let r = w.get(&format!("/series/{FXR}/2026-01.csv")).await;
     let b1 = probe.reads(h0410::Group::Cells);
     assert_eq!(r.status, 200, "{}", r.text());
     let rows = r.text().lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
     assert!((1..=100).contains(&rows), "the page shows at most the cap's worth of members: {rows} date rows");
     assert!(b1 - b0 > 0, "the probe counted nothing");
-    assert!(
-        b1 - b0 <= ROWS_PER_MEMBER * 101,
-        "the period page of a month of 3,100 members visited {} rows; at most {}",
-        b1 - b0,
-        ROWS_PER_MEMBER * 101
-    );
+    assert!(b1 - b0 < bound, "the period page of a 3,100-member slice visited {} rows; less than {bound}", b1 - b0);
+    assert!(b1 - b0 < half, "and far fewer than the whole function's: visited {}, less than {half}", b1 - b0);
     // the HTML page likewise
-    let h = w.get_h(&format!("/series/{FXR}/2026-03"), &[("accept", "text/html")]).await;
+    let h = w.get_h(&format!("/series/{FXR}/2026-01"), &[("accept", "text/html")]).await;
     let b2 = probe.reads(h0410::Group::Cells);
     assert_eq!(h.status, 200);
-    assert!(b2 - b1 <= ROWS_PER_MEMBER * 101, "the HTML page visited {} rows", b2 - b1);
+    assert!(b2 - b1 < bound && b2 - b1 < half, "the HTML page visited {} rows", b2 - b1);
 }
