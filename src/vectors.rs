@@ -225,18 +225,24 @@ pub fn import<S: Store + ?Sized>(store: &S, dir: &Path, now: &str) -> Value {
         descriptors.insert(h.clone(), fd.lang.clone());
         Some(h)
     };
-    let mut put_receipt =
-        |bytes: &[u8], id: &str, versions: &mut BTreeMap<String, Vec<(String, String, String)>>| match (
-            store.put_receipt(bytes),
-            Receipt::from_json(bytes),
-        ) {
-            (Ok(h), Ok(r)) => {
+    let mut put_receipt = |bytes: &[u8], id: &str, versions: &mut BTreeMap<String, Vec<(String, String, String)>>| {
+        // A valued receipt, or a withdrawal (the null version, SPEC 8.1): both are versions of their cell.
+        let parsed = match Receipt::from_json(bytes) {
+            Ok(r) => Ok((r.cell().id(), r.tx().to_string(), r.cell().fn_hash.clone())),
+            Err(e) => match datumesh_core::Withdrawal::from_json(bytes) {
+                Ok(w) => Ok((w.cell().id(), w.tx().to_string(), w.cell().fn_hash.clone())),
+                Err(_) => Err(e),
+            },
+        };
+        match (store.put_receipt(bytes), parsed) {
+            (Ok(h), Ok((cell_id, tx, fn_hash))) => {
                 receipts += 1;
-                versions.entry(r.cell().id()).or_default().push((r.tx().to_string(), h, r.cell().fn_hash.clone()));
+                versions.entry(cell_id).or_default().push((tx, h, fn_hash));
             }
             (Err(e), _) => refused.push(format!("{id}: {e}")),
             _ => {}
-        };
+        }
+    };
     for v in &vs {
         let id = v.get("id").and_then(Value::as_str).unwrap_or("?").to_string();
         match kind(v).as_str() {

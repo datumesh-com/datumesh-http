@@ -189,6 +189,54 @@ fn manifest_bytes_with(
     Value::Object(members).to_jcs()
 }
 
+/// A bundle's receipt as the import reads it: a valued receipt, or a withdrawal, which has no value (R1).
+struct Item {
+    /// The valued receipt; `None` for a withdrawal.
+    receipt: Option<Receipt>,
+    hash: String,
+    tx: String,
+    cell: datumesh_core::Cell,
+}
+
+impl Item {
+    fn parse(bytes: &[u8]) -> Result<Item, String> {
+        match Receipt::from_json(bytes) {
+            Ok(r) => Ok(Item {
+                hash: r.hash().to_string(),
+                tx: r.tx().to_string(),
+                cell: r.cell().clone(),
+                receipt: Some(r),
+            }),
+            Err(e) => match datumesh_core::Withdrawal::from_json(bytes) {
+                Ok(w) => Ok(Item {
+                    hash: w.hash().to_string(),
+                    tx: w.tx().to_string(),
+                    cell: w.cell().clone(),
+                    receipt: None,
+                }),
+                Err(_) => Err(e.to_string()),
+            },
+        }
+    }
+
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
+    }
+
+    fn cell(&self) -> &datumesh_core::Cell {
+        &self.cell
+    }
+
+    /// A computed receipt has inputs; a withdrawal never does.
+    fn is_computed(&self) -> bool {
+        self.receipt.as_ref().is_some_and(|r| !r.inputs().is_empty())
+    }
+}
+
 /// Ed25519 (RFC 8032) over `message` with the key of `seed`, by `ed25519-dalek`: the signature
 /// `R || S`. The public key and key id are those of `SigningKey::from_seed(seed)`; the import
 /// verifies with core's `verify_ed25519`, the strict rules of receipt verification.
@@ -292,7 +340,7 @@ fn build_inner(
     names.sort();
     let mut signed: Vec<(String, Value)> = Vec::new();
     for r in receipts {
-        let hash = Receipt::from_json(&r).map_err(|e| BundleError::Format(format!("receipt: {e}")))?.hash().to_string();
+        let hash = Item::parse(&r).map_err(|e| BundleError::Format(format!("receipt: {e}")))?.hash().to_string();
         let v = json::parse(&r).map_err(|e| BundleError::Format(format!("receipt: {e}")))?;
         signed.push((hash, v));
     }
@@ -472,11 +520,11 @@ fn import_with<S: Store + ?Sized>(
     let Some(Value::Array(receipt_vs)) = doc.get("receipts") else {
         return Err(BundleError::Format("receipts is not an array".into()));
     };
-    // (the JCS bytes of the receipt, the receipt)
-    let mut receipts: Vec<(Vec<u8>, Receipt)> = Vec::new();
+    // (the JCS bytes of the receipt, the receipt): a valued receipt, or a withdrawal (SPEC 8.1, R1)
+    let mut receipts: Vec<(Vec<u8>, Item)> = Vec::new();
     for r in receipt_vs {
         let rb = r.to_jcs();
-        let parsed = Receipt::from_json(&rb).map_err(|e| BundleError::Receipt(format!("unreadable: {e}")))?;
+        let parsed = Item::parse(&rb).map_err(|e| BundleError::Receipt(format!("unreadable: {e}")))?;
         receipts.push((rb, parsed));
     }
     if receipts.windows(2).any(|w| w[0].1.hash() >= w[1].1.hash()) {
@@ -601,7 +649,7 @@ fn import_with<S: Store + ?Sized>(
 
     // 5. Receipt.
     for (rb, r) in &receipts {
-        if !r.inputs().is_empty() {
+        if r.is_computed() {
             return Err(BundleError::Receipt(format!("{}: a computed receipt is not imported", r.hash())));
         }
         let fname = r.cell().function_name();
@@ -779,7 +827,9 @@ fn import_with<S: Store + ?Sized>(
     }
     let mut cell_values = BTreeSet::new();
     for (_, r) in &receipts {
-        crate::publish::cell_string_values(r, &mut cell_values);
+        if let Some(valued) = &r.receipt {
+            crate::publish::cell_string_values(valued, &mut cell_values);
+        }
     }
     crate::publish::store_cell_values(store, cell_values).map_err(BundleError::Store)?;
     Ok(Imported {
