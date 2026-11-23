@@ -29,6 +29,8 @@ PATHS = [
     "/fn/*", "/takeover/*", "/whatif*", "/bundles*",
     # Build 2 Part 6 and calc (http 0.4.5+): series pages, their sitemap, x_calc and x_interval.
     "/series/*", "/x/*",
+    # The 0.7 round (http 0.5.0): the catalogue pages, /catalog, /catalog/<domain>, the subject pages and the rule.
+    "/catalog*",
 ]
 # Build 2 Part 6 (G5): the series pages are cached at the edge as their Cache-Control says
 # (Cloudflare does not cache HTML unless told to). One page rule, "cache everything" on /series/*;
