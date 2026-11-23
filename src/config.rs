@@ -23,6 +23,18 @@ pub const DEFAULT_POOL_SIZE: usize = 32;
 pub const DEFAULT_BATCH_MAX: usize = 1000;
 /// The default number of members in one JSON page of `GET /slice`.
 pub const DEFAULT_SLICE_PAGE: usize = 1000;
+
+/// The most subjects the catalogue lists (`DATUMESH_CATALOG_MAX`, default 100,000; CONTRACT-0.5.1 H2). Read by the catalogue
+/// job and by the mesh alike.
+pub fn catalog_max_of(v: Option<String>) -> Result<usize, ConfigError> {
+    match v {
+        None => Ok(crate::catalog_build::DEFAULT_CATALOG_MAX),
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(ConfigError::new("DATUMESH_CATALOG_MAX", format!("not a positive number: {v}"))),
+        },
+    }
+}
 /// The bound on a JSON page of `GET /slice` (`limit=`).
 pub const MAX_SLICE_PAGE: usize = 10_000;
 /// The bound on the members of a slice served (SPEC 10.1: a manifest has at most 1,048,576).
@@ -217,6 +229,8 @@ pub struct Config {
     pub slice_page: usize,
     /// The most members one slice read serves (default 1,048,576).
     pub slice_max: usize,
+    /// The most subjects the catalogue lists (default 100,000; `DATUMESH_CATALOG_MAX`).
+    pub catalog_max: usize,
     /// The depth of `GET /explain` by default (default 4; at most 16 with `depth=`).
     pub explain_depth: usize,
     /// The most jobs held at once, running or done (default 10,000).
@@ -357,6 +371,7 @@ impl Config {
             test_cells: false,
             slice_page: DEFAULT_SLICE_PAGE,
             slice_max: MAX_SLICE_MEMBERS,
+            catalog_max: crate::catalog_build::DEFAULT_CATALOG_MAX,
             explain_depth: 4,
             max_jobs: 10_000,
             rate: RateLimits::default(),
@@ -447,6 +462,7 @@ impl Config {
         c.test_cells = flag("DATUMESH_TEST_CELLS", c.test_cells)?;
         c.slice_page = num("DATUMESH_SLICE_PAGE", c.slice_page)?;
         c.slice_max = num("DATUMESH_SLICE_MAX", c.slice_max)?;
+        c.catalog_max = catalog_max_of(get("DATUMESH_CATALOG_MAX"))?;
         c.explain_depth = num("DATUMESH_EXPLAIN_DEPTH", c.explain_depth)?;
         c.max_jobs = num("DATUMESH_MAX_JOBS", c.max_jobs)?;
         c.trust_proxy = flag("DATUMESH_TRUST_PROXY", c.trust_proxy)?;

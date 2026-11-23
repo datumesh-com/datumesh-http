@@ -989,7 +989,7 @@ async fn find(State(mesh): State<Mesh>, Query(q): Query<FindQuery>, headers: Hea
     let summary = q.summary.as_deref() == Some("1");
     // The summary and the empty query are read from the find thread's last build (CONTRACT-0.4.9 H4): before
     // its first build they are `503`. Any other query is answered on the request.
-    let empty = query.trim().is_empty();
+    let empty = crate::find::query_words(&query).is_empty();
     let r = inner
         .pool
         .clone()

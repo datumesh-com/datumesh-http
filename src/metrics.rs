@@ -28,6 +28,8 @@ pub(crate) struct Metrics {
     open_keys: std::sync::atomic::AtomicU64,
     /// The classes the object index cut at a cap, counted by each build (CONTRACT-round-0.7-P HP2).
     index_truncated: std::sync::atomic::AtomicU64,
+    /// The catalogue's subjects cut at `DATUMESH_CATALOG_MAX`, by each build that found more (CONTRACT-0.5.1 H2).
+    catalog_truncated: std::sync::atomic::AtomicU64,
 }
 
 impl Metrics {
@@ -86,6 +88,10 @@ impl Metrics {
         self.index_truncated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// One build of the catalogue's view that the cap `DATUMESH_CATALOG_MAX` cut.
+    pub(crate) fn catalog_truncated(&self) {
+        self.catalog_truncated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     /// The requests counted for `route` (any status).
     pub(crate) fn requests_of(&self, route: &str) -> u64 {
         self.requests
@@ -137,6 +143,16 @@ impl Metrics {
             out,
             "datumesh_object_index_truncated_total {}",
             self.index_truncated.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP datumesh_catalog_truncated_total Catalogue builds cut at DATUMESH_CATALOG_MAX subjects."
+        );
+        let _ = writeln!(out, "# TYPE datumesh_catalog_truncated_total counter");
+        let _ = writeln!(
+            out,
+            "datumesh_catalog_truncated_total {}",
+            self.catalog_truncated.load(std::sync::atomic::Ordering::Relaxed)
         );
         let _ = writeln!(out, "# HELP datumesh_http_request_seconds Request latency, by route.");
         let _ = writeln!(out, "# TYPE datumesh_http_request_seconds histogram");

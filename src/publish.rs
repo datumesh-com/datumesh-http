@@ -407,32 +407,31 @@ impl Reads {
         store.receipt(hash).map(|b| b.into_owned())
     }
 
-    /// One `latest_many` for the ids not read yet.
+    /// A `latest_many` a page at a time, for the ids not read yet.
     fn prefetch_latest<S: Store + ?Sized>(&mut self, store: &S, ids: &[&str]) {
         let mut seen = HashSet::new();
         let missing: Vec<&str> =
             ids.iter().copied().filter(|id| !self.latest_of.contains_key(*id) && seen.insert(*id)).collect();
-        if missing.is_empty() {
-            return;
-        }
-        if let Ok(found) = store.latest_many(&missing) {
-            for (id, v) in missing.iter().zip(found) {
-                self.latest_of.insert(id.to_string(), v.map(|v| (v.tx, v.receipt_hash)));
+        // A page of ids a statement (CONTRACT-0.5.1 H2: the job never asks the store for more than a page at a time).
+        for page in missing.chunks(crate::catalog_build::PAGE) {
+            if let Ok(found) = store.latest_many(page) {
+                for (id, v) in page.iter().zip(found) {
+                    self.latest_of.insert(id.to_string(), v.map(|v| (v.tx, v.receipt_hash)));
+                }
             }
         }
     }
 
-    /// One `receipts_many` for the hashes not read yet.
+    /// A `receipts_many` a page at a time, for the hashes not read yet.
     fn prefetch_receipts<S: Store + ?Sized>(&mut self, store: &S, hashes: &[&str]) {
         let mut seen = HashSet::new();
         let missing: Vec<&str> =
             hashes.iter().copied().filter(|h| !self.receipt_of.contains_key(*h) && seen.insert(*h)).collect();
-        if missing.is_empty() {
-            return;
-        }
-        if let Ok(found) = store.receipts_many(&missing) {
-            for (h, b) in missing.iter().zip(found) {
-                self.receipt_of.insert(h.to_string(), b);
+        for page in missing.chunks(crate::catalog_build::PAGE) {
+            if let Ok(found) = store.receipts_many(page) {
+                for (h, b) in page.iter().zip(found) {
+                    self.receipt_of.insert(h.to_string(), b);
+                }
             }
         }
     }

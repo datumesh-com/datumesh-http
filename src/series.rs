@@ -332,7 +332,8 @@ fn slice_of(b: &Bound, page: &SeriesPage, span: &Span) -> Option<Slice> {
 fn members(inner: &Inner, b: &Bound, page: &SeriesPage, span: Span, limit: usize) -> Option<Vec<SliceValue>> {
     let slice = slice_of(b, page, &span)?;
     let store: &dyn Store = &*inner.store;
-    store.slice_values_limit(&slice, &inner.now(), limit).ok()
+    // The first `limit` members by key, one page (CONTRACT-0.5.1 H1).
+    store.slice_page(&slice, &inner.now(), None, limit).ok()
 }
 
 fn key_of(m: &SliceValue, arg: &str) -> Option<String> {
@@ -1287,7 +1288,7 @@ pub(crate) fn interval(inner: &Inner, function: &str, query: &str, inm: Option<&
     let Some(slice) = slice_of(&b, &p2, &Span::Days(&from, &to)) else { return interval_bad("E_PARSE_URI") };
     let store: &dyn Store = &*inner.store;
     // At most `slice_max + 1` members are read: one more than the answer holds, to know it is cut (H5).
-    let Ok(mut members) = store.slice_values_limit(&slice, &now, inner.config.slice_max + 1) else {
+    let Ok(mut members) = store.slice_page(&slice, &now, None, inner.config.slice_max + 1) else {
         return interval_error(503, "error", Some("E_EVAL_UNAVAILABLE"), "no-store");
     };
     // The open arguments, the date first, in the order of the signature after it.

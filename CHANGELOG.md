@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1
+
+The round 0.7 slices and catalogue (CONTRACT-0.5.1 H1 to H5): requires datumesh-store 0.6.4 (unreleased: a stored sort key per cell, `slice_page`, class bindings by hash), datumesh-core 0.3.14 and datumesh-formula 0.6.0. Each change, and what it costs:
+
+- **Paged slices (H1).** `/slice` reads one page at a time by key (`slice_page`), at `limit=` (default `DATUMESH_SLICE_PAGE`, at most 10,000); `next` is still the last member's key, now turned into the store's sort key. The in-memory member cache is gone: a latest first page pins its own instant in `next`, and nothing is reused between requests. CSV and Arrow take at most `DATUMESH_SLICE_MAX` members, one read. A slice whose fixed or range arguments do not form a sort-key prefix costs the members it names, not the function. `/x/interval` and the series period pages read `slice_page` as well (their cap is `DATUMESH_SLICE_MAX`). Cost: a slice is no longer cut at one total of `DATUMESH_SLICE_MAX` members across pages; pages walk on by key.
+- **The object index pages by key (H1, H2).** The index of a class walks its extent in pages of 1,000 by sort key (was 10,000 by cell id). When a class is cut at `DATUMESH_INDEX_CLASS_MAX`, the objects kept are the first in sort-key order. Cost: a class cut at its cap keeps a different set of objects than before.
+- **Paged catalogue reads (H2).** The catalogue job and the catalogue thread list subjects from the `exists` extent in pages of 1,000 and read `label`, `sources`, `source(rank)` and `from_label` by key per page; no read is larger than a page. `DATUMESH_CATALOG_MAX` (default 100,000) caps the subjects listed; a cut is logged and counted in `datumesh_catalog_truncated_total`. `STORED_CELLS_READ` is gone. Cost: a catalogue with more subjects than the cap lists the cap's worth.
+- **Find drops one-letter words (H3).** A query's alphabetic one-letter words are dropped before matching (digits and other single characters stay); a query of only such words is the empty query. Cost: a query of single letters returns the listing of the empty query, not a text match on them.
+- **The held sentence (H4).** A computed entry (a function whose code is not stored) with a `source_name` is named "computed from <name>"; a relay still reads "from <name>". A measure's order is by its rank-one entries' cells, descending, then by name. Own data names no source. Cost: `held` text changes for measures with cells; production's rainfall entry reads "monthly rainfall computed from CHIRPS".
+- **One parent walk per class describe (H5).** `describe` of a class walks its parent chain once and names each defining class once (class bindings by hash, store 0.6.4). Cost: none (the same answer, fewer reads).
+- **Publish prefetch in pages.** The publish path's version and receipt reads are a page of ids at a time. Cost: none.
+
 ## 0.5.0
 
 The classes round (CONTRACT-classes-round K1, K3, K5, K7 to K13): requires datumesh-core 0.3.13, datumesh-store 0.6.0 and datumesh-formula 0.6.0 (unreleased, on the classes-round branches). **BREAKING: K5, an inherited method reads the defining class's cells.** The other changes are additive. Each change, and what it costs:

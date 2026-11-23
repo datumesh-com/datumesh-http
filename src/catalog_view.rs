@@ -19,12 +19,14 @@ use datumesh_core::ClassDescriptor;
 use datumesh_store::{CatalogKind, Store};
 
 use crate::catalog_build::{
-    cells_of, facet_class, parse_subject_key, relay_domain, subject_class, subject_key_text, subject_label,
-    subject_of_args, SubjectKey, RULE,
+    facet_class, lexical_args, lookup_labels, parse_subject_key, relay_domain, subject_class, subject_key_text,
+    subject_label, subject_of_args, subject_scalars, Class, SubjectKey, PAGE, RULE, SOURCES_PER_SUBJECT, SUBJECT_KEYS,
 };
 use crate::envelope::{self, Cache, Reply};
+use crate::find::cells_of_name;
 use crate::mesh::Inner;
 use crate::series::Out;
+use datumesh_core::{FunctionDescriptor, Scalar};
 
 /// The most subjects a domain's `top` lists (C7).
 const TOP: usize = 5;
@@ -102,6 +104,10 @@ struct Read {
     frequency: BTreeMap<String, String>,
     /// The `source_name` of each faceted entry that has one, by entry name (R8).
     source_names: BTreeMap<String, String>,
+    /// The hash of each faceted function entry, by entry name (its cells are counted for `held`, H4).
+    fn_hashes: BTreeMap<String, String>,
+    /// The faceted functions that are computed (their code is not stored): "computed from" names them (H4).
+    computed: BTreeSet<String>,
     /// The valued lookup labels of the subject class, in label order.
     labels: Vec<String>,
     /// The generation of what was read: a fingerprint of the faceted entries, their facets and binding instants, and of the
@@ -112,63 +118,76 @@ struct Read {
 fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
     let store: &dyn Store = &*inner.store;
     let class = subject_class(host);
-    let hash = store.resolve_class(&class, now).ok()?;
-    let read_cells = |method: &str| -> Option<Vec<(BTreeMap<String, String>, String)>> {
-        Some(
-            cells_of(store, &class, hash.as_deref(), method)
-                .ok()?
-                .into_iter()
-                .filter_map(|(a, v)| Some((a, v?)))
-                .collect(),
-        )
-    };
-    let mut exists: BTreeMap<SubjectKey, bool> = BTreeMap::new();
-    for (args, value) in read_cells("exists")? {
-        if let Some(k) = subject_of_args(&args) {
-            exists.insert(k, value == "true");
-        }
-    }
-    let mut labels: BTreeMap<SubjectKey, String> = BTreeMap::new();
-    for (args, value) in read_cells("label")? {
-        if let Some(k) = subject_of_args(&args) {
-            labels.insert(k, value);
-        }
-    }
-    let mut counts: BTreeMap<SubjectKey, usize> = BTreeMap::new();
-    for (args, value) in read_cells("sources")? {
-        if let (Some(k), Ok(n)) = (subject_of_args(&args), value.parse::<usize>()) {
-            counts.insert(k, n);
-        }
-    }
-    let mut sources: BTreeMap<(SubjectKey, usize), String> = BTreeMap::new();
-    for (args, value) in read_cells("source")? {
-        if let (Some(k), Some(r)) = (subject_of_args(&args), args.get("rank").and_then(|r| r.parse::<usize>().ok())) {
-            sources.insert((k, r), value);
-        }
-    }
-    let mut lookup: Vec<String> =
-        read_cells("from_label")?.into_iter().filter_map(|(a, _)| a.get("label").cloned()).collect();
-    lookup.sort();
-    lookup.truncate(LABEL_EXAMPLES);
+    // The subjects that exist, a page at a time (H2): at most the cap's, the cut counted; then their labels and sources by key.
+    let cap = inner.config.catalog_max;
     let mut subjects: Vec<Subject> = Vec::new();
-    for (k, live) in &exists {
-        if !live {
-            continue;
+    let mut lookup: Vec<String> = Vec::new();
+    if let Some(sc) = Class::open(store, &class, now).ok()? {
+        let mut live: Vec<SubjectKey> = Vec::new();
+        let mut after: Option<Vec<u8>> = None;
+        'pages: loop {
+            let page = sc.page("exists", &SUBJECT_KEYS, after.as_deref(), PAGE).ok()?;
+            after = page.last().map(|v| v.sort_key.clone());
+            for v in &page {
+                if v.value.lexical() != "true" {
+                    continue;
+                }
+                let Some(k) = subject_of_args(&lexical_args(&v.cell)) else { continue };
+                if live.len() == cap {
+                    inner.metrics.catalog_truncated();
+                    tracing::warn!(target: "datumesh_http", cap, "catalogue: the subjects are cut at DATUMESH_CATALOG_MAX");
+                    break 'pages;
+                }
+                live.push(k);
+            }
+            if page.len() < PAGE {
+                break;
+            }
         }
-        let n = counts.get(k).copied().unwrap_or(0);
-        let text = subject_key_text(host, k);
-        subjects.push(Subject {
-            key: k.clone(),
-            label: labels.get(k).cloned().unwrap_or_else(|| subject_label(k)),
-            sources: (1..=n).map(|r| sources.get(&(k.clone(), r)).cloned().unwrap_or_default()).collect(),
-            text,
-        });
+        for chunk in live.chunks(PAGE) {
+            let keys: Vec<Vec<(String, Scalar)>> = chunk.iter().map(|k| subject_scalars(k, None)).collect();
+            let labels = sc.values("label", &keys).ok()?;
+            let counts: Vec<usize> = sc
+                .values("sources", &keys)
+                .ok()?
+                .iter()
+                .map(|c| c.as_deref().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0))
+                .collect();
+            let most = counts.iter().copied().max().unwrap_or(0).min(SOURCES_PER_SUBJECT);
+            let mut sources: Vec<Vec<String>> = vec![Vec::new(); chunk.len()];
+            for r in 1..=most {
+                let idx: Vec<usize> = (0..chunk.len()).filter(|&i| counts[i] >= r).collect();
+                let rank_keys: Vec<Vec<(String, Scalar)>> =
+                    idx.iter().map(|&i| subject_scalars(&chunk[i], Some(r))).collect();
+                for (&i, v) in idx.iter().zip(sc.values("source", &rank_keys).ok()?) {
+                    sources[i].push(v.unwrap_or_default());
+                }
+            }
+            for (i, k) in chunk.iter().enumerate() {
+                subjects.push(Subject {
+                    key: k.clone(),
+                    text: subject_key_text(host, k),
+                    label: labels[i].clone().unwrap_or_else(|| subject_label(k)),
+                    sources: std::mem::take(&mut sources[i]),
+                });
+            }
+        }
+        // The lookup's examples: the labels that name one subject (as the job writes them), the first in label order (H2:
+        // counted over the subjects read, not a slice of the lookup).
+        let mut named: BTreeMap<String, usize> = BTreeMap::new();
+        for s in &subjects {
+            for l in lookup_labels(&s.key) {
+                *named.entry(l).or_default() += 1;
+            }
+        }
+        lookup = named.into_iter().filter(|(_, n)| *n == 1).map(|(l, _)| l).take(LABEL_EXAMPLES).collect();
     }
     subjects.sort_by(|a, b| a.text.cmp(&b.text));
     // The domains: their subjects, and the number of catalogue names that have the domain among their facets (C7).
     let mut names: BTreeMap<String, usize> = BTreeMap::new();
     let mut frequency: BTreeMap<String, String> = BTreeMap::new();
     let mut source_names: BTreeMap<String, String> = BTreeMap::new();
+    let mut fn_hashes: BTreeMap<String, String> = BTreeMap::new();
     let mut class_facets: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut entries = store.catalog_entries_with_facets().ok()?;
@@ -178,6 +197,11 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
             .hash(&mut hasher);
         if let Some(s) = &e.source_name {
             source_names.insert(e.name.clone(), s.clone());
+        }
+        if e.kind == CatalogKind::Function {
+            if let Some(h) = &e.hash {
+                fn_hashes.insert(e.name.clone(), h.clone());
+            }
         }
         if let Some(f) = e.facets.get("frequency").and_then(|f| f.first()) {
             frequency.insert(e.name.clone(), f.clone());
@@ -230,7 +254,30 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
         })
         .collect();
     domains.sort_by(|a, b| b.subjects.len().cmp(&a.subjects.len()).then_with(|| a.name.cmp(&b.name)));
-    Some(Read { subjects, domains, classes, frequency, source_names, labels: lookup, generation: hasher.finish() })
+    // The computed entries of `held` (H4): a function with a `source_name` whose code is a formula, not stored cells.
+    let mut computed: BTreeSet<String> = BTreeSet::new();
+    for name in fn_hashes.keys() {
+        if !source_names.contains_key(name) {
+            continue;
+        }
+        let Some(binding) = store.resolve_binding(name, now).ok().flatten() else { continue };
+        if let Some(b) = store.descriptor(&binding.fn_hash) {
+            if FunctionDescriptor::from_json(&b).is_ok_and(|fd| fd.lang != "stored") {
+                computed.insert(name.clone());
+            }
+        }
+    }
+    Some(Read {
+        subjects,
+        domains,
+        classes,
+        frequency,
+        source_names,
+        fn_hashes,
+        computed,
+        labels: lookup,
+        generation: hasher.finish(),
+    })
 }
 
 /// A count as a JSON number.
@@ -418,6 +465,8 @@ fn held_text(
     domains: &[Domain],
     frequency: &BTreeMap<String, String>,
     source_names: &BTreeMap<String, String>,
+    computed: &BTreeSet<String>,
+    cells: &BTreeMap<String, u64>,
 ) -> Option<String> {
     if subjects.is_empty() {
         return None;
@@ -429,12 +478,22 @@ fn held_text(
         for &i in &d.subjects {
             by_measure.entry(subjects[i].key.2.as_str()).or_default().push(i);
         }
-        let mut measures: Vec<(&str, Vec<usize>)> = by_measure.into_iter().collect();
-        measures.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+        // A measure's cells (H4): the stored cells of its rank-one entries, each entry once; then the name.
+        let mut measures: Vec<(&str, u64, Vec<usize>)> = by_measure
+            .into_iter()
+            .map(|(m, idx)| {
+                let rank_one: BTreeSet<&str> =
+                    idx.iter().filter_map(|&i| subjects[i].sources.first().map(String::as_str)).collect();
+                let n = rank_one.iter().map(|s| cells.get(*s).copied().unwrap_or(0)).sum();
+                (m, n, idx)
+            })
+            .collect();
+        measures.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         let mut phrases = Vec::new();
-        for (m, mut idx) in measures.into_iter().take(HELD_MEASURES) {
+        for (m, _, mut idx) in measures.into_iter().take(HELD_MEASURES) {
             idx.sort_by(|&a, &b| subjects[a].text.cmp(&subjects[b].text));
             let mut sources: Vec<String> = Vec::new();
+            let mut computed_names: Vec<String> = Vec::new();
             let mut freq: Option<&str> = None;
             for &i in &idx {
                 let Some(src) = subjects[i].sources.first() else { continue };
@@ -444,11 +503,16 @@ fn held_text(
                         .map(String::as_str)
                         .filter(|f| matches!(*f, "monthly" | "weekly" | "annual"));
                 }
-                // A relayed source is named by its `source_name`, else by its domain; the publisher's own data is named by none.
+                // A relayed source is named by its `source_name`, else by its domain ("from"); a computed one (a view that is
+                // not a relay, H4) by its `source_name` ("computed from"); the publisher's own data is named by none.
                 if let Some(domain) = relay_domain(host, src) {
                     let named = source_names.get(src).cloned().unwrap_or(domain);
                     if !sources.contains(&named) {
                         sources.push(named);
+                    }
+                } else if let (Some(named), true) = (source_names.get(src), computed.contains(src)) {
+                    if !computed_names.contains(named) {
+                        computed_names.push(named.clone());
                     }
                 }
             }
@@ -459,6 +523,10 @@ fn held_text(
             if !sources.is_empty() {
                 phrase.push_str(" from ");
                 phrase.push_str(&join_names(&sources));
+            }
+            if !computed_names.is_empty() {
+                phrase.push_str(" computed from ");
+                phrase.push_str(&join_names(&computed_names));
             }
             phrases.push(phrase);
         }
@@ -737,7 +805,17 @@ fn build_from(inner: &Inner, read: Read) -> Built {
     let origin = inner.config.origin();
     let now = inner.now();
     let root = root_json(&host, &origin, &read.domains, &read.subjects);
-    let held = held_text(&host, &read.subjects, &read.domains, &read.frequency, &read.source_names);
+    // The stored cells of each rank-one source (H4): a count per entry, read here, never by a request.
+    let mut cells: BTreeMap<String, u64> = BTreeMap::new();
+    for s in &read.subjects {
+        if let Some(src) = s.sources.first() {
+            if let (false, Some(h)) = (cells.contains_key(src), read.fn_hashes.get(src)) {
+                cells.insert(src.clone(), cells_of_name(&*inner.store, src, h).unwrap_or(0));
+            }
+        }
+    }
+    let held =
+        held_text(&host, &read.subjects, &read.domains, &read.frequency, &read.source_names, &read.computed, &cells);
     let class_names: BTreeSet<String> = read.classes.iter().map(|c| c.name.clone()).collect();
     let pages = build_pages(&read.subjects, &read.domains, &class_names);
     let domain_order = read

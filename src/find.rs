@@ -93,6 +93,16 @@ fn first_words(qn: &str) -> String {
     qn.split_whitespace().take(QUERY_WORDS).collect::<Vec<_>>().join(" ")
 }
 
+/// The words of a query that are matched (CONTRACT-0.5.1 H3): its NFC, with every one-letter alphabetic word dropped (digits and
+/// other single characters stay). A query with no other word is the empty query.
+pub(crate) fn query_words(query: &str) -> String {
+    nfc(query.trim())
+        .split_whitespace()
+        .filter(|w| !(w.chars().count() == 1 && w.chars().all(char::is_alphabetic)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Whether the store has the dictionary value `value` of `key` of `owner` (exact, CONTRACT-0.4.9 H7).
 pub(crate) fn has_value<S: Store + ?Sized>(store: &S, owner: &str, key: &str, value: &str) -> bool {
     store.has_key_value(owner, key, value).unwrap_or(false)
@@ -817,8 +827,7 @@ fn annotate(inner: &Inner, results: &mut [Value]) {
 pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     let ctx = ctx_of(inner);
     let mut lk = Lookup::default();
-    let qn = nfc(query.trim());
-    let qn = first_words(&qn);
+    let qn = first_words(&query_words(query));
     if qn.is_empty() {
         // The empty query is answered from the find thread's build (see `empty_answer`); this is never reached
         // from the handler, which routes it there.
@@ -1090,7 +1099,7 @@ fn summary_value(inner: &Inner, ctx: &Ctx<'_>) -> Value {
 }
 
 /// The stored cells of the function `name` (hash `hash`), counted by name (one indexed count, S6).
-fn cells_of_name(store: &dyn Store, name: &str, hash: &str) -> Option<u64> {
+pub(crate) fn cells_of_name(store: &dyn Store, name: &str, hash: &str) -> Option<u64> {
     let (ns, f) = name.rsplit_once('/')?;
     store.cell_count(ns, f, hash).ok()
 }

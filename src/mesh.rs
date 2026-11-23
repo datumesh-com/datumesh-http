@@ -201,7 +201,6 @@ impl MeshBuilder {
             by_hash: (0..32).map(|_| Mutex::new(HashMap::new())).collect(),
             latest: Latest::new(),
             targets: Targets::new(),
-            slices: Mutex::new(Vec::new()),
             known: Mutex::new(crate::describe::Index::default()),
             started: Instant::now(),
             config,
@@ -397,8 +396,6 @@ pub(crate) struct Inner {
     by_hash: Vec<Mutex<HashMap<String, Arc<ReceiptInfo>>>>,
     latest: Latest,
     targets: Targets,
-    #[allow(clippy::type_complexity)]
-    pub(crate) slices: Mutex<Vec<(String, String, Arc<Vec<datumesh_store::SliceValue>>)>>,
     /// The index of the objects the mesh knows (describe, short ids).
     pub(crate) known: Mutex<crate::describe::Index>,
     pub(crate) started: Instant,
@@ -906,11 +903,10 @@ impl Inner {
     }
 
     /// A stored version was added for `cell_id`: the engine's memo, the latest answers and
-    /// the slice cache forget what rests on it.
+    /// the latest answers forget what rests on it.
     pub(crate) fn version_added(&self, cell_id: &str) {
         self.engine.stored_version_added(cell_id);
         self.latest.forget(cell_id);
-        self.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.index_stored_now(cell_id);
     }
 
@@ -1354,7 +1350,6 @@ impl Mesh {
     pub fn clear_memo(&self) {
         self.inner.engine.clear_memo();
         self.inner.latest.clear();
-        self.inner.slices.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
     /// The cross-mesh resolver.

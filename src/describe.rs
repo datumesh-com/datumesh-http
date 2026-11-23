@@ -9,7 +9,7 @@
 //! Objects are never stored, so the objects the mesh *knows* (the ones an object id or a short id can
 //! name) are the objects of the declared list of each class the mesh has heard of: the stored cells of
 //! the class's `extent.keys` function (or of its first method in name order, when it declares none), read
-//! in pages of [`INDEX_PAGE`] by cell id. A class holds at most `DATUMESH_INDEX_CLASS_MAX` objects and the
+//! in pages of [`INDEX_PAGE`] by sort key (`slice_page`, CONTRACT-0.5.1 H1). A class holds at most `DATUMESH_INDEX_CLASS_MAX` objects and the
 //! index at most `DATUMESH_INDEX_MAX`; past a cap the class is cut (its first objects in cell-id order are
 //! kept, the cut is logged and counted in `datumesh_object_index_truncated_total`), and its other objects are
 //! reached by key encoding. Computed cells are not read: a computed cell (and a stored version added to the
@@ -51,8 +51,8 @@ pub(crate) const EXTENSIONS_SHOWN: usize = 100;
 
 pub(crate) const INDEX_TICK: Duration = Duration::from_millis(500);
 
-/// The objects one page of a class's declared list reads from the store (`slice_values_page`).
-pub(crate) const INDEX_PAGE: usize = 10_000;
+/// The objects one page of a class's declared list reads from the store (`slice_page`; CONTRACT-0.5.1 H2: a page is 1,000).
+pub(crate) const INDEX_PAGE: usize = 1_000;
 
 /// An object the mesh knows. Its class hash is shared by every object of the class.
 #[derive(Clone, Debug)]
@@ -189,7 +189,7 @@ impl Inner {
 
     /// The objects of the class `name` into `objects`, from its declared list: the stored cells of its
     /// `extent.keys` function, or of its first method in name order when it declares none. Read in pages of
-    /// [`INDEX_PAGE`] by cell id, so the first objects of a class are the ones kept when it is cut. `base` is the
+    /// [`INDEX_PAGE`] by sort key, so the first objects of a class are the ones kept when it is cut. `base` is the
     /// number of objects already in the build, which count against `index_max` with `objects`. Returns whether
     /// the class was cut at `class_max` objects or at `index_max` objects in all.
     fn index_class(
@@ -212,17 +212,17 @@ impl Inner {
         let Some(slice) = method_slice(&name_of, hash, &fd) else { return false };
         let class_hash: Arc<str> = Arc::from(c.class_hash.as_str());
         let mut mine = 0usize;
-        let mut after: Option<String> = None;
+        let mut after: Option<Vec<u8>> = None;
         loop {
-            let page = match self.store.slice_values_page(&slice, now, after.as_deref(), INDEX_PAGE) {
+            let page = match self.store.slice_page(&slice, now, after.as_deref(), INDEX_PAGE) {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(target: "datumesh_http", error = %e, class = name, "describe index: slice_values_page");
+                    tracing::warn!(target: "datumesh_http", error = %e, class = name, "describe index: slice_page");
                     return false;
                 }
             };
             let n = page.len();
-            after = page.last().map(|v| v.version.cell_id.clone());
+            after = page.last().map(|v| v.sort_key.clone());
             for v in &page {
                 let Some(object) = object_of(name, d, &v.cell.args) else { continue };
                 let Ok(id) = object.object_id(&c.class_hash) else { continue };
@@ -400,6 +400,16 @@ impl Inner {
         let Ok(descriptor) = json::parse(&c.descriptor.canonical()) else {
             return envelope::error_reply(ErrorCode::InputUnavailable);
         };
+        // The parent chain, walked once for the whole class (H5): each ancestor's hash and descriptor, nearest first.
+        let mut chain: Vec<(String, ClassDescriptor)> = Vec::new();
+        let mut up = c.descriptor.parent.clone();
+        while let Some(ph) = up {
+            let Ok(Some(p)) = Bindings::class_by_hash(self, &ph) else { break };
+            up = p.parent.clone();
+            chain.push((ph, p));
+        }
+        // Each defining class's name, read once (H5).
+        let mut names: BTreeMap<String, Option<String>> = BTreeMap::new();
         let mut methods = Vec::new();
         for (m, hash) in &c.descriptor.methods {
             let Ok(fd) = self.descriptor(hash) else { return envelope::error_reply(ErrorCode::InputUnavailable) };
@@ -420,7 +430,7 @@ impl Inner {
             {
                 members.push(("description".into(), Value::String(text.clone())));
             }
-            members.push(("fn".into(), Value::String(self.method_fn(name, c, m))));
+            members.push(("fn".into(), Value::String(self.method_fn(name, c, m, &chain, &mut names))));
             members.push(("fn_hash".into(), Value::String(hash.clone())));
             members.push(("returns".into(), returns));
             methods.push((m.clone(), Value::Object(members)));
@@ -510,21 +520,29 @@ impl Inner {
     }
 
     /// The function a method `m` of the class `name` (bound as `c`) denotes (K5, 16.8): `D/m` when the method is inherited
-    /// from the class D that defines it (found through the parent hashes, D named as of now), else `name/m`.
-    fn method_fn(&self, name: &str, c: &BoundClass, m: &str) -> String {
+    /// from the class D that defines it (the last class of the parent chain `chain`, nearest first, that has the method's
+    /// hash in the unbroken run from the class), else `name/m`. `names` memoises the defining classes' names (H5).
+    fn method_fn(
+        &self,
+        name: &str,
+        c: &BoundClass,
+        m: &str,
+        chain: &[(String, ClassDescriptor)],
+        names: &mut BTreeMap<String, Option<String>>,
+    ) -> String {
         let Some(h) = c.descriptor.methods.get(m) else { return format!("{name}/{m}") };
-        let mut cur: ClassDescriptor = (*c.descriptor).clone();
-        let mut defining: Option<String> = None;
-        while let Some(ph) = cur.parent.clone() {
-            let Ok(Some(p)) = Bindings::class_by_hash(self, &ph) else { break };
+        let mut defining: Option<&str> = None;
+        for (ph, p) in chain {
             if p.methods.get(m) != Some(h) {
                 break;
             }
             defining = Some(ph);
-            cur = p;
         }
         if let Some(dh) = defining {
-            if let Ok(Some(dn)) = Bindings::class_name_of(self, &dh, &self.now()) {
+            let dn = names
+                .entry(dh.to_string())
+                .or_insert_with(|| Bindings::class_name_of(self, dh, &self.now()).ok().flatten());
+            if let Some(dn) = dn {
                 return format!("{dn}/{m}");
             }
         }

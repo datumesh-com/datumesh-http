@@ -260,7 +260,7 @@ impl<'a> Run<'a> {
         let t = self.asof.clone();
         // At most the fuel left plus one is read: more members than that is the budget (CONTRACT-round-0.7-P HP8).
         let remaining = FUEL.saturating_sub(self.used) as usize;
-        let values = self.store.slice_values_limit(&core, &t, remaining.saturating_add(1)).map_err(store_err)?;
+        let values = self.store.slice_page(&core, &t, None, remaining.saturating_add(1)).map_err(store_err)?;
         if values.len() > remaining {
             return Err(CalcError::Budget);
         }

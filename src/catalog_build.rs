@@ -45,8 +45,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use datumesh_core::{fold_label, Arg, ClassDescriptor, FunctionDescriptor, Receipt, SigningKey, Withdrawal};
-use datumesh_store::{CatalogKind, Facets, Store};
+use datumesh_core::{
+    fold_label, Arg, Cell, ClassDescriptor, FunctionDescriptor, Receipt, Scalar, SigningKey, Slice, Type,
+};
+use datumesh_store::{CatalogKind, Facets, SliceValue, Store};
 use serde_json::{json, Value};
 
 use crate::publish::{publish_job, PublishError, PublishOptions};
@@ -150,7 +152,7 @@ pub(crate) fn facet_label(facet: &str, value: &str) -> String {
 
 /// The folded lookup labels of a subject: the folded `label()`, and `<measure> <region>` and `<thing> <measure> <region>` where
 /// the region is not `none`, and the thing is not `none` for the last.
-fn lookup_labels(k: &SubjectKey) -> Vec<String> {
+pub(crate) fn lookup_labels(k: &SubjectKey) -> Vec<String> {
     let mut out = vec![fold_label(&subject_label(k))];
     if k.3 != "none" {
         let m = k.2.replace('_', " ");
@@ -325,8 +327,15 @@ pub(crate) const SUBJECTS_PER_ENTRY: usize = 256;
 /// The most sources a subject keeps (R11): `sources()` is at most this, and the ranks past it have no cell.
 pub(crate) const SOURCES_PER_SUBJECT: usize = 20;
 
-/// The most stored cells of one method the job and the view read (the receipts of the latest versions, lowest cell id first).
-pub(crate) const STORED_CELLS_READ: usize = 1 << 20;
+/// The subjects one page of the catalogue reads (CONTRACT-0.5.1 H2): a statement of the job or the view visits at most this
+/// many subjects' cells of one method.
+pub(crate) const PAGE: usize = 1000;
+
+/// The default most subjects the catalogue lists (`DATUMESH_CATALOG_MAX`, CONTRACT-0.5.1 H2).
+pub const DEFAULT_CATALOG_MAX: usize = 100_000;
+
+/// The arguments of a subject class's keys, in the order of the class.
+pub(crate) const SUBJECT_KEYS: [&str; 4] = ["domain", "thing", "measure", "region"];
 
 /// The reason of a withdrawal of a subject or facet value that is gone (R10).
 pub(crate) const GONE: &str = "the subject is no longer in the catalogue";
@@ -413,7 +422,7 @@ fn subclass_order(base: &[(u8, &str, &str, usize)], entries: &[Entry]) -> Vec<us
     out
 }
 
-fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, PublishError> {
+fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Result<Model, PublishError> {
     let mut g = Graph { store, host, now, reads: BTreeMap::new(), reach: BTreeMap::new(), visiting: BTreeSet::new() };
     let listed = store.catalog_entries_with_facets().map_err(err)?;
     let mut entries: Vec<Entry> = Vec::new();
@@ -485,6 +494,13 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Model, P
         let names: Vec<String> = order.iter().take(SOURCES_PER_SUBJECT).map(|&i| entries[i].name.clone()).collect();
         subjects.insert(k.clone(), names);
     }
+    // The catalogue lists at most `cap` subjects, the first in key order (H2); the rest are not written.
+    if subjects.len() > cap {
+        tracing::warn!(target: "datumesh_http", subjects = subjects.len(), cap,
+            "catalogue job: the subjects are cut at DATUMESH_CATALOG_MAX");
+        let kept = subjects.split_off(&subjects.keys().nth(cap).cloned().unwrap_or_default());
+        drop(kept);
+    }
     // Facet objects count only the subjects that exist (every subject of an entry is one of `members` when it is bound).
     facets.retain(|_, set| {
         set.retain(|k| subjects.contains_key(k));
@@ -526,46 +542,9 @@ fn subject_keys(facets: &Facets) -> Vec<SubjectKey> {
     out
 }
 
-/// One stored cell of a catalogue method: its args' lexical values, and the value's lexical form; `None` for a withdrawal
-/// (R1), the cell having no value from its `asof` on.
-pub(crate) type CellRow = (BTreeMap<String, String>, Option<String>);
-
 /// Whether stored receipt bytes are a withdrawal (a `withdrawn` member, R1).
 fn is_withdrawal(bytes: &[u8]) -> bool {
     datumesh_core::json::parse(bytes).is_ok_and(|v| v.get("withdrawn").is_some())
-}
-
-/// The receipts of a method's stored cells, as the args' lexical values and the value's lexical form (`None` when withdrawn).
-pub(crate) fn cells_of<S: Store + ?Sized>(
-    store: &S,
-    class: &str,
-    class_hash: Option<&str>,
-    method: &str,
-) -> Result<Vec<CellRow>, PublishError> {
-    let Some(hash) = class_hash else { return Ok(Vec::new()) };
-    let bytes = store.class(hash).map_err(err)?.ok_or_else(|| err(format!("class {hash} is not stored")))?;
-    let cd = ClassDescriptor::from_json(&bytes).map_err(err)?;
-    let Some(fh) = cd.methods.get(method) else { return Ok(Vec::new()) };
-    let ns = class.to_string();
-    let rows = store.stored_receipts_of(&ns, method, fh, STORED_CELLS_READ).map_err(err)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for bytes in rows {
-        let (cell, value) = if is_withdrawal(&bytes) {
-            let w = Withdrawal::from_json(&bytes).map_err(err)?;
-            (w.cell().clone(), None)
-        } else {
-            let r = Receipt::from_json(&bytes).map_err(err)?;
-            (r.cell().clone(), Some(r.value().lexical().to_string()))
-        };
-        let mut args = BTreeMap::new();
-        for (k, a) in &cell.args {
-            if let Arg::Value(s) = a {
-                args.insert(k.clone(), s.lexical().to_string());
-            }
-        }
-        out.push((args, value));
-    }
-    Ok(out)
 }
 
 pub(crate) fn subject_of_args(args: &BTreeMap<String, String>) -> Option<SubjectKey> {
@@ -577,38 +556,109 @@ pub(crate) fn subject_of_args(args: &BTreeMap<String, String>) -> Option<Subject
     ))
 }
 
+/// The lexical arguments of a cell (its value arguments; an open one is left out).
+pub(crate) fn lexical_args(cell: &Cell) -> BTreeMap<String, String> {
+    cell.args
+        .iter()
+        .filter_map(|(k, a)| match a {
+            Arg::Value(s) => Some((k.clone(), s.lexical().to_string())),
+            Arg::Slice => None,
+        })
+        .collect()
+}
+
+/// A catalogue class as the store holds it now (CONTRACT-0.5.1 H2): its extent and its methods' cells are read in pages
+/// by slice, and by key, never by a read of a whole method.
+pub(crate) struct Class<'a, S: ?Sized> {
+    store: &'a S,
+    name: String,
+    now: String,
+    methods: BTreeMap<String, String>,
+}
+
+impl<'a, S: Store + ?Sized> Class<'a, S> {
+    /// The class `name` as of `now`; `None` when it is not bound.
+    pub(crate) fn open(store: &'a S, name: &str, now: &str) -> Result<Option<Self>, PublishError> {
+        let Some(hash) = store.resolve_class(name, now).map_err(err)? else { return Ok(None) };
+        let bytes = store.class(&hash).map_err(err)?.ok_or_else(|| err(format!("class {hash} is not stored")))?;
+        let cd = ClassDescriptor::from_json(&bytes).map_err(err)?;
+        Ok(Some(Class { store, name: name.to_string(), now: now.to_string(), methods: cd.methods }))
+    }
+
+    /// The next page of the members of method `method` with the arguments `open` open, after the sort key `after`, at most
+    /// `limit` (the store's slice pages, S2). A method the class lacks has no members.
+    pub(crate) fn page(
+        &self,
+        method: &str,
+        open: &[&str],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<SliceValue>, PublishError> {
+        let Some(fh) = self.methods.get(method) else { return Ok(Vec::new()) };
+        let args: datumesh_core::Args = open.iter().map(|k| (k.to_string(), Arg::Slice)).collect();
+        let cell = Cell { ns: self.name.clone(), fn_name: method.to_string(), fn_hash: fh.clone(), args };
+        let slice = Slice::from_value(&cell.to_value()).map_err(err)?;
+        self.store.slice_page(&slice, &self.now, after, limit).map_err(err)
+    }
+
+    /// The value of method `method` at each of `keys` (each a list of argument names and values), as the latest version
+    /// holds it now: `None` for a cell with no value (withdrawn, or never stored). One statement a call, of at most
+    /// `keys.len()` cells.
+    pub(crate) fn values(
+        &self,
+        method: &str,
+        keys: &[Vec<(String, Scalar)>],
+    ) -> Result<Vec<Option<String>>, PublishError> {
+        let Some(fh) = self.methods.get(method) else { return Ok(vec![None; keys.len()]) };
+        let ids: Vec<String> = keys
+            .iter()
+            .map(|k| {
+                let args: datumesh_core::Args = k.iter().map(|(n, s)| (n.clone(), Arg::Value(s.clone()))).collect();
+                Cell { ns: self.name.clone(), fn_name: method.to_string(), fn_hash: fh.clone(), args }.id()
+            })
+            .collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let versions = self.store.latest_many(&refs).map_err(err)?;
+        let live: Vec<&str> =
+            versions.iter().flatten().filter(|v| !v.withdrawn).map(|v| v.receipt_hash.as_str()).collect();
+        let mut bytes = self.store.receipts_many(&live).map_err(err)?.into_iter();
+        let mut out = Vec::with_capacity(versions.len());
+        for v in &versions {
+            let value = match v {
+                Some(v) if !v.withdrawn => match bytes.next().flatten() {
+                    Some(b) if !is_withdrawal(&b) => {
+                        let r = Receipt::from_json(&b).map_err(err)?;
+                        Some(r.value().lexical().to_string())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            out.push(value);
+        }
+        Ok(out)
+    }
+}
+
+/// A lookup label as the key argument of `from_label`.
+pub(crate) fn label_scalars(l: &str) -> Vec<(String, Scalar)> {
+    vec![("label".to_string(), Scalar::from_lexical(Type::String, l).expect("a string is a scalar"))]
+}
+
+/// The key arguments of a subject, as scalars (for [`Class::values`]), and its rank when given.
+pub(crate) fn subject_scalars(k: &SubjectKey, rank: Option<usize>) -> Vec<(String, Scalar)> {
+    let mut out: Vec<(String, Scalar)> = [("domain", &k.0), ("thing", &k.1), ("measure", &k.2), ("region", &k.3)]
+        .into_iter()
+        .map(|(n, v)| (n.to_string(), Scalar::from_lexical(Type::String, v).expect("a string is a scalar")))
+        .collect();
+    if let Some(r) = rank {
+        out.push(("rank".into(), Scalar::from_lexical(Type::Number, &r.to_string()).expect("a number is a scalar")));
+    }
+    out
+}
+
 /// A cell of the catalogue: its method's full name and its arguments' lexical values.
 type CellKey = (String, BTreeMap<String, String>);
-
-/// What the store holds now: the valued cells of the catalogue's methods, with their values (R10: the ones the job must
-/// withdraw when it no longer wants them).
-#[derive(Default)]
-struct Known {
-    valued: BTreeMap<CellKey, String>,
-}
-
-fn known<S: Store + ?Sized>(store: &S, host: &str, now: &str) -> Result<Known, PublishError> {
-    let subject_hash = store.resolve_class(&subject_class(host), now).map_err(err)?;
-    let facet_hash = store.resolve_class(&facet_class(host), now).map_err(err)?;
-    let mut k = Known::default();
-    let class = subject_class(host);
-    for method in ["exists", "label", "sources", "source", "from_label"] {
-        for (args, value) in cells_of(store, &class, subject_hash.as_deref(), method)? {
-            if let Some(v) = value {
-                k.valued.insert((format!("{class}/{method}"), args), v);
-            }
-        }
-    }
-    let fclass = facet_class(host);
-    for method in ["exists", "label", "subjects"] {
-        for (args, value) in cells_of(store, &fclass, facet_hash.as_deref(), method)? {
-            if let Some(v) = value {
-                k.valued.insert((format!("{fclass}/{method}"), args), v);
-            }
-        }
-    }
-    Ok(k)
-}
 
 /// A cell the job wants with a value: its method, its arguments, its value and its summary.
 struct Want {
@@ -686,7 +736,13 @@ fn parse_subject_key_any(text: &str) -> Option<SubjectKey> {
 
 /// The cell lines of the catalogue as the store should hold them now (C3, C4, R10): every cell the job wants with its value, and
 /// a withdrawal for each valued cell it no longer wants. A cell that is not stored and is not wanted has no line.
-fn cell_lines(host: &str, licence: &str, m: &Model, k: &Known) -> Vec<String> {
+fn cell_lines<S: Store + ?Sized>(
+    host: &str,
+    licence: &str,
+    m: &Model,
+    store: &S,
+    now: &str,
+) -> Result<Vec<String>, PublishError> {
     let class = subject_class(host);
     let fclass = facet_class(host);
     let mut wants: Vec<Want> = Vec::new();
@@ -773,14 +829,107 @@ fn cell_lines(host: &str, licence: &str, m: &Model, k: &Known) -> Vec<String> {
     }
     let mut lines: Vec<String> = wants.iter().map(|w| w.line(licence)).collect();
     let wanted: BTreeSet<CellKey> = wants.iter().map(Want::key).collect();
-    for (key, prior) in &k.valued {
-        if wanted.contains(key) {
-            continue;
+    // A valued cell the job no longer wants is withdrawn (R10); the stored cells are read a page at a time (H2).
+    let gone = |key: CellKey, prior: &str| -> Option<String> {
+        if wanted.contains(&key) {
+            return None;
         }
-        let reason = withdrawal_reason(&class, &fclass, key, prior, m);
-        lines.push(withdrawal_line(&key.0, &key.1, reason, licence));
+        let reason = withdrawal_reason(&class, &fclass, &key, prior, m);
+        Some(withdrawal_line(&key.0, &key.1, reason, licence))
+    };
+    if let Some(sc) = Class::open(store, &class, now)? {
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page = sc.page("exists", &SUBJECT_KEYS, after.as_deref(), PAGE)?;
+            after = page.last().map(|v| v.sort_key.clone());
+            let subjects: Vec<(SubjectKey, String)> = page
+                .iter()
+                .filter_map(|v| Some((subject_of_args(&lexical_args(&v.cell))?, v.value.lexical().to_string())))
+                .collect();
+            let keys: Vec<Vec<(String, Scalar)>> = subjects.iter().map(|(k, _)| subject_scalars(k, None)).collect();
+            for (k, value) in &subjects {
+                lines.extend(gone((format!("{class}/exists"), subject_args(k)), value));
+            }
+            // The lookup labels of these subjects, read by key (H2: never a slice of one argument).
+            let labels_of: Vec<String> = subjects.iter().flat_map(|(k, _)| lookup_labels(k)).collect();
+            for chunk in labels_of.chunks(PAGE) {
+                let lk: Vec<Vec<(String, Scalar)>> = chunk.iter().map(|l| label_scalars(l)).collect();
+                let values = sc.values("from_label", &lk)?;
+                for (l, v) in chunk.iter().zip(&values) {
+                    if let Some(v) = v {
+                        let args: BTreeMap<String, String> = [("label".to_string(), l.clone())].into_iter().collect();
+                        lines.extend(gone((format!("{class}/from_label"), args), v));
+                    }
+                }
+            }
+            let labels = sc.values("label", &keys)?;
+            let counts = sc.values("sources", &keys)?;
+            for (((k, _), label), count) in subjects.iter().zip(&labels).zip(&counts) {
+                if let Some(v) = label {
+                    lines.extend(gone((format!("{class}/label"), subject_args(k)), v));
+                }
+                if let Some(v) = count {
+                    lines.extend(gone((format!("{class}/sources"), subject_args(k)), v));
+                }
+            }
+            // The sources: each rank up to the count the store holds now (before this run's writes), rank by rank.
+            let stored_count = |i: usize| counts[i].as_deref().and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+            let most = (0..subjects.len()).map(stored_count).max().unwrap_or(0).min(SOURCES_PER_SUBJECT);
+            for r in 1..=most {
+                let idx: Vec<usize> = (0..subjects.len()).filter(|&i| stored_count(i) >= r).collect();
+                let rank_keys: Vec<Vec<(String, Scalar)>> =
+                    idx.iter().map(|&i| subject_scalars(&subjects[i].0, Some(r))).collect();
+                let values = sc.values("source", &rank_keys)?;
+                for (&i, v) in idx.iter().zip(&values) {
+                    if let Some(v) = v {
+                        let mut args = subject_args(&subjects[i].0);
+                        args.insert("rank".into(), r.to_string());
+                        lines.extend(gone((format!("{class}/source"), args), v));
+                    }
+                }
+            }
+            if page.len() < PAGE {
+                break;
+            }
+        }
     }
-    lines
+    if let Some(fc) = Class::open(store, &fclass, now)? {
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page = fc.page("exists", &["facet", "value"], after.as_deref(), PAGE)?;
+            after = page.last().map(|v| v.sort_key.clone());
+            let facets: Vec<(BTreeMap<String, String>, String)> =
+                page.iter().map(|v| (lexical_args(&v.cell), v.value.lexical().to_string())).collect();
+            let keys: Vec<Vec<(String, Scalar)>> = facets
+                .iter()
+                .map(|(a, _)| {
+                    ["facet", "value"]
+                        .into_iter()
+                        .map(|n| {
+                            (n.to_string(), Scalar::from_lexical(Type::String, &a[n]).expect("a string is a scalar"))
+                        })
+                        .collect()
+                })
+                .collect();
+            for (a, value) in &facets {
+                lines.extend(gone((format!("{fclass}/exists"), a.clone()), value));
+            }
+            let labels = fc.values("label", &keys)?;
+            let subjects = fc.values("subjects", &keys)?;
+            for ((a, _), (label, n)) in facets.iter().zip(labels.iter().zip(&subjects)) {
+                if let Some(v) = label {
+                    lines.extend(gone((format!("{fclass}/label"), a.clone()), v));
+                }
+                if let Some(v) = n {
+                    lines.extend(gone((format!("{fclass}/subjects"), a.clone()), v));
+                }
+            }
+            if page.len() < PAGE {
+                break;
+            }
+        }
+    }
+    Ok(lines)
 }
 
 /// Runs the catalogue job (C5): reads the store's faceted entries as of the clock, and writes the classes, the cells and the rule
@@ -795,10 +944,11 @@ pub fn catalog_build_with<S: Store + ?Sized>(
     opts: &PublishOptions,
 ) -> Result<CatalogBuilt, PublishError> {
     let now = opts.clock.now();
-    let m = model(store, host, &now)?;
-    let k = known(store, host, &now)?;
+    let cap =
+        crate::config::catalog_max_of(std::env::var("DATUMESH_CATALOG_MAX").ok()).map_err(|e| err(format!("{e}")))?;
+    let m = model(store, host, &now, cap)?;
     let mut lines = vec![subject_class_line(host), facet_class_line(host), rule_line(host)];
-    lines.extend(cell_lines(host, licence, &m, &k));
+    lines.extend(cell_lines(host, licence, &m, store, &now)?);
     lines.push(
         json!({"cell": {"fn": rule_fn(host), "args": {}}, "value": {"blob": RULE_FILE, "media_type": "text/plain"},
             "licence": licence, "summary": "The rule of the catalogue: how the sources of a subject are ranked."})

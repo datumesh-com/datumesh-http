@@ -18,7 +18,6 @@
 //! (UTF-8: lexical forms, so no number is rounded), schema metadata `slice_id`, `asof`,
 //! `function`. The whole slice (up to the configured bound) in one stream.
 
-use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
@@ -39,16 +38,6 @@ const CSV: &str = "text/csv; charset=utf-8";
 /// The open arguments of a target, ascending.
 fn open_args(t: &Target) -> Vec<String> {
     t.cell.args.iter().filter(|(_, a)| matches!(a, Arg::Slice)).map(|(k, _)| k.clone()).collect()
-}
-
-fn key_cmp(a: &[Scalar], b: &[Scalar]) -> Ordering {
-    for (x, y) in a.iter().zip(b) {
-        let o = datumesh_formula::eval::cmp_scalar(x, y);
-        if o != Ordering::Equal {
-            return o;
-        }
-    }
-    a.len().cmp(&b.len())
 }
 
 fn key_of(m: &SliceValue, open: &[String]) -> Vec<Scalar> {
@@ -148,54 +137,51 @@ pub(crate) fn split_query(rest: &str) -> Result<(String, SliceQuery), ErrorCode>
     }
 }
 
+/// The sort key (CONTRACT-0.5.1 S1) of a member at a cursor: the cell's arguments in name order, the open ones from the
+/// cursor's key scalars (in the open arguments' order), the fixed ones as the slice gives them.
+fn sort_key_at(t: &Target, key: &[Scalar]) -> Option<Vec<u8>> {
+    let mut open = key.iter();
+    let mut parts: Vec<(String, String, String)> = Vec::new();
+    for (name, a) in &t.cell.args {
+        let s = match a {
+            Arg::Value(s) => s,
+            Arg::Slice => open.next()?,
+        };
+        parts.push((name.clone(), s.ty().as_str().to_string(), s.lexical().to_string()));
+    }
+    if open.next().is_some() {
+        return None;
+    }
+    let refs: Vec<(&str, &str, &str)> = parts.iter().map(|(n, t, v)| (n.as_str(), t.as_str(), v.as_str())).collect();
+    Some(datumesh_store::sort_key(&refs))
+}
+
 impl Inner {
-    /// The members of a slice as of `a`, and the instant they answer as of (`a`, or for a
-    /// latest request, the `at` of a cached entry they are reused from). Cached when `a` is at
-    /// or before now. A latest request (`latest`, `a` = now) reuses the cached entry of the
-    /// slice with the greatest `at <= now` when no member changed after that `at`
-    /// (`slice_changed_after`), so a first page of an unchanged series is a cache hit.
-    fn members(
+    /// One page of `n` members of `slice` as of `a`, after `after` (a sort key), and whether more follow (the store's
+    /// slice pages, CONTRACT-0.5.1 H1: `n + 1` members are read, never the whole slice).
+    fn page_of(
         &self,
         slice: &Slice,
         a: &str,
-        now: &str,
-        latest: bool,
-    ) -> Result<(Arc<Vec<SliceValue>>, String), ErrorCode> {
-        {
-            let c = self.slices.lock().unwrap_or_else(|p| p.into_inner());
-            if latest {
-                let reuse = c
-                    .iter()
-                    .filter(|(id, at, _)| id == slice.id() && at.as_str() <= now)
-                    .max_by(|x, y| x.1.cmp(&y.1))
-                    .map(|(_, at, m)| (at.clone(), m.clone()));
-                drop(c);
-                if let Some((at, m)) = reuse {
-                    match self.store.slice_changed_after(slice, &at) {
-                        Ok(false) => return Ok((m, at)),
-                        Ok(true) => {}
-                        Err(e) => tracing::warn!(target: "datumesh_http", error = %e, "slice_changed_after"),
-                    }
-                }
-            } else if let Some((_, _, m)) = c.iter().find(|(id, at, _)| id == slice.id() && at == a) {
-                return Ok((m.clone(), a.to_string()));
+        after: Option<&[u8]>,
+        n: usize,
+    ) -> Result<(Vec<SliceValue>, bool), ErrorCode> {
+        let read = if slice.is_version_slice() {
+            // A version slice has no key order to page by: its first page only.
+            if after.is_some() {
+                return Err(ErrorCode::ParseUri);
             }
-        }
-        // At most `slice_max + 1` members are read (the answer's cap and one more, to know it is cut): the store
-        // stops there (CONTRACT-0.4.9 H5).
-        let m = Arc::new(self.store.slice_values_limit(slice, a, self.config.slice_max + 1).map_err(|e| {
-            tracing::warn!(target: "datumesh_http", error = %e, "slice_values");
+            self.store.slice_values_limit(slice, a, n + 1)
+        } else {
+            self.store.slice_page(slice, a, after, n + 1)
+        };
+        let mut m = read.map_err(|e| {
+            tracing::warn!(target: "datumesh_http", error = %e, "slice page");
             ErrorCode::InputUnavailable
-        })?);
-        if a <= now {
-            let mut c = self.slices.lock().unwrap_or_else(|p| p.into_inner());
-            c.retain(|(id, at, _)| !(id == slice.id() && at == a));
-            c.push((slice.id().to_string(), a.to_string(), m.clone()));
-            if c.len() > 8 {
-                c.remove(0);
-            }
-        }
-        Ok((m, a.to_string()))
+        })?;
+        let more = m.len() > n;
+        m.truncate(n);
+        Ok((m, more))
     }
 
     /// Answers a slice request (blocking) in the form asked.
@@ -230,33 +216,35 @@ impl Inner {
                 })
             }
         };
-        let (members, at) = match self.members(&slice, &a, now, target.asof().is_none()) {
-            Ok(m) => m,
-            Err(c) => return envelope::error_reply(c),
-        };
         let open = open_args(&target);
-        let total = members.len().min(self.config.slice_max);
         let cache = if target.asof().is_some_and(|x| x <= now) {
             Cache::Immutable
         } else {
             Cache::Public(self.config.ttl.latest_max_age.as_secs())
         };
-        let start = match &q.after {
-            None => 0,
+        let after = match &q.after {
+            None => None,
             Some(c) => match parse_cursor(c) {
-                Some(k) => members[..total].partition_point(|m| key_cmp(&key_of(m, &open), &k) != Ordering::Greater),
-                None => return envelope::bad_request_reply(ErrorCode::ParseUri),
+                Some(k) if k.len() == open.len() => match sort_key_at(&target, &k) {
+                    Some(sk) => Some(sk),
+                    None => return envelope::bad_request_reply(ErrorCode::ParseUri),
+                },
+                _ => return envelope::bad_request_reply(ErrorCode::ParseUri),
             },
         };
         if q.form == Form::Csv {
             // One row a member, in key order: its key arguments, its value and its tx. Not paginated: the
             // whole slice up to the bound is one file.
+            let (members, _) = match self.page_of(&slice, &a, after.as_deref(), self.config.slice_max) {
+                Ok(x) => x,
+                Err(c) => return envelope::error_reply(c),
+            };
             let mut out = String::new();
             let mut head: Vec<String> = open.clone();
             head.extend(["value".to_string(), "tx".to_string()]);
             out.push_str(&head.iter().map(|h| csv_field(h)).collect::<Vec<_>>().join(","));
             out.push_str("\r\n");
-            for m in &members[..total] {
+            for m in &members {
                 let mut cells: Vec<String> = open
                     .iter()
                     .map(|k| {
@@ -278,12 +266,13 @@ impl Inner {
             };
         }
         if q.form == Form::Arrow {
-            let end = match q.limit {
-                Some(l) => (start + l).min(total),
-                None => total,
+            let n = q.limit.unwrap_or(self.config.slice_max);
+            let (members, _) = match self.page_of(&slice, &a, after.as_deref(), n) {
+                Ok(x) => x,
+                Err(c) => return envelope::error_reply(c),
             };
             // The instant the members answer as of (CONTRACT-perf H7): `at`, the `asof` the JSON `next` pins.
-            return match arrow_stream(&members[start..end], &open, &slice, &at, &target.fn_name()) {
+            return match arrow_stream(&members, &open, &slice, &a, &target.fn_name()) {
                 Ok(body) => Reply {
                     status: 200,
                     body: body.into(),
@@ -299,10 +288,13 @@ impl Inner {
             };
         }
         let limit = q.limit.unwrap_or(self.config.slice_page).clamp(1, crate::config::MAX_SLICE_PAGE);
-        let end = (start + limit).min(total);
+        let (members, more) = match self.page_of(&slice, &a, after.as_deref(), limit) {
+            Ok(x) => x,
+            Err(c) => return envelope::error_reply(c),
+        };
         // A page (5.6): the members' envelopes, in key order.
-        let mut page = Vec::with_capacity(end - start);
-        for m in &members[start..end] {
+        let mut page = Vec::with_capacity(members.len());
+        for m in &members {
             match self.receipt_info_by_hash(&m.version.receipt_hash) {
                 Some(info) => page.push(crate::envelope::with_fn_hash(
                     datumesh_core::Answer::ok(info.parsed.clone(), info.trust),
@@ -311,10 +303,18 @@ impl Inner {
                 None => return crate::envelope::error_answer_reply(ErrorCode::InputUnavailable, Some(slice.fn_hash())),
             }
         }
-        let next = (end < total).then(|| {
-            let k = key_of(&members[end - 1], &open);
-            format!("{}/slice/{}&limit={limit}&after={}", self.config.origin(), target.rest_asof(&at), cursor(&k))
-        });
+        let next = match members.last().filter(|_| more) {
+            Some(last) => {
+                let k = key_of(last, &open);
+                Some(format!(
+                    "{}/slice/{}&limit={limit}&after={}",
+                    self.config.origin(),
+                    target.rest_asof(&a),
+                    cursor(&k)
+                ))
+            }
+            None => None,
+        };
         let fn_hash = slice.fn_hash().to_string();
         let answer = datumesh_core::Answer::page(datumesh_core::SlicePage::new(slice, page, next));
         crate::envelope::answer_reply(&crate::envelope::with_fn_hash(answer, Some(&fn_hash)), cache)
