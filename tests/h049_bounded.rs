@@ -60,31 +60,35 @@ async fn items(label: &str, n: usize, max: &str) -> Served {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_slice_larger_than_the_cap_is_cut_at_the_cap() {
+async fn a_slice_larger_than_the_old_cap_is_paged_to_its_end() {
+    // CONTRACT-0.5.1 H1: paging by key replaces the total cap of a slice (DATUMESH_SLICE_MAX of 5 no longer cuts it)
     let m = items("h5-slice", 12, "5").await;
-    // one page: the first five, no `next`
+    let all: Vec<String> = (1..=12).map(|i| format!("k{i:02}")).collect();
+    // the default page holds the 12, no `next`
     let r = get(&m, &format!("/slice/{ITEMS}?k=*"), &[]).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let j = r.json();
     let keys: Vec<String> = j["members"].as_array().unwrap().iter().map(member_key).collect();
-    assert_eq!(keys, ["k01", "k02", "k03", "k04", "k05"], "{j}");
+    assert_eq!(keys, all, "{j}");
     assert!(j.get("next").is_none_or(Value::is_null), "{j}");
-    // pages of two: 2 + 2 + 1, and the last has no `next`
+    // pages of five: 5 + 5 + 2, every member once, the last has no `next`
     let mut seen = Vec::new();
-    let mut url = format!("/slice/{ITEMS}?k=*&limit=2");
+    let mut pages = 0;
+    let mut url = format!("/slice/{ITEMS}?k=*&limit=5");
     for _ in 0..10 {
         let j = get(&m, &url, &[]).await.json();
         seen.extend(j["members"].as_array().unwrap().iter().map(member_key));
+        pages += 1;
         match j.get("next").and_then(Value::as_str) {
             Some(n) => url = n.replacen(&format!("https://{HOST}"), "", 1),
             None => break,
         }
     }
-    assert_eq!(seen, ["k01", "k02", "k03", "k04", "k05"]);
-    // CSV: the header and five rows
+    assert_eq!((pages, seen), (3, all));
+    // CSV: the header and twelve rows
     let csv = get(&m, &format!("/slice/{ITEMS}?k=*&format=csv"), &[]).await;
     assert_eq!(csv.status, 200, "{}", csv.text());
-    assert_eq!(csv.text().lines().count(), 6, "{}", csv.text());
+    assert_eq!(csv.text().lines().count(), 13, "{}", csv.text());
     // a slice within the cap is whole
     let m2 = items("h5-slice-small", 4, "5").await;
     let j = get(&m2, &format!("/slice/{ITEMS}?k=*"), &[]).await.json();
