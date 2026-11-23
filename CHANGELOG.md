@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (unreleased, classes round)
+## 0.5.0
 
 The classes round (CONTRACT-classes-round K1, K3, K5, K7 to K13): requires datumesh-core 0.3.13, datumesh-store 0.6.0 and datumesh-formula 0.6.0 (unreleased, on the classes-round branches). **BREAKING: K5, an inherited method reads the defining class's cells.** The other changes are additive. Each change, and what it costs:
 
