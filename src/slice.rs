@@ -18,6 +18,7 @@
 //! (UTF-8: lexical forms, so no number is rounded), schema metadata `slice_id`, `asof`,
 //! `function`. The whole slice (up to the configured bound) in one stream.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
@@ -27,13 +28,58 @@ use datumesh_core::{lexical, Arg, ErrorCode, Scalar, Slice};
 use datumesh_store::SliceValue;
 
 use crate::call::Target;
-use crate::envelope::{self, Cache, Reply};
+use crate::envelope::{self, Bytes, Cache, Reply};
 use crate::mesh::Inner;
 
 /// The media type of Arrow IPC streams.
 pub const ARROW: &str = "application/vnd.apache.arrow.stream";
 /// The media type of the CSV form of a slice (RFC 4180, UTF-8).
 const CSV: &str = "text/csv; charset=utf-8";
+
+/// The most bytes of whole-slice bodies the cache holds (CONTRACT-0.5.1 H1: 64 MB). A body larger than this is not cached.
+pub(crate) const BODY_CACHE_BYTES: usize = 64 << 20;
+
+/// What a cached body answers to: the form, the slice (its canonical JSON, which names the function hash and the
+/// arguments), the instant (explicit and in the past), and the `limit=` and `after=` the request named.
+type BodyKey = (String, Vec<u8>, String, Option<usize>, Option<String>);
+
+/// The encoded bodies of whole-slice answers (CSV and Arrow) at an explicit past `asof`: such an answer is immutable (no
+/// later write has a tx at or before that instant), so the encoded bytes are kept, least recently used first out, bounded
+/// by [`BODY_CACHE_BYTES`] in all. JSON pages and latest answers are not cached.
+#[derive(Default)]
+pub(crate) struct BodyCache {
+    entries: VecDeque<(BodyKey, Bytes, &'static str)>,
+    bytes: usize,
+}
+
+impl BodyCache {
+    fn get(&mut self, key: &BodyKey) -> Option<(Bytes, &'static str)> {
+        let i = self.entries.iter().position(|(k, _, _)| k == key)?;
+        let e = self.entries.remove(i)?;
+        let out = (e.1.clone(), e.2);
+        self.entries.push_back(e);
+        Some(out)
+    }
+
+    fn put(&mut self, key: BodyKey, body: &Bytes, content_type: &'static str) {
+        if body.len() > BODY_CACHE_BYTES {
+            return;
+        }
+        if let Some(i) = self.entries.iter().position(|(k, _, _)| *k == key) {
+            if let Some(old) = self.entries.remove(i) {
+                self.bytes -= old.1.len();
+            }
+        }
+        while self.bytes + body.len() > BODY_CACHE_BYTES {
+            match self.entries.pop_front() {
+                Some(old) => self.bytes -= old.1.len(),
+                None => break,
+            }
+        }
+        self.bytes += body.len();
+        self.entries.push_back((key, body.clone(), content_type));
+    }
+}
 
 /// The open arguments of a target, ascending.
 fn open_args(t: &Target) -> Vec<String> {
@@ -232,6 +278,15 @@ impl Inner {
                 _ => return envelope::bad_request_reply(ErrorCode::ParseUri),
             },
         };
+        // A whole-slice body (CSV, Arrow) at an explicit past asof is cached (CONTRACT-0.5.1 H1).
+        let body_key: Option<BodyKey> = (target.asof().is_some_and(|x| x < now) && q.form != Form::Json)
+            .then(|| (format!("{:?}", q.form), slice.to_value().to_jcs(), a.clone(), q.limit, q.after.clone()));
+        if let Some(key) = &body_key {
+            let hit = self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).get(key);
+            if let Some((body, content_type)) = hit {
+                return Reply { status: 200, body, content_type, cache, canonical: None, retry_after: None };
+            }
+        }
         if q.form == Form::Csv {
             // One row a member, in key order: its key arguments, its value and its tx. Not paginated: the
             // whole slice up to the bound is one file.
@@ -256,14 +311,11 @@ impl Inner {
                 out.push_str(&cells.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(","));
                 out.push_str("\r\n");
             }
-            return Reply {
-                status: 200,
-                body: out.into_bytes().into(),
-                content_type: CSV,
-                cache,
-                canonical: None,
-                retry_after: None,
-            };
+            let body: Bytes = out.into_bytes().into();
+            if let Some(key) = body_key {
+                self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(key, &body, CSV);
+            }
+            return Reply { status: 200, body, content_type: CSV, cache, canonical: None, retry_after: None };
         }
         if q.form == Form::Arrow {
             let n = q.limit.unwrap_or(self.config.slice_max);
@@ -273,14 +325,13 @@ impl Inner {
             };
             // The instant the members answer as of (CONTRACT-perf H7): `at`, the `asof` the JSON `next` pins.
             return match arrow_stream(&members, &open, &slice, &a, &target.fn_name()) {
-                Ok(body) => Reply {
-                    status: 200,
-                    body: body.into(),
-                    content_type: ARROW,
-                    cache,
-                    canonical: None,
-                    retry_after: None,
-                },
+                Ok(body) => {
+                    let body: Bytes = body.into();
+                    if let Some(key) = body_key {
+                        self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(key, &body, ARROW);
+                    }
+                    Reply { status: 200, body, content_type: ARROW, cache, canonical: None, retry_after: None }
+                }
                 Err(e) => {
                     tracing::warn!(target: "datumesh_http", error = %e, "arrow");
                     envelope::error_reply(ErrorCode::EvalUnavailable)

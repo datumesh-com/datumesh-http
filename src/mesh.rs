@@ -201,6 +201,7 @@ impl MeshBuilder {
             by_hash: (0..32).map(|_| Mutex::new(HashMap::new())).collect(),
             latest: Latest::new(),
             targets: Targets::new(),
+            slice_bodies: Mutex::new(crate::slice::BodyCache::default()),
             known: Mutex::new(crate::describe::Index::default()),
             started: Instant::now(),
             config,
@@ -396,6 +397,8 @@ pub(crate) struct Inner {
     by_hash: Vec<Mutex<HashMap<String, Arc<ReceiptInfo>>>>,
     latest: Latest,
     targets: Targets,
+    /// The encoded whole-slice bodies at a past asof (CONTRACT-0.5.1 H1, bounded).
+    pub(crate) slice_bodies: Mutex<crate::slice::BodyCache>,
     /// The index of the objects the mesh knows (describe, short ids).
     pub(crate) known: Mutex<crate::describe::Index>,
     pub(crate) started: Instant,
