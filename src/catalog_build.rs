@@ -9,7 +9,7 @@
 //! count of sources"). A withdrawal is a cell's null version, never `false` or `""`. A cell never stored and not wanted has no line,
 //! so a label that names two subjects is absent, not withdrawn.
 //!
-//! At most [`SUBJECTS_PER_ENTRY`] subjects come from one entry, and a subject keeps at most [`SOURCES_PER_SUBJECT`] sources (R11).
+//! At most 256 subjects come from one entry, and a subject keeps at most 20 sources (R11).
 //!
 //! # The rank (C5)
 //!
