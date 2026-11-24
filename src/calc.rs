@@ -446,6 +446,18 @@ fn raw(status: u16, outcome: &str, code: &str) -> Reply {
     Reply::json(status, body.to_jcs(), Cache::NoStore)
 }
 
+/// The result types a body may have, in the order they are tried (see the define in `calc`).
+const RESULT_TYPES: [&str; 5] = ["number", "string", "boolean", "date", "instant"];
+
+/// The signature a body is defined against for a result of type `ty`: no arguments, no order.
+fn placeholder_signature(ty: &str) -> Value {
+    Value::Object(vec![
+        ("args".into(), Value::Object(vec![])),
+        ("order".into(), Value::Array(vec![])),
+        ("returns".into(), Value::Object(vec![("type".into(), s(ty))])),
+    ])
+}
+
 fn s(x: &str) -> Value {
     Value::String(x.to_string())
 }
@@ -522,36 +534,50 @@ impl Inner {
         let at = asof.unwrap_or_else(|| self.now());
         let store: &(dyn Store + Send + Sync) = &*self.store;
         // The callees the body names are read in one pass (datumesh-formula 0.6.2's `read_names`): each name's
-        // descriptor as of the asof goes into the environment, so a positional read binds by the callee's declared
-        // order (SPEC 15.5). A name with no binding (a class, or a function the store does not hold) is left out, and
-        // the define below refuses it as before; an `@alias` is left to the define too.
-        let placeholder = Value::Object(vec![
-            ("args".into(), Value::Object(vec![])),
-            ("order".into(), Value::Array(vec![])),
-            ("returns".into(), Value::Object(vec![("type".into(), s("number"))])),
-        ]);
-        let sig = match Signature::from_value(&placeholder) {
-            Ok(sig) => sig,
-            Err(_) => return envelope::error_reply(ErrorCode::EvalUnavailable),
-        };
-        let mut env = Env::new(&format!("{}/calc", self.config.host), sig);
+        // descriptor as of the asof is read once, so a positional read binds by the callee's declared order (SPEC
+        // 15.5). A name with no binding (a class, or a function the store does not hold) is left out, and the define
+        // refuses it as before; an `@alias` is left to the define too.
         let callees = StoreCallees(store);
+        let mut found: Vec<(String, Value)> = Vec::new();
         if let Ok(names) = read_names(formula) {
             for fq in names.iter().filter(|n| !n.starts_with('@')) {
                 match Callees::callee(&callees, fq, &at) {
-                    Ok(Some(c)) => {
-                        if env.add_function(fq, &c.descriptor).is_err() {
-                            return envelope::error_reply(ErrorCode::InputUnavailable);
-                        }
-                    }
+                    Ok(Some(c)) => found.push((fq.clone(), c.descriptor)),
                     Ok(None) => {}
                     Err(_) => return envelope::error_reply(ErrorCode::InputUnavailable),
                 }
             }
         }
-        let compiled: Compiled = match define(formula, &env) {
-            Ok(c) => c,
-            Err(e) => return raw(400, "bad_request", e.code.as_str()),
+        // The body's result type is not known before it is checked, and the define checks it against the signature it
+        // is given (E_FORMULA_RETURN_TYPE otherwise). So the body is defined against each result type in turn, a number
+        // first (as before); the first that the body satisfies is its type. Any other refusal is the answer.
+        let mut compiled: Option<Compiled> = None;
+        let mut first_refusal: Option<datumesh_formula::Error> = None;
+        for ty in RESULT_TYPES {
+            let sig = match Signature::from_value(&placeholder_signature(ty)) {
+                Ok(sig) => sig,
+                Err(_) => return envelope::error_reply(ErrorCode::EvalUnavailable),
+            };
+            let mut env = Env::new(&format!("{}/calc", self.config.host), sig);
+            for (name, descriptor) in &found {
+                if env.add_function(name, descriptor).is_err() {
+                    return envelope::error_reply(ErrorCode::InputUnavailable);
+                }
+            }
+            match define(formula, &env) {
+                Ok(c) => {
+                    compiled = Some(c);
+                    break;
+                }
+                Err(e) if e.code == Code::ReturnType => {
+                    first_refusal.get_or_insert(e);
+                }
+                Err(e) => return raw(400, "bad_request", e.code.as_str()),
+            }
+        }
+        let Some(compiled) = compiled else {
+            let code = first_refusal.map_or(Code::ReturnType, |e| e.code);
+            return raw(400, "bad_request", code.as_str());
         };
         // The body as a function with no arguments and the inferred return type.
         let descriptor = Value::Object(vec![

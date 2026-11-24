@@ -2,9 +2,11 @@
 
 ## 0.5.4
 
-The next patch's http changes (CONTRACT-next-patch items 15 and 16); requires datumesh-formula 0.6.2 (`read_names`). Item 17 is a test change only (`batch::thousand_cells` made robust, no code change). Each change, and what it costs:
+The next patch's http changes (CONTRACT-next-patch items 15, 16 and 33); requires datumesh-formula 0.6.2 (`read_names`). Item 17 is a test change (`batch::thousand_cells` made robust, its claim stated as the user decided it); item 33 (`/x/calc` result types, added by the user) is a code change. Each change, and what it costs:
 
 - **The function page shows each test's inputs (item 15).** A case with `inputs` reads them beside its call: "with <slice call> given as empty" for an empty members map, "with N members given" for a members map of N, "with <call> given" for any other input. Two cases with the same call read as two lines. `?format=json` carries each case's `inputs` as the test gave them, and omits the key for a case without. Cost: the page and the JSON cases of tests with inputs are longer.
+- **`/x/calc` returns text, date, instant and boolean results (item 33).** The body is defined against each result type in turn (a number first, as before), and the first the body satisfies gives `type`; `value` is its lexical form, `kind` is `calculation`. Before, any non-number result was refused `E_FORMULA_RETURN_TYPE`. Numbers are unchanged. Cost: a body that was refused for its result type now answers 200.
+- **`batch::thousand_cells` states the batch claim the user decided (item 17).** A batch costs one round trip and one name lookup for any number of cells, and on loopback 1,000 cells take less than 50 single requests (the bound was ten). Test change only; no code change.
 - **`/x/calc` builds its callee environment in one pass (item 16).** The names the body reads come from datumesh-formula 0.6.2's `read_names`; each name's descriptor as of the asof is looked up once, in place of the loop that matched the "has no binding" message. Behaviour is unchanged (`tests/h054_calc_unbound.rs`). Cost: none.
 
 ## 0.5.3
@@ -489,7 +491,7 @@ On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 
 
 ## 0.1.2
 
-The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was over 10 times one cell on CI; fixed below), so 0.1.1 was never published.
+The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was slower than the bound CI held it to; fixed below), so 0.1.1 was never published.
 
 spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; store 0.3.2).
 
@@ -500,8 +502,8 @@ spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; 
 - `GET /slice` JSON answers are page envelopes (SPEC 5.6); Arrow is unchanged.
 - `POST /cells` answers `[{"envelope", "status"}]`, or one envelope refusing the whole batch
   (SPEC 5.7).
-- `POST /cells` is as fast as in 0.1.0 again (1,000 cells under 10 times one cell, the
-  brief's criterion 8): each chunk writes and counts its own answers on the pool, a batch
+- `POST /cells` is as fast as in 0.1.0 again (a batch costs one round trip and one name lookup for any
+  number of cells, the brief's criterion 8): each chunk writes and counts its own answers on the pool, a batch
   looks each binding up once (not once per chunk), and the core count is read once.
 - `E_SLICE_AT_CELL` (`bad_request`) for a slice marker at `/cell`; `E_NAME_UNBOUND`
   (`not_covered` with `error`) for an unbound name.
