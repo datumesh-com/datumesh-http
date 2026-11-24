@@ -54,19 +54,31 @@ async fn h3_a_date_is_the_end_of_its_day() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h3_an_offset_is_still_refused() {
     let a = px_world().await;
-    for bad in ["2026-05-10T12:00:00%2B01:00", "2026-05-10T12:00:00.5%2B01:00", "2026-05-10T12:00:00-05:00", "2026-05-10T12:00:00.1234567Z", "2026-05-10T12:00Z", "2026-05-1"] {
-        for path in [
-            format!("/cell/{A}/px?{CELL}&asof={bad}"),
-            format!("/slice/{A}/px?ccy=USD&date=*&asof={bad}"),
-        ] {
+    for bad in [
+        "2026-05-10T12:00:00%2B01:00",
+        "2026-05-10T12:00:00.5%2B01:00",
+        "2026-05-10T12:00:00-05:00",
+        "2026-05-10T12:00:00.1234567Z",
+        "2026-05-10T12:00Z",
+        "2026-05-1",
+    ] {
+        for path in [format!("/cell/{A}/px?{CELL}&asof={bad}"), format!("/slice/{A}/px?ccy=USD&date=*&asof={bad}")] {
             let r = a.get(&path).await;
             let v = jv(&r);
-            assert_eq!((r.status, v["outcome"].as_str(), v["error"].as_str()), (400, Some("bad_request"), Some("E_CANON_INSTANT")), "{path}: {}", r.text());
+            assert_eq!(
+                (r.status, v["outcome"].as_str(), v["error"].as_str()),
+                (400, Some("bad_request"), Some("E_CANON_INSTANT")),
+                "{path}: {}",
+                r.text()
+            );
         }
     }
     for (path, body) in [
         ("/x/calc", json!({"formula": format!("{A}/px(\"USD\", 2026-05-01)"), "asof": "2026-05-10T12:00:00+01:00"})),
-        ("/whatif", json!({"cell": format!("{A}/plus_off?{CELL}"), "overrides": [], "asof": "2026-05-10T12:00:00+01:00", "solve": null})),
+        (
+            "/whatif",
+            json!({"cell": format!("{A}/plus_off?{CELL}"), "overrides": [], "asof": "2026-05-10T12:00:00+01:00", "solve": null}),
+        ),
     ] {
         let r = a.post(path, serde_json::to_vec(&body).unwrap()).await;
         let v = jv(&r);
@@ -88,7 +100,12 @@ async fn h3_slice_json_and_arrow_pin_the_canonical_instant() {
         let pinned = next.split("asof=").nth(1).unwrap().split('&').next().unwrap();
         assert_eq!(pinned.replace("%3A", ":"), *canon, "{form}: the next link pins the canonical instant");
         // Arrow: the schema metadata says the instant
-        let r = a.get_with(&format!("/slice/{A}/px?ccy=USD&date=*&asof={form}"), &[("accept", "application/vnd.apache.arrow.stream")]).await;
+        let r = a
+            .get_with(
+                &format!("/slice/{A}/px?ccy=USD&date=*&asof={form}"),
+                &[("accept", "application/vnd.apache.arrow.stream")],
+            )
+            .await;
         assert_eq!(r.status, 200, "{form}: {}", r.text());
         let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(&r.body), None).unwrap();
         assert_eq!(reader.schema().metadata().get("asof").map(String::as_str), Some(*canon), "{form}");

@@ -102,7 +102,11 @@ async fn h2_following_the_links_walks_every_member_once_in_key_order_and_the_las
             assert!(!keys.is_empty() && keys.len() <= limit, "limit {limit}, page {pages}: {keys:?}");
             let link = next_link(&r);
             if all.len() + keys.len() < N {
-                assert!(link.is_some(), "limit {limit}: page {pages} of {} rows has more after it but no Link", keys.len());
+                assert!(
+                    link.is_some(),
+                    "limit {limit}: page {pages} of {} rows has more after it but no Link",
+                    keys.len()
+                );
             } else {
                 assert!(link.is_none(), "limit {limit}: the last page carries a Link");
             }

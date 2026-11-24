@@ -22,13 +22,12 @@ pub async fn px_world() -> Node {
     node.put_value(&px, &k1, n("3"), V3);
     node.put_value(&px, &k2, n("10"), V1);
     // a formula over it, and an input to override in a what-if
-    node.stored(&format!("{A}/off"), r#"{"args":{"k":{"type":"string","valid":false}},"order":["k"],"returns":{"type":"number","unit":"EUR"}}"#);
-    node.put_value(&format!("{A}/off"), &args(&[("k", s("x"))]), n("100"), V1);
-    node.formula(
-        &format!("{A}/plus_off"),
-        &format!("{A}/px(ccy: ccy, date: date) + {A}/off(k: \"x\")"),
-        RATE_SIG,
+    node.stored(
+        &format!("{A}/off"),
+        r#"{"args":{"k":{"type":"string","valid":false}},"order":["k"],"returns":{"type":"number","unit":"EUR"}}"#,
     );
+    node.put_value(&format!("{A}/off"), &args(&[("k", s("x"))]), n("100"), V1);
+    node.formula(&format!("{A}/plus_off"), &format!("{A}/px(ccy: ccy, date: date) + {A}/off(k: \"x\")"), RATE_SIG);
     node
 }
 
