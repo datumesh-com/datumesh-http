@@ -491,7 +491,7 @@ On `datumesh-store` 0.4.0, `datumesh-engine` 0.4.0 and `datumesh-formula` 0.2.0 
 
 ## 0.1.2
 
-The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was slower than the bound CI held it to; fixed below), so 0.1.1 was never published.
+The first published release of this work. The tag `v0.1.1` marks a release run that stopped before publishing (the batch was over 10 times one cell on CI; fixed below), so 0.1.1 was never published.
 
 spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; store 0.3.2).
 
@@ -502,8 +502,8 @@ spec-0.4.2 (datumesh-core 0.3.6, datumesh-engine 0.3.2, datumesh-formula 0.1.1; 
 - `GET /slice` JSON answers are page envelopes (SPEC 5.6); Arrow is unchanged.
 - `POST /cells` answers `[{"envelope", "status"}]`, or one envelope refusing the whole batch
   (SPEC 5.7).
-- `POST /cells` is as fast as in 0.1.0 again (a batch costs one round trip and one name lookup for any
-  number of cells, the brief's criterion 8): each chunk writes and counts its own answers on the pool, a batch
+- `POST /cells` is as fast as in 0.1.0 again (1,000 cells under 10 times one cell, the
+  brief's criterion 8): each chunk writes and counts its own answers on the pool, a batch
   looks each binding up once (not once per chunk), and the core count is read once.
 - `E_SLICE_AT_CELL` (`bad_request`) for a slice marker at `/cell`; `E_NAME_UNBOUND`
   (`not_covered` with `error`) for an unbound name.
