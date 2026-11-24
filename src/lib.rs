@@ -159,6 +159,7 @@ mod find;
 mod fnpage;
 pub mod foreign;
 mod http;
+mod instant;
 mod jobs;
 pub mod keydoc;
 mod keynames;

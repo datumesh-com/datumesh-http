@@ -48,24 +48,25 @@ type BodyKey = (String, Vec<u8>, String, Option<usize>, Option<String>);
 /// by [`BODY_CACHE_BYTES`] in all. JSON pages and latest answers are not cached.
 #[derive(Default)]
 pub(crate) struct BodyCache {
-    entries: VecDeque<(BodyKey, Bytes, &'static str)>,
+    /// Each entry: the key, the body, its media type and the `next` link of its page (H2).
+    entries: VecDeque<(BodyKey, Bytes, &'static str, Option<String>)>,
     bytes: usize,
 }
 
 impl BodyCache {
-    fn get(&mut self, key: &BodyKey) -> Option<(Bytes, &'static str)> {
-        let i = self.entries.iter().position(|(k, _, _)| k == key)?;
+    fn get(&mut self, key: &BodyKey) -> Option<(Bytes, &'static str, Option<String>)> {
+        let i = self.entries.iter().position(|(k, _, _, _)| k == key)?;
         let e = self.entries.remove(i)?;
-        let out = (e.1.clone(), e.2);
+        let out = (e.1.clone(), e.2, e.3.clone());
         self.entries.push_back(e);
         Some(out)
     }
 
-    fn put(&mut self, key: BodyKey, body: &Bytes, content_type: &'static str) {
+    fn put(&mut self, key: BodyKey, body: &Bytes, content_type: &'static str, next: Option<String>) {
         if body.len() > BODY_CACHE_BYTES {
             return;
         }
-        if let Some(i) = self.entries.iter().position(|(k, _, _)| *k == key) {
+        if let Some(i) = self.entries.iter().position(|(k, _, _, _)| *k == key) {
             if let Some(old) = self.entries.remove(i) {
                 self.bytes -= old.1.len();
             }
@@ -77,7 +78,7 @@ impl BodyCache {
             }
         }
         self.bytes += body.len();
-        self.entries.push_back((key, body.clone(), content_type));
+        self.entries.push_back((key, body.clone(), content_type, next));
     }
 }
 
@@ -203,6 +204,42 @@ fn sort_key_at(t: &Target, key: &[Scalar]) -> Option<Vec<u8>> {
 }
 
 impl Inner {
+    /// The members of a whole-slice answer (CSV, Arrow): `limit=` when named, never above `slice_max` (H2).
+    fn whole_slice_page(&self, q: &SliceQuery) -> usize {
+        q.limit.unwrap_or(self.config.slice_max).min(self.config.slice_max).max(1)
+    }
+
+    /// The `Link: rel="next"` of a whole-slice page (H2, CONTRACT-protocol-part1 0.5.3): only for a request that names a
+    /// `limit` and has members after this page. The same URL as the request's, pinned to the instant the members answer
+    /// as of (as JSON's `next` is), with the cursor of the page's last member, which is JSON's cursor.
+    #[allow(clippy::too_many_arguments)]
+    fn whole_slice_next(
+        &self,
+        target: &Target,
+        a: &str,
+        open: &[String],
+        last: Option<&SliceValue>,
+        more: bool,
+        q: &SliceQuery,
+        n: usize,
+    ) -> Option<String> {
+        if !more || q.limit.is_none() {
+            return None;
+        }
+        let fmt = match q.form {
+            Form::Csv => "csv",
+            Form::Arrow => "arrow",
+            Form::Json => return None,
+        };
+        let k = key_of(last?, open);
+        Some(format!(
+            "{}/slice/{}&format={fmt}&limit={n}&after={}",
+            self.config.origin(),
+            target.rest_asof(a),
+            cursor(&k)
+        ))
+    }
+
     /// One page of `n` members of `slice` as of `a`, after `after` (a sort key), and whether more follow (the store's
     /// slice pages, CONTRACT-0.5.1 H1: `n + 1` members are read, never the whole slice).
     fn page_of(
@@ -230,8 +267,14 @@ impl Inner {
         Ok((m, more))
     }
 
-    /// Answers a slice request (blocking) in the form asked.
-    pub(crate) fn slice(&self, rest: &str, now: &str, form: Form) -> Reply {
+    /// Answers a slice request (blocking) in the form asked, with the `Link` to the next page of a whole-slice answer.
+    pub(crate) fn slice(&self, rest: &str, now: &str, form: Form) -> (Reply, Option<String>) {
+        let mut next = None;
+        let r = self.slice_answer(rest, now, form, &mut next);
+        (r, next)
+    }
+
+    fn slice_answer(&self, rest: &str, now: &str, form: Form, next: &mut Option<String>) -> Reply {
         let (rest, mut q) = match split_query(rest) {
             Ok(x) => x,
             Err(c) => return envelope::bad_request_reply(c),
@@ -283,14 +326,16 @@ impl Inner {
             .then(|| (format!("{:?}", q.form), slice.to_value().to_jcs(), a.clone(), q.limit, q.after.clone()));
         if let Some(key) = &body_key {
             let hit = self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).get(key);
-            if let Some((body, content_type)) = hit {
+            if let Some((body, content_type, link)) = hit {
+                *next = link;
                 return Reply { status: 200, body, content_type, cache, canonical: None, retry_after: None };
             }
         }
         if q.form == Form::Csv {
-            // One row a member, in key order: its key arguments, its value and its tx. Not paginated: the
-            // whole slice up to the bound is one file.
-            let (members, _) = match self.page_of(&slice, &a, after.as_deref(), self.config.slice_max) {
+            // One row a member, in key order: its key arguments, its value and its tx. At most `limit` rows, else the
+            // whole slice up to the bound; with a `limit` and more members, a `Link` to the next page (H2).
+            let n = self.whole_slice_page(&q);
+            let (members, more) = match self.page_of(&slice, &a, after.as_deref(), n) {
                 Ok(x) => x,
                 Err(c) => return envelope::error_reply(c),
             };
@@ -312,14 +357,16 @@ impl Inner {
                 out.push_str("\r\n");
             }
             let body: Bytes = out.into_bytes().into();
+            let link = self.whole_slice_next(&target, &a, &open, members.last(), more, &q, n);
             if let Some(key) = body_key {
-                self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(key, &body, CSV);
+                self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(key, &body, CSV, link.clone());
             }
+            *next = link;
             return Reply { status: 200, body, content_type: CSV, cache, canonical: None, retry_after: None };
         }
         if q.form == Form::Arrow {
-            let n = q.limit.unwrap_or(self.config.slice_max);
-            let (members, _) = match self.page_of(&slice, &a, after.as_deref(), n) {
+            let n = self.whole_slice_page(&q);
+            let (members, more) = match self.page_of(&slice, &a, after.as_deref(), n) {
                 Ok(x) => x,
                 Err(c) => return envelope::error_reply(c),
             };
@@ -327,9 +374,16 @@ impl Inner {
             return match arrow_stream(&members, &open, &slice, &a, &target.fn_name()) {
                 Ok(body) => {
                     let body: Bytes = body.into();
+                    let link = self.whole_slice_next(&target, &a, &open, members.last(), more, &q, n);
                     if let Some(key) = body_key {
-                        self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(key, &body, ARROW);
+                        self.slice_bodies.lock().unwrap_or_else(|p| p.into_inner()).put(
+                            key,
+                            &body,
+                            ARROW,
+                            link.clone(),
+                        );
                     }
+                    *next = link;
                     Reply { status: 200, body, content_type: ARROW, cache, canonical: None, retry_after: None }
                 }
                 Err(e) => {

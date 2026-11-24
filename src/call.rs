@@ -278,10 +278,12 @@ pub fn resolve(
     bindings: &dyn Bindings,
     slice: bool,
 ) -> Result<Arc<Target>, Rejection> {
-    if is_call(rest) {
-        resolve_call(rest, now, aliases, bindings, slice)
+    // The accepted forms of an as-of (instant.rs, CONTRACT-protocol-part1 H3) are read as their canonical instant.
+    let rest = crate::instant::in_query(rest);
+    if is_call(&rest) {
+        resolve_call(&rest, now, aliases, bindings, slice)
     } else {
-        resolve_uri(rest, now, bindings, slice)
+        resolve_uri(&rest, now, bindings, slice)
     }
 }
 

@@ -615,9 +615,9 @@ impl Inner {
         let (mut from, mut to) = (None, None);
         while let Some(last) = ps.last() {
             if let Some(v) = last.strip_prefix("from=") {
-                from = Some(v.to_string());
+                from = Some(crate::instant::canonical_or_same(v, false));
             } else if let Some(v) = last.strip_prefix("to=") {
-                to = Some(v.to_string());
+                to = Some(crate::instant::canonical_or_same(v, false));
             } else {
                 break;
             }
@@ -716,7 +716,7 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
     // `?format=` is its own address; without it, an Accept that chooses Arrow gets Arrow, uncached (G1).
     let accept_arrow = format.is_none() && accepts(&headers, crate::slice::ARROW);
     let form = if accept_arrow { crate::slice::Form::Arrow } else { format.unwrap_or_default() };
-    let r = inner
+    let (r, next) = inner
         .pool
         .clone()
         .run(move || {
@@ -724,12 +724,17 @@ async fn slice(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Requ
             inner.slice(&rest, &now, form)
         })
         .await
-        .unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable));
+        .unwrap_or_else(|| (envelope::error_reply(ErrorCode::EvalUnavailable), None));
     let mut r = r;
     if accept_arrow {
         r.cache = Cache::NoStore;
     }
-    to_response(r)
+    let mut resp = to_response(r);
+    // A whole-slice page that names a `limit` and has more after it: the `Link` to the next (CONTRACT-protocol-part1 H2).
+    if let Some(v) = next.and_then(|n| HeaderValue::from_str(&format!("<{n}>; rel=\"next\"")).ok()) {
+        resp.headers_mut().insert(header::LINK, v);
+    }
+    resp
 }
 
 /// `303 See Other` to `location`, `no-store`.
@@ -1146,7 +1151,12 @@ async fn bindings(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: R
         let Some(v) = pct_decode(v) else { return batch_error("percent-encoding (SPEC 5.1)") };
         match k {
             "name" if lexical::check_function_name(&v, "$").is_ok() => names.push(v),
-            "asof" if lexical::check_instant(&v, "$").is_ok() && asof.is_none() => asof = Some(v),
+            "asof"
+                if lexical::check_instant(&crate::instant::canonical_or_same(&v, true), "$").is_ok()
+                    && asof.is_none() =>
+            {
+                asof = Some(crate::instant::canonical_or_same(&v, true))
+            }
             _ => return batch_error(&format!("parameter {k}")),
         }
     }

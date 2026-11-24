@@ -159,7 +159,7 @@ impl Inner {
             return bad(ErrorCode::Schema);
         };
         let asof = match asof {
-            Ok(a) => a.map(str::to_string),
+            Ok(a) => a.map(|a| crate::instant::canonical_or_same(a, true)),
             Err(c) => return bad(c),
         };
         if overrides.is_empty() && solve.is_none() {

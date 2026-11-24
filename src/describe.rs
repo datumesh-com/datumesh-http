@@ -634,7 +634,7 @@ pub(crate) fn label_form(id: &str) -> Option<(String, String, Option<String>)> {
         Some(q) => q.strip_suffix('"')?.replace("\"\"", "\""),
         None => inner.to_string(),
     };
-    let asof = query.and_then(|q| q.strip_prefix("asof=")).map(str::to_string);
+    let asof = query.and_then(|q| q.strip_prefix("asof=")).map(|a| crate::instant::canonical_or_same(a, true));
     Some((class.to_string(), written, asof))
 }
 

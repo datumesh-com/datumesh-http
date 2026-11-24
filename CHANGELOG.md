@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.3
+
+The protocol round's http changes (CONTRACT-protocol-part1, datumesh-http 0.5.3: H2 and H3). Additive: no stored, signed or hashed value changes. Each change, and what it costs:
+
+- **CSV and Arrow slices obey `limit` (H2, D6).** At most `limit` rows (never above `DATUMESH_SLICE_MAX`); when more members follow and the request named a `limit`, the response carries `Link: <same URL with after=<cursor>>; rel="next"`, the cursor being the JSON `next`'s. Without `limit`, the whole slice up to `DATUMESH_SLICE_MAX`, with no Link, as in 0.5.1. The whole-slice body cache keys on `limit=` and `after=` (as before) and keeps the page's Link with its body. Cost: a CSV or Arrow request with `limit=` now returns that many rows, not the whole slice up to the bound.
+- **Instants: 0 to 6 fractional digits and a bare date (H3, D7, D7.1).** Wherever a request takes an as-of (the query `asof` of the read endpoints, and `asof` in the `/x/calc` and `/whatif` bodies), `YYYY-MM-DDTHH:MM:SS[.f{1,6}]Z` and `YYYY-MM-DD` (the end of that day, UTC) are accepted, canonicalised to six digits before use; the answer's `asof` is the canonical instant. `/versions` `from=` and `to=` take the fractional forms. An offset other than `Z` is still `E_CANON_INSTANT`. Cost: a bare date, which was refused, now reads as the end of its day.
+
 ## 0.5.2
 
 The held sentence on production's shape (CONTRACT-0.5.2, from the rehearsal of the restored copy). Two changes, each with its cost:

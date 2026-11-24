@@ -530,7 +530,7 @@ impl Inner {
         let Some(formula) = v.get("formula").and_then(Value::as_str) else { return bad(ErrorCode::Schema) };
         let asof = match v.get("asof") {
             None => None,
-            Some(Value::String(a)) => Some(a.clone()),
+            Some(Value::String(a)) => Some(crate::instant::canonical_or_same(a, true)),
             Some(_) => return bad(ErrorCode::Schema),
         };
         if let Some(a) = &asof {
