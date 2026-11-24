@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2
+
+The held sentence on production's shape (CONTRACT-0.5.2, from the rehearsal of the restored copy). Two changes, each with its cost:
+
+- **A class's cells count for the measure order.** A class entry's cells are the stored cells of its methods' functions (the sum of their `cell_count`, read once per build), so production's verse class (many cells) puts "texts" before "provenance": "scripture (texts, provenance)". Cost: a measure held by a class with cells can move up the order; the held text changes only where a class has cells.
+- **A declared source is "computed from".** Any faceted entry that is not a relay and declares a `source_name` reads "computed from <name>", whether its code is stored or a formula (production's rainfall is a stored function with `source_name` "CHIRPS": "monthly rainfall computed from CHIRPS"). Own data without a `source_name` names none; a relay still reads "from <name>". This supersedes the 0.7 R8 rule that own data names no source, by the user's decision of 2026-11-23. Cost: an entry of the publisher's own data that declares a `source_name` is now named in `held`.
+
 ## 0.5.1
 
 The round 0.7 slices and catalogue (CONTRACT-0.5.1 H1 to H5): requires datumesh-store 0.6.4 (unreleased: a stored sort key per cell, `slice_page`, class bindings by hash), datumesh-core 0.3.14 and datumesh-formula 0.6.0. Each change, and what it costs:

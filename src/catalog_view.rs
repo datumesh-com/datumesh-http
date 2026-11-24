@@ -26,7 +26,7 @@ use crate::envelope::{self, Cache, Reply};
 use crate::find::cells_of_name;
 use crate::mesh::Inner;
 use crate::series::Out;
-use datumesh_core::{FunctionDescriptor, Scalar};
+use datumesh_core::Scalar;
 
 /// The most subjects a domain's `top` lists (C7).
 const TOP: usize = 5;
@@ -106,8 +106,8 @@ struct Read {
     source_names: BTreeMap<String, String>,
     /// The hash of each faceted function entry, by entry name (its cells are counted for `held`, H4).
     fn_hashes: BTreeMap<String, String>,
-    /// The faceted functions that are computed (their code is not stored): "computed from" names them (H4).
-    computed: BTreeSet<String>,
+    /// The hash of each faceted class entry, by entry name (its methods' cells are counted for `held`, 0.5.2).
+    class_hashes: BTreeMap<String, String>,
     /// The valued lookup labels of the subject class, in label order.
     labels: Vec<String>,
     /// The generation of what was read: a fingerprint of the faceted entries, their facets and binding instants, and of the
@@ -188,6 +188,7 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
     let mut frequency: BTreeMap<String, String> = BTreeMap::new();
     let mut source_names: BTreeMap<String, String> = BTreeMap::new();
     let mut fn_hashes: BTreeMap<String, String> = BTreeMap::new();
+    let mut class_hashes: BTreeMap<String, String> = BTreeMap::new();
     let mut class_facets: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut entries = store.catalog_entries_with_facets().ok()?;
@@ -201,6 +202,11 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
         if e.kind == CatalogKind::Function {
             if let Some(h) = &e.hash {
                 fn_hashes.insert(e.name.clone(), h.clone());
+            }
+        }
+        if e.kind == CatalogKind::Class {
+            if let Some(h) = &e.hash {
+                class_hashes.insert(e.name.clone(), h.clone());
             }
         }
         if let Some(f) = e.facets.get("frequency").and_then(|f| f.first()) {
@@ -254,19 +260,6 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
         })
         .collect();
     domains.sort_by(|a, b| b.subjects.len().cmp(&a.subjects.len()).then_with(|| a.name.cmp(&b.name)));
-    // The computed entries of `held` (H4): a function with a `source_name` whose code is a formula, not stored cells.
-    let mut computed: BTreeSet<String> = BTreeSet::new();
-    for name in fn_hashes.keys() {
-        if !source_names.contains_key(name) {
-            continue;
-        }
-        let Some(binding) = store.resolve_binding(name, now).ok().flatten() else { continue };
-        if let Some(b) = store.descriptor(&binding.fn_hash) {
-            if FunctionDescriptor::from_json(&b).is_ok_and(|fd| fd.lang != "stored") {
-                computed.insert(name.clone());
-            }
-        }
-    }
     Some(Read {
         subjects,
         domains,
@@ -274,7 +267,7 @@ fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
         frequency,
         source_names,
         fn_hashes,
-        computed,
+        class_hashes,
         labels: lookup,
         generation: hasher.finish(),
     })
@@ -465,7 +458,6 @@ fn held_text(
     domains: &[Domain],
     frequency: &BTreeMap<String, String>,
     source_names: &BTreeMap<String, String>,
-    computed: &BTreeSet<String>,
     cells: &BTreeMap<String, u64>,
 ) -> Option<String> {
     if subjects.is_empty() {
@@ -503,14 +495,14 @@ fn held_text(
                         .map(String::as_str)
                         .filter(|f| matches!(*f, "monthly" | "weekly" | "annual"));
                 }
-                // A relayed source is named by its `source_name`, else by its domain ("from"); a computed one (a view that is
-                // not a relay, H4) by its `source_name` ("computed from"); the publisher's own data is named by none.
+                // A relayed source is named by its `source_name`, else by its domain ("from"); any other source that declares a
+                // `source_name` is "computed from" it (0.5.2, the rule of 2026-11-23); the rest are named by none.
                 if let Some(domain) = relay_domain(host, src) {
                     let named = source_names.get(src).cloned().unwrap_or(domain);
                     if !sources.contains(&named) {
                         sources.push(named);
                     }
-                } else if let (Some(named), true) = (source_names.get(src), computed.contains(src)) {
+                } else if let Some(named) = source_names.get(src) {
                     if !computed_names.contains(named) {
                         computed_names.push(named.clone());
                     }
@@ -799,6 +791,14 @@ fn parse_subject_key_domain(host: &str, text: &str) -> Option<String> {
     parse_subject_key(host, text).map(|k| k.0)
 }
 
+/// The stored cells of a class: the cells of each of its methods' functions, counted by name (`class` is the class's name, and
+/// `hash` its class hash), as the counter of each method reads them.
+fn class_cells(store: &dyn Store, class: &str, hash: &str) -> u64 {
+    let Some(bytes) = store.class(hash).ok().flatten() else { return 0 };
+    let Ok(cd) = ClassDescriptor::from_json(&bytes) else { return 0 };
+    cd.methods.iter().map(|(m, h)| store.cell_count(class, m, h).unwrap_or(0)).sum()
+}
+
 /// Builds the view from what [`read`] read (the catalogue thread's work, never a request's).
 fn build_from(inner: &Inner, read: Read) -> Built {
     let host = inner.config.host.clone();
@@ -806,16 +806,22 @@ fn build_from(inner: &Inner, read: Read) -> Built {
     let now = inner.now();
     let root = root_json(&host, &origin, &read.domains, &read.subjects);
     // The stored cells of each rank-one source (H4): a count per entry, read here, never by a request.
+    // A class entry's cells are the stored cells of its methods' functions (0.5.2), read here once per build.
     let mut cells: BTreeMap<String, u64> = BTreeMap::new();
     for s in &read.subjects {
         if let Some(src) = s.sources.first() {
-            if let (false, Some(h)) = (cells.contains_key(src), read.fn_hashes.get(src)) {
-                cells.insert(src.clone(), cells_of_name(&*inner.store, src, h).unwrap_or(0));
+            if cells.contains_key(src) {
+                continue;
             }
+            let n = match (read.fn_hashes.get(src), read.class_hashes.get(src)) {
+                (Some(h), _) => cells_of_name(&*inner.store, src, h).unwrap_or(0),
+                (None, Some(h)) => class_cells(&*inner.store, src, h),
+                (None, None) => 0,
+            };
+            cells.insert(src.clone(), n);
         }
     }
-    let held =
-        held_text(&host, &read.subjects, &read.domains, &read.frequency, &read.source_names, &read.computed, &cells);
+    let held = held_text(&host, &read.subjects, &read.domains, &read.frequency, &read.source_names, &cells);
     let class_names: BTreeSet<String> = read.classes.iter().map(|c| c.name.clone()).collect();
     let pages = build_pages(&read.subjects, &read.domains, &class_names);
     let domain_order = read
