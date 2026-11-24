@@ -1,14 +1,13 @@
-//! Test 8 of the brief: 1,000 cells in one `POST /cells` complete in under 10 times one cell's latency, on a warm
-//! store.
+//! Test 8 of the brief, as the user decided it for http 0.5.4 (CONTRACT-next-patch item 17, option b): **a batch costs
+//! one round trip and one name lookup for any number of cells, and on loopback 1,000 cells take less than 50 single
+//! requests.**
 //!
-//! http 0.5.4 (CONTRACT-next-patch item 17) made this robust without loosening it. The claim is unchanged: the median
-//! batch is under 10 times the median single request (`thousand_cells`, release builds). Both medians now come from
-//! the same interleaved rounds (1,000 single requests, then batches, several times), so that a burst of load on a
-//! shared machine falls on both sides, not on one. Besides, what the batch saves is
-//! counted exactly (`a_batch_saves_round_trips_and_binding_reads`): one HTTP round trip in place of 1,000, and one
-//! lookup of the name's binding in the store in place of 1,000 (by a read probe in the database, as
-//! `common/h0410.rs` counts reads), and no more cell rows read than the 1,000 requests read. The time of
-//! the 1,000 single requests together is reported beside it.
+//! * The main proof is counted, so no load can move it (`a_batch_saves_round_trips_and_binding_reads`): one HTTP round
+//!   trip in place of 1,000, and one lookup of the name's binding in the store in place of 1,000 (by a read probe in
+//!   the database, as `common/h0410.rs` counts reads), and no more cell rows read than the 1,000 requests read.
+//! * The time (`thousand_cells`, release builds): the median batch of 1,000 cells is under 50 times the median single
+//!   request. Both medians come from the same seven interleaved rounds (1,000 single requests, then batches), so that
+//!   a burst of load on a shared machine falls on both sides, not on one.
 
 mod common;
 #[path = "common/h0410.rs"]
@@ -114,10 +113,10 @@ async fn thousand_cells() {
     );
     std::fs::write(out_dir().join("batch.txt"), &out).unwrap();
     eprint!("{out}");
-    // Timings hold for an optimised build (`cargo test --release`, as CI runs this test): the brief's bound, unchanged,
-    // on medians of the interleaved rounds.
+    // Timings hold for an optimised build (`cargo test --release`, as CI runs this test): on loopback, 1,000 cells take
+    // less than 50 single requests (the user's decision on item 17), on medians of the interleaved rounds.
     if !cfg!(debug_assertions) {
-        assert!(batch < one * 10, "{out}");
+        assert!(batch < one * 50, "{out}");
     }
 }
 
