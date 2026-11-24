@@ -217,7 +217,12 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
         .iter()
         .map(|(row, spec): &(_, TestSpec)| {
             let result = row.last_result.as_deref().map_or(Value::Null, s);
-            obj(vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)])
+            let mut members =
+                vec![("call", s(&spec.call)), ("expect", s(&expect_text(&spec.expect))), ("result", result)];
+            if !spec.inputs.is_empty() {
+                members.push(("inputs", Value::Object(spec.inputs.clone())));
+            }
+            obj(members)
         })
         .collect();
     let cases_total = summary.count;
@@ -356,6 +361,22 @@ fn prose(t: &str) -> String {
     esc(t).replace(' ', "\u{a0}")
 }
 
+/// The inputs a case was given, as the page reads them beside its call (CONTRACT-next-patch item 15): "with <slice
+/// call> given as empty" for an empty members map, "with N members given" for a members map of N, "with <call> given"
+/// for any other input. Empty when the case has none.
+fn given_text(inputs: &Value) -> String {
+    let Value::Object(members) = inputs else { return String::new() };
+    members
+        .iter()
+        .map(|(call, entry)| match entry.get("members") {
+            Some(Value::Object(m)) if m.is_empty() => format!("with {call} given as empty"),
+            Some(Value::Object(m)) => format!("with {} members given", m.len()),
+            _ => format!("with {call} given"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&Value::Null)
 }
@@ -487,9 +508,12 @@ fn render(d: &Value, unnamed: bool) -> String {
     h.push_str("</ul>\n<h3>Each test</h3>\n<ul>\n");
     if let Value::Array(cs) = get(t, "cases") {
         for c in cs {
+            let given = given_text(get(c, "inputs"));
+            let given = if given.is_empty() { String::new() } else { format!(" {}", prose(&given)) };
             h.push_str(&format!(
-                "<li><code>{}</code> expects {}: {}</li>\n",
+                "<li><code>{}</code>{} expects {}: {}</li>\n",
                 prose(get(c, "call").as_str().unwrap_or("")),
+                given,
                 prose(get(c, "expect").as_str().unwrap_or("")),
                 esc(get(c, "result").as_str().unwrap_or("not run"))
             ));

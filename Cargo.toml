@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.5.3"
+version = "0.5.4"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -28,7 +28,7 @@ datumesh-core = { version = "0.3.14", features = ["sign"] }
 datumesh-store = { version = "0.6.4", default-features = false }
 datumesh-engine = "0.6.0"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
-datumesh-formula = "0.6.0"
+datumesh-formula = "0.6.2"
 # The manifest signature of bundle 1 (src/bundle.rs, CONTRACT-1.8b H2): Ed25519 signing by
 # ed25519-dalek, over the curve25519-dalek and sha2 versions core uses; verification is core's.
 ed25519-dalek = { version = "3.0.0", default-features = false }

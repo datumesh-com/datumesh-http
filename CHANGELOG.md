@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.4
+
+The next patch's http changes (CONTRACT-next-patch items 15 and 16); requires datumesh-formula 0.6.2 (`read_names`). Item 17 is a test change only (`batch::thousand_cells` made robust, no code change). Each change, and what it costs:
+
+- **The function page shows each test's inputs (item 15).** A case with `inputs` reads them beside its call: "with <slice call> given as empty" for an empty members map, "with N members given" for a members map of N, "with <call> given" for any other input. Two cases with the same call read as two lines. `?format=json` carries each case's `inputs` as the test gave them, and omits the key for a case without. Cost: the page and the JSON cases of tests with inputs are longer.
+- **`/x/calc` builds its callee environment in one pass (item 16).** The names the body reads come from datumesh-formula 0.6.2's `read_names`; each name's descriptor as of the asof is looked up once, in place of the loop that matched the "has no binding" message. Behaviour is unchanged (`tests/h054_calc_unbound.rs`). Cost: none.
+
 ## 0.5.3
 
 The protocol round's http changes (CONTRACT-protocol-part1, datumesh-http 0.5.3: H2 and H3). Additive: no stored, signed or hashed value changes. Each change, and what it costs:

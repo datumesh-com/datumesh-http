@@ -21,7 +21,7 @@ use datumesh_core::json::{self, Value};
 use datumesh_core::{Answer, ErrorCode, Fault, Receipt, Scalar, Slice, Type};
 use datumesh_formula::definition::{Callee, Callees};
 use datumesh_formula::eval::{self, Args, Binding, CellKey, PatternArg, SliceKey, Stop, Version, World};
-use datumesh_formula::{check_descriptor, define, Code, Compiled, Env, Function, Signature};
+use datumesh_formula::{check_descriptor, define, read_names, Code, Compiled, Env, Function, Signature};
 use datumesh_store::Store;
 
 use crate::apikeys::Principal;
@@ -521,10 +521,10 @@ impl Inner {
         }
         let at = asof.unwrap_or_else(|| self.now());
         let store: &(dyn Store + Send + Sync) = &*self.store;
-        // The body is defined against the store as of the asof. Each callee the resolver refuses as unbound ("<name> has
-        // no binding") is read from the store as of the asof and added to the environment, then the body is defined
-        // again: so a positional read binds by the callee's declared order (SPEC 15.5), and a callee without one takes
-        // labels only. Each round adds one new name, so the loop ends.
+        // The callees the body names are read in one pass (datumesh-formula 0.6.2's `read_names`): each name's
+        // descriptor as of the asof goes into the environment, so a positional read binds by the callee's declared
+        // order (SPEC 15.5). A name with no binding (a class, or a function the store does not hold) is left out, and
+        // the define below refuses it as before; an `@alias` is left to the define too.
         let placeholder = Value::Object(vec![
             ("args".into(), Value::Object(vec![])),
             ("order".into(), Value::Array(vec![])),
@@ -536,27 +536,22 @@ impl Inner {
         };
         let mut env = Env::new(&format!("{}/calc", self.config.host), sig);
         let callees = StoreCallees(store);
-        let compiled: Compiled = loop {
-            match define(formula, &env) {
-                Ok(c) => break c,
-                Err(e) => {
-                    let Some(fq) = e.detail.strip_suffix(" has no binding") else {
-                        return raw(400, "bad_request", e.code.as_str());
-                    };
-                    if env.signature_of(fq).is_some() {
-                        return raw(400, "bad_request", e.code.as_str());
-                    }
-                    match Callees::callee(&callees, fq, &at) {
-                        Ok(Some(c)) => {
-                            if env.add_function(fq, &c.descriptor).is_err() {
-                                return envelope::error_reply(ErrorCode::InputUnavailable);
-                            }
+        if let Ok(names) = read_names(formula) {
+            for fq in names.iter().filter(|n| !n.starts_with('@')) {
+                match Callees::callee(&callees, fq, &at) {
+                    Ok(Some(c)) => {
+                        if env.add_function(fq, &c.descriptor).is_err() {
+                            return envelope::error_reply(ErrorCode::InputUnavailable);
                         }
-                        Ok(None) => return raw(400, "bad_request", e.code.as_str()),
-                        Err(_) => return envelope::error_reply(ErrorCode::InputUnavailable),
                     }
+                    Ok(None) => {}
+                    Err(_) => return envelope::error_reply(ErrorCode::InputUnavailable),
                 }
             }
+        }
+        let compiled: Compiled = match define(formula, &env) {
+            Ok(c) => c,
+            Err(e) => return raw(400, "bad_request", e.code.as_str()),
         };
         // The body as a function with no arguments and the inferred return type.
         let descriptor = Value::Object(vec![
