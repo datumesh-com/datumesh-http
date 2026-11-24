@@ -159,16 +159,17 @@ async fn r8_without_a_source_name_the_source_domain_is_used() {
     );
 }
 
-/// The publisher's own data names no source, even when the entry carries a `source_name`.
+/// Own data that declares a `source_name` reads "computed from <name>" (the user's decision of 2026-11-23, which supersedes the
+/// 0.7 R8 rule that the publisher's own data names no source); own data with none names none (`r8_no_full_name_...`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn r8_the_publishers_own_data_names_no_source() {
+async fn r8_own_data_with_a_source_name_reads_computed_from() {
     let e = vec![ent(
         "register/dataset",
         f("registry", "dataset", &["licence"], "world", "on_change"),
         Some("the Registry"),
     )];
     let held = held_of_lite("r8-own", &e).await;
-    assert_eq!(held, format!("This mesh holds registry (licences). {TAIL}"));
+    assert_eq!(held, format!("This mesh holds registry (licences computed from the Registry). {TAIL}"));
 }
 
 /// Several rank-1 sources of a measure: "A, B and C", each name once, in the order of the subjects.

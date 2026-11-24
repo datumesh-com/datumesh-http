@@ -113,3 +113,36 @@ async fn h52_scripture_as_two_classes_reads_texts_before_provenance() {
     let held = held_of(lite).await;
     assert_eq!(held, format!("This mesh holds scripture (texts, provenance). {TAIL}"));
 }
+
+/// Rainfall as production has it: a stored function of the publisher's own namespace (not a relay, not a formula), with cells,
+/// facets monthly and `source_name` "CHIRPS". Any entry that is not a relay and declares a `source_name` reads
+/// "computed from <name>" (the user's decision of 2026-11-23, which supersedes the 0.7 R8 rule that own data names none).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h52_rainfall_as_a_stored_function_reads_computed_from_chirps() {
+    let lite = Lite::new("h52-rainfall");
+    let n = host_name("earth/monthly_rainfall");
+    let mut lines = vec![fn_line(&n)];
+    lines.extend(own_cells(&n, 3));
+    lines.push(entry(&n, "function", f("earth", "region", "rainfall", "world", "monthly"), Some("CHIRPS")));
+    publish(&lite, "rain.jsonl", &lines, NOW).unwrap_or_else(|e| panic!("{e}"));
+    build(&lite, T3);
+    let held = held_of(lite).await;
+    assert_eq!(held, format!("This mesh holds earth (monthly rainfall computed from CHIRPS). {TAIL}"));
+}
+
+/// Own data that declares no `source_name` names none; a relay still reads "from <name>".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h52_own_data_without_a_source_name_names_none_and_a_relay_still_reads_from() {
+    let lite = Lite::new("h52-own-and-relay");
+    let own = host_name("register/dataset_count");
+    let relay = host_name("relay/treasury.gov/par_yield");
+    let mut lines = vec![fn_line(&own), fn_line(&relay)];
+    lines.extend(own_cells(&own, 2));
+    lines.extend(relay_cells(&relay, 2));
+    lines.push(entry(&own, "function", f("registry", "dataset", "licence", "world", "on_change"), None));
+    lines.push(entry(&relay, "function", f("finance", "yield", "yield", "us", "daily"), Some("the US Treasury")));
+    publish(&lite, "own.jsonl", &lines, NOW).unwrap_or_else(|e| panic!("{e}"));
+    build(&lite, T3);
+    let held = held_of(lite).await;
+    assert_eq!(held, format!("This mesh holds finance (yields from the US Treasury) and registry (licences). {TAIL}"));
+}
