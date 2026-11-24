@@ -22,7 +22,7 @@ mod crworld;
 use catjob::*;
 use catworld::*;
 use common::lite::*;
-use common::pub031::{class_line, BEFORE};
+use common::pub031::{class_line, BEFORE, T1, T2};
 use crworld::*;
 use serde_json::{json, Value};
 
@@ -145,4 +145,64 @@ async fn h52_own_data_without_a_source_name_names_none_and_a_relay_still_reads_f
     build(&lite, T3);
     let held = held_of(lite).await;
     assert_eq!(held, format!("This mesh holds finance (yields from the US Treasury) and registry (licences). {TAIL}"));
+}
+
+const PRODUCTION: &str = "This mesh holds finance (exchange rates from the ECB, yields from the US Treasury, interest rates from the ECB and the Bank of England), scripture (texts, provenance), earth (monthly rainfall computed from CHIRPS) and registry (licences). Ask find in plain words for what you need.";
+
+/// The full sentence, from the facets of production's catalogue (`production-catalog.jsonl`): the five relays with their source
+/// names, the two scripture classes, the stored rainfall function, the register's dataset class. The cells are the rehearsal's
+/// order of size (exchange rates most, then yields, then interest rates; verse over edition). It is the rehearsal's sentence with
+/// only two changes: "texts, provenance" and "computed from CHIRPS".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h52_the_production_sentence() {
+    let lite = Lite::new("h52-production");
+    let relays: [(&str, &str, Value, &str, usize); 5] = [
+        (
+            "relay/ecb.europa.eu/fx_reference",
+            "the ECB",
+            f("finance", "currency", "exchange_rate", "ea", "daily"),
+            "",
+            30,
+        ),
+        ("relay/ecb.europa.eu/estr", "the ECB", f("finance", "rate", "interest_rate", "ea", "daily"), "", 3),
+        ("relay/ecb.europa.eu/policy_rate", "the ECB", f("finance", "rate", "interest_rate", "ea", "on_change"), "", 3),
+        (
+            "relay/bankofengland.co.uk/bank_rate",
+            "the Bank of England",
+            f("finance", "rate", "interest_rate", "gb", "daily"),
+            "",
+            3,
+        ),
+        ("relay/treasury.gov/par_yield", "the US Treasury", f("finance", "yield", "yield", "us", "daily"), "", 20),
+    ];
+    let mut lines = Vec::new();
+    for (n, _, _, _, _) in &relays {
+        lines.push(fn_line(&host_name(n)));
+    }
+    let rain = host_name("earth/monthly_rainfall");
+    lines.push(fn_line(&rain));
+    for (n, _, _, _, cells) in &relays {
+        lines.extend(relay_cells(&host_name(n), *cells));
+    }
+    lines.extend(own_cells(&rain, 3));
+    for (n, source, facets, _, _) in &relays {
+        lines.push(entry(&host_name(n), "function", facets.clone(), Some(source)));
+    }
+    lines.push(entry(&rain, "function", f("earth", "region", "rainfall", "world", "monthly"), Some("CHIRPS")));
+    publish(&lite, "functions.jsonl", &lines, NOW).unwrap_or_else(|e| panic!("{e}"));
+    // the classes: scripture's two, and the register's
+    let (verse, edition, dataset) =
+        (host_name("scripture/verse"), host_name("scripture/edition"), host_name("register/dataset"));
+    publish(&lite, "classes.jsonl", &[class_lines(&edition), class_lines(&verse), class_lines(&dataset)], T1)
+        .unwrap_or_else(|e| panic!("classes: {e}"));
+    let mut cls = class_cells(&verse, 50);
+    cls.extend(class_cells(&edition, 5));
+    cls.extend(class_cells(&dataset, 2));
+    cls.push(entry(&verse, "class", f("scripture", "verse", "text", "world", "static"), None));
+    cls.push(entry(&edition, "class", f("scripture", "edition", "provenance", "world", "static"), None));
+    cls.push(entry(&dataset, "class", f("registry", "dataset", "licence", "world", "on_change"), None));
+    publish(&lite, "cells.jsonl", &cls, T2).unwrap_or_else(|e| panic!("cells: {e}"));
+    build(&lite, T3);
+    let held = held_of(lite).await;
+    assert_eq!(held, PRODUCTION);
 }
