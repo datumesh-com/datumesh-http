@@ -13,16 +13,15 @@
 //! function in the store), so a formula that is not bound has no engine entry point in 0.5.0; this
 //! module is the scope the engine's whatif runs in, over the same store reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use datumesh_core::json::{self, Value};
 use datumesh_core::{Answer, ErrorCode, Fault, Receipt, Scalar, Slice, Type};
-use datumesh_formula::ast::{Ast, Node, ReadArg};
-use datumesh_formula::definition::Callees;
+use datumesh_formula::definition::{Callee, Callees};
 use datumesh_formula::eval::{self, Args, Binding, CellKey, PatternArg, SliceKey, Stop, Version, World};
-use datumesh_formula::{canonical_ast, check_descriptor, define, Code, Compiled, Env, Function, Signature};
+use datumesh_formula::{check_descriptor, define, Code, Compiled, Env, Function, Signature};
 use datumesh_store::Store;
 
 use crate::apikeys::Principal;
@@ -440,41 +439,6 @@ impl World for Run<'_> {
     }
 }
 
-/// The reads a body names (each cell read's function name, at any depth), once each.
-fn reads_of(ast: &Ast) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut todo = vec![ast.root()];
-    while let Some(id) = todo.pop() {
-        match ast.node(id) {
-            Node::Num { .. } | Node::Str(_) | Node::Bool(_) | Node::Date(_) | Node::Instant(_) => {}
-            Node::Var(_) | Node::Agg(_) | Node::Key(_) => {}
-            Node::Op { args, .. } => todo.extend(args.iter().copied()),
-            Node::If { cond, then, els } => todo.extend([*cond, *then, *els]),
-            Node::Let { value, body, .. } => todo.extend([*value, *body]),
-            Node::Read { fn_name, args, .. } => {
-                out.insert(fn_name.clone());
-                for (_, a) in args {
-                    match a {
-                        ReadArg::Expr(n) => todo.push(*n),
-                        ReadArg::Range(lo, hi) => todo.extend([*lo, *hi]),
-                        ReadArg::Open => {}
-                    }
-                }
-            }
-            Node::Dispatch { on, args, .. } => {
-                todo.push(*on);
-                todo.extend(args.iter().map(|(_, n)| *n));
-            }
-            Node::Call { args, named, .. } => {
-                todo.extend(args.iter().copied());
-                todo.extend(named.iter().map(|(_, n)| *n));
-            }
-            Node::Lambda { body, .. } => todo.push(*body),
-        }
-    }
-    out
-}
-
 /// `{"outcome": ..., "error": <code>}` with `status`: a code the core's error vocabulary does not
 /// carry (the formula's and the budget's), in the envelope of the other errors.
 fn raw(status: u16, outcome: &str, code: &str) -> Reply {
@@ -515,6 +479,20 @@ fn budget_reply() -> Reply {
     raw(503, "error", "E_EVAL_BUDGET")
 }
 
+/// The store as the formula define's callee source (formula's `Callees`): each name's binding as of the asof, its
+/// descriptor as stored. A class is not a callee here (as before): a body that reads one is refused by the define.
+struct StoreCallees<'a>(&'a (dyn Store + Send + Sync));
+
+impl Callees for StoreCallees<'_> {
+    fn callee(&self, name: &str, at: &str) -> Result<Option<Callee>, String> {
+        let store = self.0;
+        let Some(b) = store.resolve_binding(name, at).map_err(|e| e.to_string())? else { return Ok(None) };
+        let bytes = store.descriptor(&b.fn_hash).ok_or_else(|| format!("descriptor {} is not stored", b.fn_hash))?;
+        let descriptor = json::parse(&bytes).map_err(|e| e.to_string())?;
+        Ok(Some(Callee { fn_hash: b.fn_hash, start: b.tx, descriptor }))
+    }
+}
+
 impl Inner {
     /// `POST /x/calc` (Build 2 Part 3 addition): the value of the body's formula as of its asof (else
     /// the mesh's now), evaluated in a scope with its lineage. Nothing is written.
@@ -542,13 +520,11 @@ impl Inner {
             return too_large_reply();
         }
         let at = asof.unwrap_or_else(|| self.now());
-        let ast = match canonical_ast(formula, None) {
-            Ok(a) => a,
-            Err(e) => return raw(400, "bad_request", e.code.as_str()),
-        };
         let store: &(dyn Store + Send + Sync) = &*self.store;
-        // The body's callees as they are bound at the asof, then the body's own type (the first
-        // pass of a definition: the return type is what the body infers).
+        // The body is defined against the store as of the asof. Each callee the resolver refuses as unbound ("<name> has
+        // no binding") is read from the store as of the asof and added to the environment, then the body is defined
+        // again: so a positional read binds by the callee's declared order (SPEC 15.5), and a callee without one takes
+        // labels only. Each round adds one new name, so the loop ends.
         let placeholder = Value::Object(vec![
             ("args".into(), Value::Object(vec![])),
             ("order".into(), Value::Array(vec![])),
@@ -559,20 +535,28 @@ impl Inner {
             Err(_) => return envelope::error_reply(ErrorCode::EvalUnavailable),
         };
         let mut env = Env::new(&format!("{}/calc", self.config.host), sig);
-        for name in reads_of(&ast) {
-            match store.callee(&name, &at) {
-                Ok(Some(c)) => {
-                    if env.add_function(&name, &c.descriptor).is_err() {
-                        return envelope::error_reply(ErrorCode::InputUnavailable);
+        let callees = StoreCallees(store);
+        let compiled: Compiled = loop {
+            match define(formula, &env) {
+                Ok(c) => break c,
+                Err(e) => {
+                    let Some(fq) = e.detail.strip_suffix(" has no binding") else {
+                        return raw(400, "bad_request", e.code.as_str());
+                    };
+                    if env.signature_of(fq).is_some() {
+                        return raw(400, "bad_request", e.code.as_str());
+                    }
+                    match Callees::callee(&callees, fq, &at) {
+                        Ok(Some(c)) => {
+                            if env.add_function(fq, &c.descriptor).is_err() {
+                                return envelope::error_reply(ErrorCode::InputUnavailable);
+                            }
+                        }
+                        Ok(None) => return raw(400, "bad_request", e.code.as_str()),
+                        Err(_) => return envelope::error_reply(ErrorCode::InputUnavailable),
                     }
                 }
-                Ok(None) => {}
-                Err(_) => return envelope::error_reply(ErrorCode::InputUnavailable),
             }
-        }
-        let compiled: Compiled = match define(formula, &env) {
-            Ok(c) => c,
-            Err(e) => return raw(400, "bad_request", e.code.as_str()),
         };
         // The body as a function with no arguments and the inferred return type.
         let descriptor = Value::Object(vec![
@@ -604,7 +588,7 @@ impl Inner {
                     out.push(("unit".into(), s(u)));
                 }
                 out.push(("formula".into(), s(formula)));
-                out.push(("canonical".into(), s(&ast.print())));
+                out.push(("canonical".into(), s(&compiled.ast.print())));
                 out.push(("asof".into(), s(&at)));
                 let lineage = run
                     .lineage
