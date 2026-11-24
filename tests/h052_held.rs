@@ -1,0 +1,115 @@
+//! http 0.5.2: the held sentence on production's shape. Written first; FAIL until then.
+//!
+//! The 0.5.1 tests passed on fixtures that are not production's shape (the rehearsal of the restored copy read
+//! "scripture (provenance, texts)" and "earth (monthly rainfall)"). The shapes here are production's catalogue
+//! (`rehearsal-records-0.7/catalog/production-catalog.jsonl`):
+//!
+//! * scripture is two CLASSES, `scripture/edition` (measure provenance) and `scripture/verse` (measure text); the cells of a
+//!   class entry are the stored cells of its methods' functions, so the verse class's many cells put "texts" first;
+//! * rainfall is a STORED function of the publisher's own namespace, not a relay, with `source_name` "CHIRPS";
+//! * a relay is `<host>/relay/<domain>/...`.
+
+#![allow(dead_code)]
+
+#[path = "common/catjob.rs"]
+mod catjob;
+#[path = "common/catworld.rs"]
+mod catworld;
+mod common;
+#[path = "common/crworld.rs"]
+mod crworld;
+
+use catjob::*;
+use catworld::*;
+use common::lite::*;
+use common::pub031::{class_line, BEFORE};
+use crworld::*;
+use serde_json::{json, Value};
+
+const TAIL: &str = "Ask find in plain words for what you need.";
+
+fn f(d: &str, t: &str, m: &str, r: &str, q: &str) -> Value {
+    fac(&[d], &[t], &[m], &[r], &[q])
+}
+
+/// A class with the key `ref` and one stored method `text`, as an author writes it.
+fn class_lines(name: &str) -> String {
+    let sig = json!({"args": {"ref": {"type": "string", "valid": false}}, "order": ["ref"], "returns": "string"});
+    let d = json!({"keys": {"ref": {"key_normalisation": "none", "type": "string"}},
+        "methods": {"text": {"stored": sig}}, "order": ["ref"],
+        "steward": {"namespace": HOST, "process": format!("https://{HOST}/classes/change")}});
+    class_line(name, &d.to_string(), None)
+}
+
+/// `n` stored cells of the class's method `text`.
+fn class_cells(name: &str, n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| cell_line(&format!("{name}/text"), &[("ref", "string", &format!("r{i:03}"))], ("string", "x")))
+        .collect()
+}
+
+/// `n` relayed cells of a relay function (a date each).
+fn relay_cells(name: &str, n: usize) -> Vec<String> {
+    let rest = name.split("/relay/").nth(1).unwrap();
+    let domain = rest.split('/').next().unwrap();
+    (0..n)
+        .map(|i| {
+            json!({"cell": {"fn": name, "args": {"date": {"type": "date", "value": format!("2026-10-{:02}", i + 1)}}},
+                "licence": "CC0-1.0", "summary": "Synthetic test data.", "value": {"type": "number", "value": "1.5"},
+                "source": {"name": domain, "url": format!("https://{domain}/data.csv"), "retrieved": "2026-11-15T10:00:00.000000Z",
+                    "takeover": format!("https://{HOST}/takeover/{domain}")}})
+            .to_string()
+        })
+        .collect()
+}
+
+/// `n` stored cells of an own (not relayed) function of one date.
+fn own_cells(name: &str, n: usize) -> Vec<String> {
+    (0..n).map(|i| cell_line(name, &[("date", "date", &format!("2026-10-{:02}", i + 1))], ("number", "1"))).collect()
+}
+
+fn entry(name: &str, kind: &str, facets: Value, source_name: Option<&str>) -> String {
+    let mut extra = json!({"facets": facets});
+    if let Some(s) = source_name {
+        extra["source_name"] = json!(s);
+    }
+    catalog_line_of(name, kind, extra)
+}
+
+async fn held_of(lite: Lite) -> String {
+    let m = serve(lite, &[]).await;
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let r = until_built(&m, "/find?summary=1").await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v = r.json();
+        if let Some(h) = v["held"].as_str() {
+            return h.to_string();
+        }
+        assert!(std::time::Instant::now() < end, "no held in {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// The two scripture classes of production, with `verse` and `edition` stored cells under their methods.
+fn scripture(lite: &Lite, verse: usize, edition: usize) {
+    let (v, e) = (host_name("scripture/verse"), host_name("scripture/edition"));
+    publish(lite, "scripture-classes.jsonl", &[class_lines(&e), class_lines(&v)], BEFORE)
+        .unwrap_or_else(|e| panic!("classes: {e}"));
+    let mut lines = class_cells(&v, verse);
+    lines.extend(class_cells(&e, edition));
+    lines.push(entry(&v, "class", f("scripture", "verse", "text", "world", "static"), None));
+    lines.push(entry(&e, "class", f("scripture", "edition", "provenance", "world", "static"), None));
+    publish(lite, "scripture.jsonl", &lines, NOW).unwrap_or_else(|e| panic!("scripture: {e}"));
+}
+
+/// Scripture as two classes: the verse class holds 50 cells under its method, the edition class 5, so the text measure has
+/// the cells and reads first: "texts, provenance" (by name alone it is the other way round).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h52_scripture_as_two_classes_reads_texts_before_provenance() {
+    let lite = Lite::new("h52-scripture");
+    scripture(&lite, 50, 5);
+    build(&lite, T3);
+    let held = held_of(lite).await;
+    assert_eq!(held, format!("This mesh holds scripture (texts, provenance). {TAIL}"));
+}
