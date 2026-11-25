@@ -341,3 +341,74 @@ async fn a_long_list_of_tests_is_bounded() {
     assert!(tests.contains("Showing the first 100 of 126 tests"), "{tests}");
     assert_eq!(tests.matches("expects").count(), 100, "{tests}");
 }
+
+// ---- the relay's stand-in sentence (CONTRACT-site-round3 B2) -----------------------------------------------------------
+
+const RELAYED: &str = "mesh-test.datumesh.com/scratch_b4/relay/ecb_rate";
+const NOT_RELAYED: &str = "mesh-test.datumesh.com/scratch_b4/own/level";
+const SOURCE: &str = "ecb.europa.eu";
+const TAKEOVER: &str = "https://mesh-test.datumesh.com/takeover/ecb.europa.eu";
+
+fn relay_lines() -> Vec<String> {
+    let mut cell: Value = serde_json::from_str(&site_cell(RELAYED, "N", "1.5")).unwrap();
+    cell["source"] = json!({"name": SOURCE, "url": format!("https://{SOURCE}/data.csv"),
+        "retrieved": "2026-11-15T10:00:00.000000Z", "takeover": TAKEOVER});
+    vec![
+        function_line(RELAYED, &reading_sig(), None),
+        cell.to_string(),
+        catalog_line(RELAYED, "function", "Rate", "A relayed rate.", json!({"site": "the site"}), json!({})),
+        function_line(NOT_RELAYED, &reading_sig(), None),
+        site_cell(NOT_RELAYED, "N", "7"),
+        catalog_line(NOT_RELAYED, "function", "Level", "A stored level.", json!({"site": "the site"}), json!({})),
+    ]
+}
+
+/// The stand-in sentence as markup: the contract's words with `{source}` filled and escaped (`'` as an entity), and the
+/// takeover page linked by the word "how". Any of the usual entities for the apostrophe is accepted.
+fn stand_in_markup() -> Vec<String> {
+    ["&#39;", "&#x27;", "&apos;", "&#039;"]
+        .iter()
+        .map(|apos| {
+            format!(
+                "Datumesh publishes this as a stand-in for {SOURCE}; {SOURCE}{apos}s own publication will rank above it \
+                 (<a href=\"{TAKEOVER}\">how</a>)."
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b2_a_relayed_function_page_says_it_is_a_stand_in() {
+    let m = serve_lite("fp-standin", &relay_lines(), None, |_| {}).await;
+    let html = html_of(&get(&m, &path(RELAYED), &[]).await);
+    let lineage = section(&html, "lineage");
+    let folded = norm(&lineage);
+    assert!(
+        stand_in_markup().iter().any(|s| folded.contains(s.as_str())),
+        "the stand-in sentence, exactly, with its link:\n want: {}\n lineage: {lineage}",
+        stand_in_markup()[0]
+    );
+    // the decoded sentence, once, in the lineage section where the source is named
+    let sentence = format!(
+        "Datumesh publishes this as a stand-in for {SOURCE}; {SOURCE}'s own publication will rank above it (how)."
+    );
+    let text = norm(&plain(&lineage)).replace("( how )", "(how)").replace(" .", ".");
+    assert_eq!(text.matches(&sentence).count(), 1, "{sentence}: {text}");
+    // the old sentence is gone, everywhere on the page
+    assert!(!html.contains("The source can take over publishing these values"), "{html}");
+    assert!(!html.to_lowercase().contains("take over publishing"), "{html}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b2_a_function_that_is_not_relayed_has_no_stand_in_sentence() {
+    let m = serve_lite("fp-nostandin", &relay_lines(), None, |_| {}).await;
+    let html = html_of(&get(&m, &path(NOT_RELAYED), &[]).await);
+    for no in ["stand-in", "Datumesh publishes this as", "will rank above it", "take over", "/takeover/"] {
+        assert!(!html.contains(no), "{no} on a function that is not relayed: {html}");
+    }
+    // nor on the computed function of the main world
+    let c = c();
+    let m = served("fp-nostandin-computed").await;
+    let html = html_of(&get(&m, &path(&c.per_unit), &[]).await);
+    assert!(!html.contains("stand-in") && !html.contains("will rank above it"), "{html}");
+}
