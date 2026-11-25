@@ -138,7 +138,9 @@ async fn after_the_first_build_the_page_lists_the_relays_and_the_policy_is_uncha
     }
     let mut keys: Vec<String> = ecb.json().as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, ["contact", "domain", "functions", "host", "policy", "steps"]);
+    // the background build serves the takeover page's own shape (takeover_page.rs; `stopping` since site round 3, B3):
+    // "the policy is unchanged" means the build does not change what the page says, and repeat answers are identical
+    assert_eq!(keys, ["contact", "domain", "functions", "host", "policy", "steps", "stopping"]);
     let html = plain(&get(&m, &format!("/takeover/{ECB}"), &[]).await.text());
     assert!(html.contains(&format!("This mesh ({HOST}) relays these values from {ECB} unchanged")), "{html}");
     assert!(html.contains(&format!("{ECB} remains their source")), "{html}");
