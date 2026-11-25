@@ -1,7 +1,9 @@
 #!/bin/sh
 # The 15-minute resource check (cron, deploy/install_cron.sh): disk use of / (threshold 70%),
 # memory in use (80%), the Postgres data of the test mesh (50 GB), and egress this month
-# (200 GB). Writes $DATUMESH_DIR/status/resources.json and a one-line resources.txt, appends
+# (200 GB). The disk is also reported without the build reserve (the preallocated build-area
+# image, $DATUMESH_BUILD_RESERVE, default /srv/datumesh-build.img; 0 when absent): the threshold
+# still applies to the plain figure. Writes $DATUMESH_DIR/status/resources.json and a one-line resources.txt, appends
 # the line to stdout (the cron log), and exits 1 when any threshold is exceeded.
 #
 # Egress is the VM's whole outbound traffic (the default route's interface, tx_bytes), so it
@@ -15,6 +17,9 @@ mkdir -p "$status"
 now="$(date -u +%FT%TZ)"
 month="$(date -u +%Y-%m)"
 disk_pct="$(df -P / | awk 'NR==2 {gsub("%", "", $5); print $5}')"
+reserve="${DATUMESH_BUILD_RESERVE:-/srv/datumesh-build.img}"
+reserve_kb=0; [ -f "$reserve" ] && reserve_kb=$(( $(stat -c '%b * %B' "$reserve") / 1024 ))
+disk_ex_pct="$(df -Pk / | awk -v r="$reserve_kb" 'NR==2 {u=$3-r; if (u<0) u=0; printf "%d", (u*100 + $2 - 1) / $2}')"
 mem_pct="$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {printf "%d", (t-a)*100/t}' /proc/meminfo)"
 pg_bytes="$(docker exec datumesh-mesh-test-postgres-1 psql -U postgres -tAc 'select sum(pg_database_size(datname)) from pg_database' 2>/dev/null | tr -d ' ')"
 pg_bytes="${pg_bytes:-0}"
@@ -35,13 +40,13 @@ ok=true; [ -n "$over" ] && ok=false
 gb() { awk -v b="$1" 'BEGIN {printf "%.2f", b / 1e9}'; }
 cat > "$status/resources.json.new" <<JSON
 {"checked": "$now", "ok": $ok, "over": "$(echo $over)",
- "disk": {"used_percent": $disk_pct, "threshold_percent": 70},
+ "disk": {"used_percent": $disk_pct, "threshold_percent": 70, "used_percent_without_build_reserve": $disk_ex_pct, "build_reserve_bytes": $((reserve_kb * 1024))},
  "memory": {"used_percent": $mem_pct, "threshold_percent": 80},
  "postgres": {"bytes": $pg_bytes, "threshold_bytes": 50000000000},
  "egress": {"month": "$smonth", "interface": "$iface", "bytes": $stotal, "threshold_bytes": 200000000000}}
 JSON
 mv "$status/resources.json.new" "$status/resources.json"
-line="$now $( $ok && echo OK || echo "OVER:$over"): disk ${disk_pct}%/70%, memory ${mem_pct}%/80%, postgres $(gb "$pg_bytes") GB/50 GB, egress $smonth $(gb "$stotal") GB/200 GB"
+line="$now $( $ok && echo OK || echo "OVER:$over"): disk ${disk_pct}%/70% (${disk_ex_pct}% without the build reserve), memory ${mem_pct}%/80%, postgres $(gb "$pg_bytes") GB/50 GB, egress $smonth $(gb "$stotal") GB/200 GB"
 echo "$line" > "$status/resources.txt"
 echo "$line"
 $ok
