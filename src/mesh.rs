@@ -451,24 +451,41 @@ pub(crate) struct Memo<'a> {
     seen: std::borrow::Cow<'a, Seen>,
 }
 
-/// A binding a batch looks up: the lookup's result once one succeeded, and the lock held
+/// A binding or class a batch looks up: the lookup's result once one succeeded, and the lock held
 /// during a lookup, so the batch's chunks, which start together and ask for the same names,
 /// make one store round trip per name and asof, not one each.
-#[derive(Default)]
-struct SeenEntry {
-    found: std::sync::OnceLock<Option<Arc<Bound>>>,
+struct SeenEntry<T> {
+    found: std::sync::OnceLock<Option<Arc<T>>>,
     lookup: Mutex<()>,
 }
 
-/// The bindings a batch has looked up (shared by its chunks), by name, then asof.
-#[derive(Default)]
-pub(crate) struct Seen(RwLock<HashMap<String, SeenAsofs>>);
+impl<T> Default for SeenEntry<T> {
+    fn default() -> Self {
+        SeenEntry { found: std::sync::OnceLock::new(), lookup: Mutex::new(()) }
+    }
+}
 
-/// A name's entries in [`Seen`], by asof.
-type SeenAsofs = Vec<(String, Arc<SeenEntry>)>;
+/// The lookups a batch has made of one kind (bindings or classes), by name, then asof.
+pub(crate) struct SeenMap<T>(RwLock<HashMap<String, SeenAsofs<T>>>);
 
-impl Clone for Seen {
-    fn clone(&self) -> Seen {
+/// A name's entries in a [`SeenMap`], by asof.
+type SeenAsofs<T> = Vec<(String, Arc<SeenEntry<T>>)>;
+
+/// The lookups a batch has made (shared by its chunks): bindings and classes.
+#[derive(Default, Clone)]
+pub(crate) struct Seen {
+    bindings: SeenMap<Bound>,
+    classes: SeenMap<call::BoundClass>,
+}
+
+impl<T> Default for SeenMap<T> {
+    fn default() -> Self {
+        SeenMap(RwLock::new(HashMap::new()))
+    }
+}
+
+impl<T> Clone for SeenMap<T> {
+    fn clone(&self) -> Self {
         let m = self.0.read().unwrap_or_else(|p| p.into_inner());
         let copy = m
             .iter()
@@ -480,21 +497,21 @@ impl Clone for Seen {
                 (name.clone(), v)
             })
             .collect();
-        Seen(RwLock::new(copy))
+        SeenMap(RwLock::new(copy))
     }
 }
 
-/// What [`Seen`] has of a name as of an asof.
-enum Held {
-    Found(Option<Arc<Bound>>),
-    Entry(Arc<SeenEntry>),
+/// What [`SeenMap`] has of a name as of an asof.
+enum Held<T> {
+    Found(Option<Arc<T>>),
+    Entry(Arc<SeenEntry<T>>),
     Full,
 }
 
-impl Seen {
-    /// The binding of `fn_name` as of `asof` if found, else its entry (made if there is room:
+impl<T> SeenMap<T> {
+    /// The result for `fn_name` as of `asof` if found, else its entry (made if there is room:
     /// 64 asofs per name).
-    fn held(&self, fn_name: &str, asof: &str) -> Held {
+    fn held(&self, fn_name: &str, asof: &str) -> Held<T> {
         if let Some(v) = self.0.read().unwrap_or_else(|p| p.into_inner()).get(fn_name) {
             if let Some((_, e)) = v.iter().find(|(a, _)| a == asof) {
                 return match e.found.get() {
@@ -516,15 +533,15 @@ impl Seen {
         Held::Entry(e)
     }
 
-    /// The binding of `fn_name` as of `asof`: as found before, else looked up by `look`, at
+    /// The result for `fn_name` as of `asof`: as found before, else looked up by `look`, at
     /// most one lookup at a time per name and asof (the others wait for its result). A failed
     /// lookup is not kept: the next request looks the name up again.
-    pub(crate) fn lookup(
+    fn lookup(
         &self,
         fn_name: &str,
         asof: &str,
-        look: impl FnOnce() -> Result<Option<Arc<Bound>>, ErrorCode>,
-    ) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        look: impl FnOnce() -> Result<Option<Arc<T>>, ErrorCode>,
+    ) -> Result<Option<Arc<T>>, ErrorCode> {
         let e = match self.held(fn_name, asof) {
             Held::Found(b) => return Ok(b),
             Held::Full => return look(),
@@ -537,6 +554,28 @@ impl Seen {
         let b = look()?;
         let _ = e.found.set(b.clone());
         Ok(b)
+    }
+}
+
+impl Seen {
+    /// The binding of `fn_name` as of `asof`: see [`SeenMap`].
+    pub(crate) fn lookup(
+        &self,
+        fn_name: &str,
+        asof: &str,
+        look: impl FnOnce() -> Result<Option<Arc<Bound>>, ErrorCode>,
+    ) -> Result<Option<Arc<Bound>>, ErrorCode> {
+        self.bindings.lookup(fn_name, asof, look)
+    }
+
+    /// The class `name` as of `asof`: see [`SeenMap`].
+    fn class_lookup(
+        &self,
+        name: &str,
+        asof: &str,
+        look: impl FnOnce() -> Result<Option<Arc<call::BoundClass>>, ErrorCode>,
+    ) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
+        self.classes.lookup(name, asof, look)
     }
 }
 
@@ -560,7 +599,7 @@ impl Bindings for Memo<'_> {
     }
 
     fn class(&self, name: &str, asof: &str) -> Result<Option<Arc<call::BoundClass>>, ErrorCode> {
-        Bindings::class(self.inner, name, asof)
+        self.seen.class_lookup(name, asof, || Bindings::class(self.inner, name, asof))
     }
 
     fn aliases_tx(&self) -> Option<String> {

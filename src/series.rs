@@ -647,7 +647,7 @@ fn dataset_ld(v: &View) -> Value {
     obj(members)
 }
 
-const STYLE: &str = "body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff}main{max-width:60rem;margin:0 auto}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid #d2d2d7;padding:2px 8px;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}code,pre{font-family:ui-monospace,monospace;font-size:14px}pre{background:#f5f5f7;padding:12px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere}nav a{margin-right:1rem}section{margin:1.25rem 0}h1{font-size:1.5rem;margin:0.5rem 0}h2{font-size:1.1rem}";
+const STYLE: &str = "body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff;overflow-wrap:anywhere}main{max-width:60rem;margin:0 auto}table{border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid #d2d2d7;padding:2px 8px;text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}code,pre{font-family:ui-monospace,monospace;font-size:14px}pre{background:#f5f5f7;padding:12px;box-sizing:border-box;max-width:100%;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere}nav a{margin-right:1rem}section{margin:1.25rem 0}h1{font-size:1.5rem;margin:0.5rem 0}h2{font-size:1.1rem}";
 
 /// The HTML of a view (no script but the JSON-LD; every text escaped).
 fn render(v: &View) -> String {

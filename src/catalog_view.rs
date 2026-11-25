@@ -332,7 +332,7 @@ fn html(title: &str, body: &str) -> Vec<u8> {
     format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><main>{body}</main></body></html>\n",
         crate::fnpage::esc(title),
-        "body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff}main{max-width:60rem;margin:0 auto}li{margin:0.25rem 0}h1{font-size:1.5rem}"
+        "body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff;overflow-wrap:anywhere}main{max-width:60rem;margin:0 auto}li{margin:0.25rem 0}h1{font-size:1.5rem}pre{overflow-x:auto;max-width:100%;box-sizing:border-box}"
     )
     .into_bytes()
 }

@@ -398,7 +398,7 @@ fn render(d: &Value, unnamed: bool) -> String {
     let mut h = String::new();
     h.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
     h.push_str(&format!("<title>{} | {}</title>\n", esc(label), esc(name)));
-    h.push_str("<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff}main{max-width:52rem;margin:0 auto}code,pre{font-family:ui-monospace,monospace;font-size:14px;overflow-x:auto}section{border-top:1px solid #d2d2d7;padding:12px 0}h1{font-size:1.5rem;margin:0.5rem 0}h2{font-size:1.1rem;margin:0 0 .5rem}</style>\n</head>\n<body>\n<main>\n");
+    h.push_str("<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff;overflow-wrap:anywhere}main{max-width:52rem;margin:0 auto}code,pre{font-family:ui-monospace,monospace;font-size:14px;overflow-x:auto}pre{overflow-x:auto;max-width:100%;box-sizing:border-box}section{border-top:1px solid #d2d2d7;padding:12px 0}h1{font-size:1.5rem;margin:0.5rem 0}h2{font-size:1.1rem;margin:0 0 .5rem}</style>\n</head>\n<body>\n<main>\n");
     h.push_str(&format!("<header><h1>{}</h1><p><code>{}</code></p></header>\n", esc(label), esc(name)));
 
     // description
