@@ -327,3 +327,131 @@ async fn chunks_write_the_batch() {
         assert!(m.lines().any(|l| l == line), "{line} in\n{m}");
     }
 }
+
+/// The read probe of `common/h0410.rs` on the class tables, `class_bindings` and `classes`: every row of them a statement
+/// visits draws one number from `probe_classes`. A class lookup (`Inner::class_binding`: the binding as of the asof, then
+/// the class's descriptor) visits rows of both.
+///
+/// The seam: none is added to `src`. `datumesh_store::Store` is sealed, so no counting wrapper can stand in for the store
+/// (see the comment at the top of `common/h0410.rs`); the mesh is counted in the database, as for `name_bindings` above.
+struct ClassProbe {
+    db_url: String,
+}
+
+impl ClassProbe {
+    fn arm(fx: &Fx) -> ClassProbe {
+        let p = fx.probe();
+        let (url, role) = (p.db_url.clone(), p.role.clone());
+        let u = url.clone();
+        on_thread(move || {
+            let mut c = u.parse::<PgConfig>().unwrap().connect(NoTls).unwrap();
+            c.batch_execute(&format!(
+                "CREATE SEQUENCE IF NOT EXISTS probe_classes;\
+                 GRANT USAGE, SELECT, UPDATE ON SEQUENCE probe_classes TO \"{role}\""
+            ))
+            .unwrap();
+            for t in ["class_bindings", "classes"] {
+                c.batch_execute(&format!(
+                    "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;\
+                     CREATE POLICY probe_sel ON {t} FOR SELECT USING (nextval('probe_classes') > 0);\
+                     CREATE POLICY probe_ins ON {t} FOR INSERT WITH CHECK (true);\
+                     CREATE POLICY probe_upd ON {t} FOR UPDATE USING (true) WITH CHECK (true);\
+                     CREATE POLICY probe_del ON {t} FOR DELETE USING (true)"
+                ))
+                .unwrap_or_else(|e| panic!("arming {t}: {e}"));
+            }
+        });
+        ClassProbe { db_url: url }
+    }
+
+    /// Rows of `class_bindings` and `classes` visited since [`ClassProbe::arm`].
+    fn reads(&self) -> u64 {
+        let url = self.db_url.clone();
+        on_thread(move || {
+            let mut c = url.parse::<PgConfig>().unwrap().connect(NoTls).unwrap();
+            let row =
+                c.query_one("SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM probe_classes", &[]).unwrap();
+            row.get::<_, i64>(0) as u64
+        })
+    }
+}
+
+/// Item 16 of the guard patch (CONTRACT-guard-patch B): the class lookup is cached for the batch, as the name lookup is
+/// (`a_batch_looks_each_binding_up_once`, a unit test in `src/mesh.rs`): one store lookup per (class, asof) per batch.
+///
+/// A batch of 400 method calls, `C(base: X<i>, quote: Q).note()`, over two classes and two asofs (the mesh's now, and
+/// an `?asof=`), so 4 (class, asof) pairs; the batch's chunks run at once (one per core, 64 requests at least each), so
+/// the lookups are also shared between chunks. Counted, not timed (the class probe above): each of the 400 single
+/// requests looks its class up in the store; the batch reads no more class rows than 4 single requests do, and at
+/// least one row per pair (the cache is the batch's: a new batch looks the classes up again). Fails while
+/// `Memo::class` passes every call to the store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_looks_each_class_up_once() {
+    use common::pub031::T2;
+    use h0410::{cells_of, define_class, Kind};
+
+    const CA: &str = "mesh-test.datumesh.com/batch/cls/alpha";
+    const CB: &str = "mesh-test.datumesh.com/batch/cls/beta";
+    const ASOF: &str = "2026-11-15T13:00:00.000000Z";
+    const OBJECTS: usize = 100;
+    const PAIRS: u64 = 4;
+
+    let fx = Fx::pg("batch-classes");
+    let a = define_class(&fx, CA, &[("note", Kind::Note)]);
+    let b = define_class(&fx, CB, &[("note", Kind::Note)]);
+    let mut cells = cells_of(&a, "note", Kind::Note, "X", 0..OBJECTS);
+    cells.extend(cells_of(&b, "note", Kind::Note, "X", 0..OBJECTS));
+    fx.publish(&cells, T2);
+
+    fx.probe().arm();
+    let classes = ClassProbe::arm(&fx);
+    let mut vars = held(&[]);
+    vars.push(("DATUMESH_BUDGET_MS", "60000"));
+    let w = fx.serve(config(&vars, &[])).await;
+    let mut reqs = Vec::new();
+    for i in 0..OBJECTS {
+        for c in [CA, CB] {
+            reqs.push(format!("{c}(base: X{i:05}, quote: Q).note()"));
+            reqs.push(format!("{c}(base: X{i:05}, quote: Q).note()?asof={ASOF}"));
+        }
+    }
+    let n = reqs.len() as u64;
+    let body = serde_json::Value::Array(reqs.iter().map(|r| serde_json::json!(r)).collect());
+    let batch_ok = |r: &h0410::Rep| {
+        assert_eq!(r.status, 200, "{}", r.text());
+        let items = r.json();
+        let items = items.as_array().unwrap();
+        assert_eq!(items.len(), reqs.len());
+        assert!(items.iter().all(|e| e["envelope"]["outcome"] == "ok"), "{}", r.text());
+    };
+    let single = |r: &str| format!("/cell/{}", common::world::call_path(r).replace("%3F", "?"));
+    // Warm, both ways.
+    batch_ok(&w.post("/cells", &body).await);
+    for r in &reqs {
+        let one = w.get(&single(r)).await;
+        assert_eq!(one.status, 200, "{r}: {}", one.text());
+    }
+
+    // The batch.
+    let c0 = classes.reads();
+    batch_ok(&w.post("/cells", &body).await);
+    let batch_rows = classes.reads() - c0;
+
+    // The single requests it replaces.
+    let c1 = classes.reads();
+    for r in &reqs {
+        let one = w.get(&single(r)).await;
+        assert_eq!(one.status, 200, "{r}: {}", one.text());
+    }
+    let single_rows = classes.reads() - c1;
+
+    let out = format!(
+        "batch classes: {n} method calls over {PAIRS} (class, asof) pairs; class rows read by the batch {batch_rows}, \
+         by the {n} single requests {single_rows}\n"
+    );
+    std::fs::write(out_dir().join("batch-classes.txt"), &out).unwrap();
+    eprint!("{out}");
+    assert!(single_rows >= n, "each single request looks its class up: {out}");
+    assert!(batch_rows >= PAIRS, "the batch looks each (class, asof) up in the store: {out}");
+    assert!(batch_rows * n <= single_rows * PAIRS, "the batch looks each (class, asof) up once: {out}");
+}
