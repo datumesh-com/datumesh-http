@@ -1,12 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The batch claim carries no number.** A batch costs one round trip and one name lookup for any number of cells. The README and the 0.5.4 entry no longer quote a ratio or a fixture timing: a ratio measured on fixture cells did not hold on production-shaped cells (45-55 single requests per 1,000-cell batch). `batch::thousand_cells` stays as a guard on fixture cells. Text only.
+
 ## 0.5.4
 
 The next patch's http changes (CONTRACT-next-patch items 15, 16 and 33); requires datumesh-formula 0.6.2 (`read_names`). Item 17 is a test change (`batch::thousand_cells` made robust, its claim stated as the user decided it); item 33 (`/x/calc` result types, added by the user) is a code change. Each change, and what it costs:
 
 - **The function page shows each test's inputs (item 15).** A case with `inputs` reads them beside its call: "with <slice call> given as empty" for an empty members map, "with N members given" for a members map of N, "with <call> given" for any other input. Two cases with the same call read as two lines. `?format=json` carries each case's `inputs` as the test gave them, and omits the key for a case without. Cost: the page and the JSON cases of tests with inputs are longer.
 - **`/x/calc` returns text, date, instant and boolean results (item 33).** The body is defined against each result type in turn (a number first, as before), and the first the body satisfies gives `type`; `value` is its lexical form, `kind` is `calculation`. Before, any non-number result was refused `E_FORMULA_RETURN_TYPE`. Numbers are unchanged. Cost: a body that was refused for its result type now answers 200.
-- **`batch::thousand_cells` states the batch claim the user decided (item 17).** A batch costs one round trip and one name lookup for any number of cells, and on loopback 1,000 cells take less than 50 single requests (the bound was ten). Test change only; no code change.
+- **`batch::thousand_cells` made robust (item 17).** The claim is that a batch costs one round trip and one name lookup for any number of cells. The timing test is a guard on fixture cells. Test change only; no code change.
 - **`/x/calc` builds its callee environment in one pass (item 16).** The names the body reads come from datumesh-formula 0.6.2's `read_names`; each name's descriptor as of the asof is looked up once, in place of the loop that matched the "has no binding" message. Behaviour is unchanged (`tests/h054_calc_unbound.rs`). Cost: none.
 
 ## 0.5.3
