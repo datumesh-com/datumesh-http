@@ -615,6 +615,38 @@ async fn c5_the_rule_is_a_page_and_a_cell_with_the_same_words() {
     }
 }
 
+/// The level one text says what the code does (CONTRACT-site-round3 B1): the publisher's host is the source's domain or a
+/// sub-domain of it; a parent domain does not count, and no public suffix list is used. The same in the cell and the page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b1_the_rule_says_sub_domain_and_a_parent_domain_does_not_count() {
+    let lite = vocab("b1-rule");
+    build(&lite, T3);
+    let m = serve(lite, &[]).await;
+    until_built(&m, "/catalog/rule").await;
+    let a = cell(&m, &format!("{}()", rule_fn())).await;
+    assert_eq!((a.status, a.outcome()), (200, "ok"), "{}", a.text);
+    let lexical = a.value().unwrap_or_else(|| panic!("no value: {}", a.text)).to_string();
+    let sha = lexical.split(':').next().unwrap().to_string();
+    let (status, bytes) = m.raw(&format!("/blob/{sha}")).await;
+    assert_eq!(status, 200);
+    let blob = String::from_utf8(bytes).unwrap();
+    let p = page(&m, "/catalog/rule").await;
+    assert_eq!(p.status, 200, "{}", p.text());
+    for (what, text) in [("cell", blob), ("page", plain(&p.text()))] {
+        let t = words(&text.to_lowercase()).join(" ");
+        assert!(t.contains("sub-domain"), "{what}: level one names the sub-domain: {t}");
+        assert!(!t.contains("or one of its parent domains"), "{what}: a parent domain is offered as level one: {t}");
+        assert!(
+            t.contains("a parent domain does not count"),
+            "{what}: the text does not say a parent domain does not count: {t}"
+        );
+        assert!(
+            t.contains("no public suffix list"),
+            "{what}: the text does not say no public suffix list is used: {t}"
+        );
+    }
+}
+
 // ---- the exception does not outlive the run ----------------------------------------------------------------------------
 
 /// After the job (which writes under `<host>/catalog`), `publish-stored` still refuses a name there, a method of the job's own
