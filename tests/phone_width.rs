@@ -89,12 +89,26 @@ fn fn_lines() -> Vec<String> {
             "args": {"site": "the measuring site", "units": "units to divide by"}, "examples": ex, "dictionary": {}})
         .to_string(),
     );
-    v.push(catalog_line(&c.reading, "function", "Reading", "The raw reading at a site.", json!({"site": "the site"}), json!({})));
+    v.push(catalog_line(
+        &c.reading,
+        "function",
+        "Reading",
+        "The raw reading at a site.",
+        json!({"site": "the site"}),
+        json!({}),
+    ));
     v.push(function_line(RELAY, &calculus::reading_sig(), None));
     let mut cell: Value = serde_json::from_str(&calculus::site_cell(RELAY, "N", "1.0892")).unwrap();
     cell["source"] = relay_source();
     v.push(cell.to_string());
-    v.push(catalog_line(RELAY, "function", "Euro reference rate", "A relayed rate.", json!({"site": "the site"}), json!({})));
+    v.push(catalog_line(
+        RELAY,
+        "function",
+        "Euro reference rate",
+        "A relayed rate.",
+        json!({"site": "the site"}),
+        json!({}),
+    ));
     v
 }
 
@@ -273,12 +287,13 @@ fn rules(css: &str) -> Vec<Rule> {
                     let decls = buf
                         .split(';')
                         .filter_map(|d| d.split_once(':'))
-                        .map(|(p, v)| {
-                            (p.trim().to_lowercase(), v.replace("!important", "").trim().to_lowercase())
-                        })
+                        .map(|(p, v)| (p.trim().to_lowercase(), v.replace("!important", "").trim().to_lowercase()))
                         .collect();
                     out.push(Rule {
-                        selectors: sel.split(',').map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()).collect(),
+                        selectors: sel
+                            .split(',')
+                            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase())
+                            .collect(),
                         decls,
                     });
                 }
@@ -298,7 +313,7 @@ fn decls_for<'a>(rs: &'a [Rule], sel: &str) -> Vec<&'a (String, String)> {
 
 /// The last value given to `prop` by the rules for `sel`.
 fn last<'a>(rs: &'a [Rule], sel: &str, prop: &str) -> Option<&'a str> {
-    decls_for(rs, sel).into_iter().filter(|(p, _)| p == prop).last().map(|(_, v)| v.as_str())
+    decls_for(rs, sel).into_iter().rfind(|(p, _)| p == prop).map(|(_, v)| v.as_str())
 }
 
 /// What is wrong with the page's CSS, by the rules of this file's header (empty: nothing).
@@ -360,7 +375,8 @@ fn the_css_reader_reads_rules() {
     // today's function page style: every rule but the pre box's overflow-x fails
     let today = "<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff}main{max-width:52rem;margin:0 auto}code,pre{font-family:ui-monospace,monospace;font-size:14px;overflow-x:auto}</style>";
     assert_eq!(css_faults("/fn/x", today).len(), 2, "{:?}", css_faults("/fn/x", today));
-    let nowrap = "<style>body{overflow-wrap:anywhere}code{white-space:nowrap}pre{overflow-x:auto;max-width:100%}</style>";
+    let nowrap =
+        "<style>body{overflow-wrap:anywhere}code{white-space:nowrap}pre{overflow-x:auto;max-width:100%}</style>";
     assert_eq!(css_faults("/fn/x", nowrap).len(), 1);
 }
 
@@ -466,7 +482,9 @@ async fn phone_pages_have_no_horizontal_scroll() {
     }
     // Every page of the three worlds, fetched and probed: (the page's mesh path, its HTML).
     let mut fetched: Vec<(String, String)> = Vec::new();
-    for (m, paths) in [fn_world("p2-br-fn").await, series_world("p2-br-series").await, catalogue_world("p2-br-cat").await] {
+    for (m, paths) in
+        [fn_world("p2-br-fn").await, series_world("p2-br-series").await, catalogue_world("p2-br-cat").await]
+    {
         for p in paths {
             let h = html(&m, &p).await;
             fetched.push((p, probed(&h)));
@@ -510,11 +528,8 @@ async fn phone_pages_have_no_horizontal_scroll() {
             continue;
         };
         // the probe's own script holds `'PROBE'+...`: the measurement is the `PROBE{...}EBORP` the script wrote
-        let Some(probe) = block
-            .split("PROBE{")
-            .nth(1)
-            .and_then(|r| r.split("}EBORP").next())
-            .map(|j| format!("{{{j}}}"))
+        let Some(probe) =
+            block.split("PROBE{").nth(1).and_then(|r| r.split("}EBORP").next()).map(|j| format!("{{{j}}}"))
         else {
             continue;
         };
