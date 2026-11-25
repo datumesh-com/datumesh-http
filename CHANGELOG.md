@@ -4,6 +4,8 @@
 
 - **The batch claim carries no number.** A batch costs one round trip and one name lookup for any number of cells. The README and the 0.5.4 entry no longer quote a ratio or a fixture timing: the ratio was measured on fixture cells and does not carry to production-shaped cells. `batch::thousand_cells` stays as a guard on fixture cells. Text only.
 
+- **The takeover page says how the source's own name comes first (site round 3, B1 to B3).** The level one text of `/catalog/rule` names the sub-domain of the source, not a parent domain: a parent domain does not count, and no public suffix list is used (the code is unchanged). A relayed function's page says it is a stand-in for its source, with a link "how" to the takeover page, in place of "The source can take over publishing these values". The takeover page is rewritten: a new title and opening, the sections "How the source's own name comes first", "Stopping the relay" (the configured contact, if any, is shown there) and "Serving your own mesh". The rebind sentence and "stops taking new stored cells" are gone. The JSON form keeps `policy` and `steps` with the same sentences, and adds `stopping`; `steps` are now the four short steps of the Publish page, not two. Cost: the takeover page's text and JSON steps change; nothing is stored or signed differently.
+
 ## 0.5.4
 
 The next patch's http changes (CONTRACT-next-patch items 15, 16 and 33); requires datumesh-formula 0.6.2 (`read_names`). Item 17 is a test change (`batch::thousand_cells` made robust, its claim stated as the user decided it); item 33 (`/x/calc` result types, added by the user) is a code change. Each change, and what it costs:

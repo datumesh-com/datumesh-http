@@ -55,8 +55,8 @@ use crate::publish::{publish_job, PublishError, PublishOptions};
 
 /// The rule of the catalogue (C5, R5, R7): the text of the page `/catalog/rule` and of the blob `catalog/rule()`.
 pub(crate) const RULE: &str = "How the catalogue ranks the sources of a subject. \
-A source is level one when it is published under the domain of the data: its publisher host is that domain or one of its parent \
-domains. A source is level two when it is a relay of the data, a name under the relay path of the domain of the data and trusted \
+A source is level one when it is published under the domain of the data: its publisher host is that domain or a sub-domain of it. A parent \
+domain does not count, and no public suffix list is used. A source is level two when it is a relay of the data, a name under the relay path of the domain of the data and trusted \
 as relayed, or a view built on such a relay: a function or a class whose inputs read a relay, directly or through other views. \
 Every other source is level three. Within a level, a source whose class is a subclass of the class of another source, at any depth, \
 ranks above that parent class. Then the source whose name was first bound comes first, and a tie on the time of the first binding \

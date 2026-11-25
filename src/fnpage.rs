@@ -556,8 +556,9 @@ fn render(d: &Value, unnamed: bool) -> String {
         ));
         if let Some(take) = get(src, "takeover").as_str() {
             h.push_str(&format!(
-                "<p>The source can take over publishing these values: <a href=\"{}\">{}</a></p>\n",
-                esc(take),
+                "<p>Datumesh publishes this as a stand-in for {}; {}&#39;s own publication will rank above it (<a href=\"{}\">how</a>).</p>\n",
+                esc(get(src, "name").as_str().unwrap_or("")),
+                esc(get(src, "name").as_str().unwrap_or("")),
                 esc(take)
             ));
         }

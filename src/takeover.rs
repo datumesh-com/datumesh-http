@@ -1,9 +1,9 @@
-//! The takeover page (Build 2, QUESTIONS-build2 D24): `GET /takeover/<domain>`, linked from the
-//! `source.takeover` of a relayed receipt and of `describe`. It lists the functions this mesh
-//! relays from `<domain>`, says how the domain can publish them under its own name, and says
-//! whether this mesh's `POST /bundles` admits the domain (`DATUMESH_PUBLISH_DOMAINS`, D11).
+//! The takeover page (Build 2, QUESTIONS-build2 D24; rewritten in site round 3, CONTRACT-site-round3 B3): `GET /takeover/<domain>`,
+//! linked from the `source.takeover` of a relayed receipt and of `describe`. It lists the functions this mesh relays from
+//! `<domain>` as a stand-in, says how the source's own name comes first in this mesh's catalogue, how the relay can stop, and
+//! how to serve a mesh of one's own; it says whether this mesh's `POST /bundles` admits the domain (`DATUMESH_PUBLISH_DOMAINS`, D11).
 //!
-//! It promises nothing more: it names no contact address and does not say the relay is withdrawn.
+//! It names a contact address only when one is configured (`DATUMESH_CONTACT`), and then under "Stopping the relay".
 //! The data is built once as a JSON value and the HTML is rendered from it, like the function page.
 //! Everything shown is a validated DNS name, a function name or a hash, and is escaped anyway.
 
@@ -71,14 +71,32 @@ fn relayed_from(inner: &Inner, domain: &str) -> Option<Vec<(String, String)>> {
     Some(lists.get(domain).cloned().unwrap_or_default())
 }
 
-/// The takeover policy (QUESTIONS-build2 D40), the same sentences in the JSON `policy` and on the page. It
-/// promises no withdrawal: the relay name is rebound and its history is kept.
-const POLICY: [&str; 4] = [
-    "No permission from the source is needed: it proves control of its domain with a key document on its own domain.",
-    "The relay name then stops taking new stored cells.",
-    "The relay name is rebound to read the source's cells.",
-    "Its history stays as the mesh's signed statements.",
-];
+/// The section "How the source's own name comes first" (CONTRACT-site-round3 B3), the same sentences on the page and in the
+/// JSON `policy`. The relay is a stand-in: the source's own publication ranks above it under the catalogue rule.
+fn policy(domain: &str) -> Vec<String> {
+    vec![
+        format!(
+            "When {domain} publishes these functions under its own domain, its own name ranks first among the sources of the \
+             same subject in this mesh's catalogue."
+        ),
+        format!("No permission is needed: {domain} proves control of its domain with a key document on its own domain."),
+        "Datumesh lists a source's mesh once it exists: a mesh is listed when it publishes its own catalogue with subject keys \
+         and Datumesh adds its host to the list."
+            .to_string(),
+        "The relay goes on as a mirror, labelled relayed. Its history stays as this mesh's signed statements.".to_string(),
+    ]
+}
+
+/// The section "Stopping the relay", the same sentences on the page and in the JSON `stopping`. No declaration is read yet.
+fn stopping(domain: &str) -> Vec<String> {
+    vec![
+        format!(
+            "{domain} can ask for the relay to stop. A declaration it can put in its own key document for this is planned; \
+             this mesh does not read one yet."
+        ),
+        format!("Until then, when {domain} asks, the feed is ended."),
+    ]
+}
 
 /// The page's data, or `None` when this mesh relays nothing from `domain`.
 pub(crate) fn data(inner: &Inner, domain: &str, found: &[(String, String)]) -> Option<Value> {
@@ -98,8 +116,10 @@ pub(crate) fn data(inner: &Inner, domain: &str, found: &[(String, String)]) -> O
         .map(|(n, h)| obj(vec![("name", s(n)), ("page", s(&page_url(inner, n))), ("fn_hash", s(h))]))
         .collect();
     let steps = vec![
-        s(&format!("Serve a key document at https://{domain}/.well-known/datumesh.json (spec 9).")),
-        s(&format!("Publish the same functions under {domain}/..., on its own mesh or hosted on this mesh. {hosting}")),
+        s(&format!("Make a key, then serve its key document at https://{domain}/.well-known/datumesh.json (spec 9).")),
+        s(&format!("Publish the same functions under {domain}/..., on its own mesh or hosted on this mesh.")),
+        s(&hosting),
+        s(&format!("The full route, with each command, is at {PUBLISH_DOCS}.")),
     ];
     let contact = inner.config.contact.as_deref().map_or(Value::Null, s);
     Some(obj(vec![
@@ -107,8 +127,9 @@ pub(crate) fn data(inner: &Inner, domain: &str, found: &[(String, String)]) -> O
         ("domain", s(domain)),
         ("host", s(host)),
         ("functions", Value::Array(functions)),
-        ("policy", Value::Array(POLICY.iter().map(|p| s(p)).collect())),
+        ("policy", Value::Array(policy(domain).iter().map(|p| s(p)).collect())),
         ("steps", Value::Array(steps)),
+        ("stopping", Value::Array(stopping(domain).iter().map(|p| s(p)).collect())),
     ]))
 }
 
@@ -153,33 +174,55 @@ pub(crate) fn respond(inner: &Inner, domain: &str, json_form: bool) -> Reply {
     }
 }
 
+/// The Publish page, linked from the last step of "Serving your own mesh".
+const PUBLISH_DOCS: &str = "https://datumesh.com/docs/publish";
+
+/// The catalogue rule's page, linked from the first sentence of "How the source's own name comes first".
+const RULE_PAGE: &str = "/catalog/rule";
+
 fn text<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+/// The strings of an array member (none when the member is absent).
+fn strings<'a>(v: &'a Value, k: &str) -> Vec<&'a str> {
+    match v.get(k) {
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Text content, escaped: `&`, `<` and `>`. An apostrophe is legal in text and is kept as written, so a sentence reads as
+/// the contract words it carries; attribute values go through [`esc`].
+fn text_esc(t: &str) -> String {
+    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// `t` as text, with its first `phrase` wrapped in a link to `href`.
+fn linked(t: &str, phrase: &str, href: &str) -> String {
+    match t.split_once(phrase) {
+        Some((before, after)) => {
+            format!("{}<a href=\"{}\">{}</a>{}", text_esc(before), esc(href), text_esc(phrase), text_esc(after))
+        }
+        None => text_esc(t),
+    }
 }
 
 /// The HTML page of the data `d` (no script; every string escaped).
 pub(crate) fn render(d: &Value) -> String {
     let (domain, host) = (text(d, "domain"), text(d, "host"));
+    let title = format!("{domain}'s values under its own name");
     let mut h = String::new();
     h.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    h.push_str(&format!("<title>{} | takeover</title>\n", esc(domain)));
+    h.push_str(&format!("<title>{}</title>\n", esc(&title)));
     h.push_str("<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:16px;color:#1d1d1f;background:#fff}main{max-width:52rem;margin:0 auto}code{font-family:ui-monospace,monospace;font-size:14px;overflow-wrap:anywhere}h1{font-size:1.5rem;margin:0.5rem 0}h2{font-size:1.1rem}</style>\n</head>\n<body>\n<main>\n");
-    h.push_str(&format!("<h1>Taking over <code>{}</code></h1>\n", esc(domain)));
+    h.push_str(&format!("<h1>{}</h1>\n", esc(&title)));
     h.push_str(&format!(
-        "<p>This mesh ({}) relays these values from {} unchanged. {} remains their source.</p>\n",
-        esc(host),
-        esc(domain),
-        esc(domain)
+        "<p>This mesh ({}) relays these values from {} unchanged, as a stand-in. {} remains their source.</p>\n",
+        text_esc(host),
+        text_esc(domain),
+        text_esc(domain)
     ));
-    h.push_str("<section id=\"policy\">\n<h2>What taking over means</h2>\n<ul>\n");
-    for p in POLICY {
-        h.push_str(&format!("<li>{}</li>\n", esc(p)));
-    }
-    h.push_str("</ul>\n");
-    if let Some(c) = d.get("contact").and_then(Value::as_str) {
-        h.push_str(&format!("<p>Contact: <code>{}</code>.</p>\n", esc(c)));
-    }
-    h.push_str("</section>\n");
     h.push_str("<section id=\"functions\">\n<h2>Functions relayed from this domain</h2>\n<ul>\n");
     if let Some(Value::Array(fs)) = d.get("functions") {
         for f in fs {
@@ -191,11 +234,24 @@ pub(crate) fn render(d: &Value) -> String {
             ));
         }
     }
-    h.push_str("</ul>\n</section>\n<section id=\"steps\">\n<h2>How the domain can publish them under its own name</h2>\n<ol>\n");
-    if let Some(Value::Array(ss)) = d.get("steps") {
-        for st in ss {
-            h.push_str(&format!("<li>{}</li>\n", esc(st.as_str().unwrap_or(""))));
-        }
+    h.push_str("</ul>\n</section>\n");
+    h.push_str("<section id=\"first\">\n<h2>How the source's own name comes first</h2>\n<ul>\n");
+    for p in strings(d, "policy") {
+        h.push_str(&format!("<li>{}</li>\n", linked(p, "ranks first", RULE_PAGE)));
+    }
+    h.push_str("</ul>\n</section>\n");
+    h.push_str("<section id=\"stopping\">\n<h2>Stopping the relay</h2>\n<ul>\n");
+    for p in strings(d, "stopping") {
+        h.push_str(&format!("<li>{}</li>\n", text_esc(p)));
+    }
+    h.push_str("</ul>\n");
+    if let Some(c) = d.get("contact").and_then(Value::as_str) {
+        h.push_str(&format!("<p>Contact: <code>{}</code>.</p>\n", esc(c)));
+    }
+    h.push_str("</section>\n");
+    h.push_str("<section id=\"serving\">\n<h2>Serving your own mesh</h2>\n<ol>\n");
+    for st in strings(d, "steps") {
+        h.push_str(&format!("<li>{}</li>\n", linked(st, PUBLISH_DOCS, PUBLISH_DOCS)));
     }
     h.push_str("</ol>\n</section>\n</main>\n</body>\n</html>\n");
     h
