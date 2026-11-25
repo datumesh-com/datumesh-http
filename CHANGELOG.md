@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **The batch claim carries no number.** A batch costs one round trip and one name lookup for any number of cells. The README and the 0.5.4 entry no longer quote a ratio or a fixture timing: a ratio measured on fixture cells did not hold on production-shaped cells (45-55 single requests per 1,000-cell batch). `batch::thousand_cells` stays as a guard on fixture cells. Text only.
+- **The batch claim carries no number.** A batch costs one round trip and one name lookup for any number of cells. The README and the 0.5.4 entry no longer quote a ratio or a fixture timing: the ratio was measured on fixture cells and does not carry to production-shaped cells. `batch::thousand_cells` stays as a guard on fixture cells. Text only.
 
 ## 0.5.4
 
