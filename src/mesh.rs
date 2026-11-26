@@ -1194,7 +1194,7 @@ impl Inner {
                         return envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash));
                     };
                     if attempt < 2 {
-                        match self.foreign.refresh_deps(&info.hash, a, &self.metrics) {
+                        match self.foreign.refresh_deps_counted(&info.hash, a, Some(&self.metrics)) {
                             Ok(true) => {
                                 for id in self.foreign.take_invalidated() {
                                     self.version_added(&id);

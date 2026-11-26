@@ -596,7 +596,7 @@ impl Foreign {
         let _ = self.engine.set(engine);
     }
 
-    fn foreign_deps(&self, receipt_hash: &str, metrics: &crate::metrics::Metrics) -> Arc<Vec<Cell>> {
+    fn foreign_deps(&self, receipt_hash: &str, metrics: Option<&crate::metrics::Metrics>) -> Arc<Vec<Cell>> {
         if let Some(d) = self.deps.lock().unwrap_or_else(|p| p.into_inner()).get(receipt_hash) {
             return d.clone();
         }
@@ -615,7 +615,7 @@ impl Foreign {
                     let m = crate::manifest_route::members_for_reader(
                         &*self.store,
                         e,
-                        Some(metrics),
+                        metrics,
                         &h,
                         citing.as_deref(),
                         deadline,
@@ -649,11 +649,16 @@ impl Foreign {
     /// Confirms the foreign cells an answer rests on, for an answer as of `asof`: those not
     /// confirmed within the TTL and confirmed before `asof` are fetched again. `Ok(true)` when
     /// versions were added (the caller answers again).
-    pub fn refresh_deps(
+    pub fn refresh_deps(&self, receipt_hash: &str, asof: &str) -> Result<bool, ForeignError> {
+        self.refresh_deps_counted(receipt_hash, asof, None)
+    }
+
+    /// [`Foreign::refresh_deps`], counting the rebuilds it makes in `metrics` (the mesh's own calls).
+    pub(crate) fn refresh_deps_counted(
         &self,
         receipt_hash: &str,
         asof: &str,
-        metrics: &crate::metrics::Metrics,
+        metrics: Option<&crate::metrics::Metrics>,
     ) -> Result<bool, ForeignError> {
         if !self.any_cells() {
             return Ok(false);
