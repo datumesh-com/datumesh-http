@@ -172,6 +172,11 @@ fn publish(n: &Node, lines: &[String], clock: &'static str) {
 /// A node for HOST at the fixed clock, its configuration changed by `cfg`; on `db` when given (a
 /// fresh mesh, with no memo, on a store already filled).
 async fn node_on(db: Option<Arc<TestDb>>, cfg: impl FnOnce(&mut Config)) -> Node {
+    node_at(db, MESH_NOW, cfg).await
+}
+
+/// The same with the mesh's clock at `clock`.
+async fn node_at(db: Option<Arc<TestDb>>, clock: &'static str, cfg: impl FnOnce(&mut Config)) -> Node {
     let mut setup = Setup::new(HOST);
     setup.db = db;
     Node::start_with(
@@ -180,9 +185,21 @@ async fn node_on(db: Option<Arc<TestDb>>, cfg: impl FnOnce(&mut Config)) -> Node
             c.rate.enabled = false;
             cfg(c)
         },
-        |b| b.clock(Arc::new(FixedClock(MESH_NOW))),
+        |b| b.clock(Arc::new(FixedClock(clock))),
     )
     .await
+}
+
+/// T0: flood(DAY) read now by a mesh whose clock is at A0 (a current read stores; a read as of a
+/// past time stores nothing, the user's decision of 26 Nov).
+async fn t0(n: &Node) -> (Receipt, Vec<u8>) {
+    let m = node_at(Some(n.db.clone()), A0, |_| {}).await;
+    answer(&m, &flood_path(DAY, None)).await
+}
+
+/// [receipts, computed_versions, member_sets, manifests].
+fn stored_rows(n: &Node) -> [i64; 4] {
+    [count(n, "receipts"), count(n, "computed_versions"), count(n, "member_sets"), count(n, "manifests")]
 }
 
 async fn node(cfg: impl FnOnce(&mut Config)) -> Node {
@@ -431,7 +448,7 @@ async fn rebuilt_manifests_are_the_bytes_a_stored_one_would_hold() {
         seed(n);
         publish(n, &run2(), R2);
     }
-    for path in [flood_path(DAY, None), flood_path(DAY, Some(A1)), format!("/cell/{ALLD}"), format!("/cell/{WINDOW}")] {
+    for path in [flood_path(DAY, None), format!("/cell/{ALLD}"), format!("/cell/{WINDOW}")] {
         let (h, hb) = answer(&held, &path).await;
         let (r, rb) = answer(&rebuilt, &path).await;
         assert_eq!(rb, hb, "{path}: the same receipt under both policies");
@@ -548,7 +565,7 @@ async fn withdrawals_before_and_after_a_receipt_rebuild_to_its_members_hash() {
     seed(&n);
     let (ha, hb) = (stored_hash(&n, "a", DAY).await, stored_hash(&n, "b", DAY).await);
     // Signed before the withdrawal.
-    let (before, before_b) = answer(&n, &flood_path(DAY, Some(A0))).await;
+    let (before, before_b) = t0(&n).await;
     assert_eq!(before.value().lexical(), "300");
     publish(&n, &[withdrawal_line("b", DAY, "station b decommissioned")], R2);
     let fresh = node_on(Some(n.db.clone()), |_| {}).await;
@@ -619,38 +636,65 @@ async fn receipts_and_manifests_stored_before_the_patch_still_verify() {
 async fn flood_timeline_reads_between_and_after_a_backfill() {
     let n = guarded().await;
     seed(&n);
-    // T0: computed and stored with stations a and b.
-    let (r0, b0) = answer(&n, &flood_path(DAY, Some(A0))).await;
+    // T0: computed and stored with stations a and b, by a current read.
+    let (r0, b0) = t0(&n).await;
     assert_eq!(r0.value().lexical(), "300");
     // T1: station c's November 2016 readings recorded. Now nobody has read flood since.
     publish(&n, &run2(), R2);
     let m = node_on(Some(n.db.clone()), |_| {}).await;
-    // 1. As of between T0 and T1: the T0 version.
+    let rows = stored_rows(&n);
+    // 1. As of between T0 and T1: the T0 version; stored nothing.
     assert_eq!(answer(&m, &flood_path(DAY, Some(A1))).await.1, b0, "case 1");
-    // 2. As of between T1 and now, before any recompute: the new station counts.
+    assert_eq!(stored_rows(&n), rows, "case 1 stores nothing");
+    // 2. As of between T1 and now, before any recompute: the new station counts; stored nothing.
     let (r2, b2) = answer(&m, &flood_path(DAY, Some(A2))).await;
     assert_eq!(r2.value().lexical(), "350", "case 2: not the T0 version");
     assert_ne!(r2.inputs()[0], r0.inputs()[0]);
-    // 3. A plain read now: the new answer (case 2's version, nothing changed since).
-    let (r3, _) = answer(&m, &flood_path(DAY, None)).await;
+    assert_eq!(stored_rows(&n), rows, "case 2 stores nothing (a read as of a past time)");
+    // 3. A plain read now: the new answer, stored (a version and a member-set row).
+    let (r3, b3) = answer(&m, &flood_path(DAY, None)).await;
     assert_eq!(r3.value().lexical(), "350", "case 3");
     assert_eq!(r3.inputs()[0], r2.inputs()[0]);
+    let after = stored_rows(&n);
+    assert_eq!((after[1], after[2], after[3]), (rows[1] + 1, rows[2] + 1, 0), "case 3 stores a version and a row");
     // After it, case 1 still answers the T0 version.
     let again = node_on(Some(n.db.clone()), |_| {}).await;
     assert_eq!(answer(&again, &flood_path(DAY, Some(A1))).await.1, b0, "case 1 after case 3");
-    // 4. Both verify at level recomputed, each manifest rebuilt as of its own asof.
+    // 4. Every receipt verifies at level recomputed, each manifest rebuilt from its row.
     assert_eq!(Manifest::from_json(&full(&again, &r0.inputs()[0]).await).unwrap().members().len(), 2);
     assert_eq!(Manifest::from_json(&full(&again, &r2.inputs()[0]).await).unwrap().members().len(), 3);
     verifies_recomputed(&again, &b0, "the T0 receipt").await;
-    verifies_recomputed(&again, &b2, "the new receipt").await;
-    assert_eq!(manifest_rows(&n), (0, 0));
+    verifies_recomputed(&again, &b2, "the case 2 receipt").await;
+    verifies_recomputed(&again, &b3, "the case 3 receipt").await;
+    assert_eq!(stored_rows(&n), after, "nothing more stored by the reads and verifications after it");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_as_of_a_past_time_stores_nothing_whatever_the_switch() {
+    for max in [0, 1_000_000] {
+        let n = node(|c| c.manifest_store_max = max).await;
+        seed(&n);
+        let before = stored_rows(&n);
+        // GET /cell, POST /cells, GET /explain, all as of a past time (the clock is MESH_NOW).
+        let (r, _) = answer(&n, &flood_path(DAY, Some(A1))).await;
+        assert_eq!(r.value().lexical(), "300");
+        let body = format!(r#"["{FLOOD}?d={DAY2}&asof={A1}", "{ALLD}?asof={A1}"]"#).into_bytes();
+        assert_eq!(n.post("/cells", body).await.status, 200);
+        assert_eq!(n.get(&format!("/explain/{FLOOD}?d=2016-11-22&asof={A1}")).await.status, 200);
+        assert_eq!(stored_rows(&n), before, "max {max}: answered and signed, nothing stored");
+        // A current read stores.
+        answer(&n, &flood_path(DAY, None)).await;
+        let after = stored_rows(&n);
+        assert!(after[1] > before[1] && after[2] > before[2], "max {max}: {before:?} -> {after:?}");
+        assert_eq!(after[3] > before[3], max > 0, "max {max}: a manifest only above 0");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flood_a_plain_read_first_writes_a_new_version_and_row() {
     let n = guarded().await;
     seed(&n);
-    let (r0, b0) = answer(&n, &flood_path(DAY, Some(A0))).await;
+    let (r0, b0) = t0(&n).await;
     publish(&n, &run2(), R2);
     let (versions, rows) = (count(&n, "computed_versions"), count(&n, "member_sets"));
     let m = node_on(Some(n.db.clone()), |_| {}).await;
@@ -672,7 +716,7 @@ async fn flood_a_plain_read_first_writes_a_new_version_and_row() {
 async fn new_member_through(add: impl FnOnce(&Node)) -> (Receipt, Receipt) {
     let n = guarded().await;
     seed(&n);
-    let (r0, _) = answer(&n, &flood_path(DAY, Some(A0))).await;
+    let (r0, _) = t0(&n).await;
     assert_eq!(r0.value().lexical(), "300");
     add(&n);
     let m = node_on(Some(n.db.clone()), |_| {}).await;
@@ -749,4 +793,58 @@ async fn import_signed_with_an_older_tx_adds_a_member_that_is_seen() {
     // alone, or this member is never read.
     let (_, now) = new_member_through(|n| import(n, bundle_with(OLD))).await;
     assert_eq!(now.value().lexical(), "307", "the member is new to this store, whatever its tx");
+}
+
+// ---- The recording-time rule (the user's decision of 26 Nov) -----------------------------------
+//
+// Every storing path records at this mesh's own time (the version's tx is when this store recorded
+// it) and keeps the source's time as a separate field (not designed yet: these tests only assert
+// the tx). Today three paths keep the source's time as the tx: publish-stored's own `tx` field
+// (src/publish.rs, the cell line's `tx`), bundle imports (`import-signed` and `POST /bundles`,
+// src/bundle.rs, `new_versions` from `r.tx()` then `put_version`) and cross-mesh imports
+// (src/foreign.rs, `put_version(&id, r.tx(), &h)`); the store itself requires a version's tx to be
+// its receipt's (datumesh-store `put_version`). These tests fail until the rule is in.
+
+/// The tx of the latest version of level(station, DAY) in `n`'s store.
+fn recorded_tx(n: &Node, station: &str) -> String {
+    let id = n.cell_id(LEVEL, &args(&[("d", d(DAY)), ("station", s(station))]));
+    bl(|| n.store.latest(&id).unwrap().expect("a version").tx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publish_stored_records_at_the_runs_time_even_with_a_tx_of_its_own() {
+    let n = guarded().await;
+    seed(&n);
+    publish(&n, &[level_line("y", DAY, "8", None)], R2);
+    assert_eq!(recorded_tx(&n, "y"), R2, "the run's clock");
+    publish(&n, &[level_line("z", DAY, "7", Some(OLD))], R2);
+    assert_eq!(recorded_tx(&n, "z"), R2, "recorded at the run's time, not the line's tx {OLD}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn import_signed_records_at_the_mesh_time_not_the_receipts_tx() {
+    let n = guarded().await;
+    seed(&n);
+    import(&n, bundle_with(OLD));
+    assert_eq!(recorded_tx(&n, "z"), MESH_NOW, "recorded at the importing mesh's time, not the receipt's tx {OLD}");
+}
+
+const PEER: &str = "mesh-b.example";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cross_mesh_import_records_at_the_mesh_time_not_the_sources_tx() {
+    let b = Node::start(PEER, |_| {}).await;
+    let gauge = format!("{PEER}/gauge");
+    b.stored(&gauge, &flood_sig());
+    b.put_value(&gauge, &args(&[("d", d(DAY))]), common::n("5"), T1);
+    let b_base = b.base.clone();
+    let a = node(|c| {
+        c.peers.insert(PEER.into(), b_base.clone());
+    })
+    .await;
+    let r = a.get(&format!("/cell/{gauge}?d={DAY}")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
+    let id = b.cell_id(&gauge, &args(&[("d", d(DAY))]));
+    let tx = bl(|| a.store.latest(&id).unwrap().expect("imported into A's store").tx);
+    assert_eq!(tx, MESH_NOW, "recorded at A's time, not B's tx {T1}");
 }
