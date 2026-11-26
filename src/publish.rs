@@ -396,7 +396,7 @@ impl Reads {
         if let Some(l) = self.latest_of.get(id) {
             return Ok(l.clone());
         }
-        store.latest(id).map(|v| v.map(|v| (v.tx, v.receipt_hash))).map_err(|e| e.to_string())
+        store.latest(id).map(|v| v.map(|v| (v.recorded, v.receipt_hash))).map_err(|e| e.to_string())
     }
 
     /// The stored receipt `hash`, as `receipt` answers: prefetched, else asked now.
@@ -416,7 +416,7 @@ impl Reads {
         for page in missing.chunks(crate::catalog_build::PAGE) {
             if let Ok(found) = store.latest_many(page) {
                 for (id, v) in page.iter().zip(found) {
-                    self.latest_of.insert(id.to_string(), v.map(|v| (v.tx, v.receipt_hash)));
+                    self.latest_of.insert(id.to_string(), v.map(|v| (v.recorded, v.receipt_hash)));
                 }
             }
         }
@@ -543,7 +543,8 @@ fn bound_as_other<S: Store + ?Sized>(store: &S, sim: &Simulation, name: &str, cl
     }
 }
 
-/// The latest version of a cell, the store's or the file's: its tx and receipt hash.
+/// The latest version of a cell, the store's or the file's: its recorded time and receipt hash (G9:
+/// the mesh's time of recording, not the signed tx).
 fn cell_latest<S: Store + ?Sized>(
     reads: &mut Reads,
     store: &S,
@@ -565,7 +566,7 @@ fn cell_version_asof<S: Store + ?Sized>(
     id: &str,
     at: &str,
 ) -> Result<Option<String>, String> {
-    let stored = store.version_asof(id, at).map_err(|e| e.to_string())?.map(|v| (v.tx, v.receipt_hash));
+    let stored = store.version_asof(id, at).map_err(|e| e.to_string())?.map(|v| (v.recorded, v.receipt_hash));
     let planned = sim.versions.get(id).and_then(|v| v.iter().rev().find(|(t, _)| t.as_str() <= at).cloned());
     let latest = match (stored, planned) {
         (Some(a), Some(b)) => Some(if b.0 > a.0 { b } else { a }),
@@ -1498,17 +1499,24 @@ impl<S: Store + ?Sized> Planner<'_, S> {
                 }
             }
         }
+        // The version is recorded at the mesh's time (G9): the later of the signed tx and the run's
+        // clock, as the store records it with its recording clock. A version already recorded at or
+        // after that time must be this receipt (as of that time) or the line is refused.
+        let recorded = self.store.recording_time(&s.tx);
         let version = match cell_latest(&mut self.reads, self.store, &self.sim, &s.id).map_err(err)? {
-            Some((latest_tx, _)) if latest_tx.as_str() >= s.tx.as_str() => {
-                if cell_version_asof(self.store, &self.sim, &s.id, &s.tx).map_err(err)?.as_deref()
+            Some((latest_recorded, _)) if latest_recorded.as_str() >= recorded.as_str() => {
+                if cell_version_asof(self.store, &self.sim, &s.id, &recorded).map_err(err)?.as_deref()
                     != Some(s.hash.as_str())
                 {
-                    return Err(err(format!("{} has a version at or after {} that is not this receipt", s.id, s.tx)));
+                    return Err(err(format!(
+                        "{} has a version at or after {} that is not this receipt",
+                        s.id, recorded
+                    )));
                 }
                 false
             }
             _ => {
-                self.sim.versions.entry(s.id.clone()).or_default().push((s.tx.clone(), s.hash.clone()));
+                self.sim.versions.entry(s.id.clone()).or_default().push((recorded.clone(), s.hash.clone()));
                 true
             }
         };

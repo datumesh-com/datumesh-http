@@ -164,6 +164,7 @@ mod jobs;
 pub mod keydoc;
 mod keynames;
 mod limit;
+mod manifest_route;
 mod mesh;
 mod metrics;
 mod pool;

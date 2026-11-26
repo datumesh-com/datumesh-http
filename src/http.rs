@@ -604,6 +604,70 @@ async fn versions(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: R
 /// The most versions in one answer of the versions endpoint.
 const VERSIONS_PAGE: usize = 1000;
 
+/// `GET /x/versions/<cell>` (guard patch G9): the versions of a stored cell, ascending by the time
+/// the mesh recorded them, each with its signed time beside it. `GET /versions` keeps the spec's
+/// shape, where `tx` is the signed time.
+#[utoipa::path(get, path = "/x/versions/{cell}",
+    params(("cell" = String, Path, description = "A cell URI's rest without asof, as `/versions`.")),
+    responses(
+        (status = 200, description = "`{cell, versions: [{recorded, signed, asof, receipt}]}` ascending by recorded", content_type = "application/json"),
+        (status = 400, description = "`bad_request`", content_type = "application/json"),
+        (status = 404, description = "`not_covered`", content_type = "application/json"),
+    ))]
+async fn x_versions(State(mesh): State<Mesh>, uri: Uri, headers: HeaderMap, req: Request) -> Response {
+    if let Some(r) = ip_admit(&mesh.inner, &headers, &req) {
+        return r;
+    }
+    let inner = mesh.inner.clone();
+    let rest = rest_of(&uri, "/x/versions/");
+    let r = inner
+        .pool
+        .clone()
+        .run(move || inner.x_versions(&rest))
+        .await
+        .unwrap_or_else(|| envelope::error_reply(ErrorCode::EvalUnavailable));
+    to_response(r)
+}
+
+impl Inner {
+    /// The body of `GET /x/versions/<cell>`: every version of the cell, by recorded time.
+    fn x_versions(&self, rest: &str) -> Reply {
+        let now = self.now();
+        let target = match crate::call::resolve(rest, &now, &self.config.aliases, self, false) {
+            Ok(t) => t,
+            Err(r) => return self.rejection(r, None),
+        };
+        if target.asof().is_some() {
+            return envelope::bad_request_reply(ErrorCode::ParseUri);
+        }
+        let mut vs =
+            match self.store.versions(target.cell_id(), "0001-01-01T00:00:00.000000Z", "9999-12-31T23:59:59.999999Z") {
+                Ok(v) => v,
+                Err(_) => {
+                    return envelope::error_answer_reply(ErrorCode::InputUnavailable, Some(&target.bound.fn_hash))
+                }
+            };
+        vs.sort_by(|a, b| (&a.recorded, a.seq).cmp(&(&b.recorded, b.seq)));
+        vs.truncate(VERSIONS_PAGE);
+        let list: Vec<Value> = vs
+            .iter()
+            .map(|v| {
+                Value::Object(vec![
+                    ("recorded".into(), Value::String(v.recorded.clone())),
+                    ("signed".into(), Value::String(v.tx.clone())),
+                    ("asof".into(), Value::String(v.asof.clone())),
+                    ("receipt".into(), Value::String(v.receipt_hash.clone())),
+                ])
+            })
+            .collect();
+        let body = Value::Object(vec![
+            ("cell".into(), Value::String(target.cell_id().to_string())),
+            ("versions".into(), Value::Array(list)),
+        ]);
+        Reply::json(200, body.to_jcs(), Cache::Public(60))
+    }
+}
+
 impl Inner {
     fn versions(&self, rest: &str) -> Reply {
         // `from=` and `to=` are the endpoint's, taken off the end of the query.
@@ -842,17 +906,20 @@ async fn descriptor(State(mesh): State<Mesh>, Path(hash): Path<String>, headers:
     object(mesh.inner.clone(), "descriptor", move |i| i.store.descriptor(&hash).map(|c| c.into_owned())).await
 }
 
-async fn manifest_of(inner: Arc<Inner>, entry: String) -> Response {
-    object(inner, "manifest", move |i| i.store.manifest(&entry).map(|c| c.into_owned())).await
-}
-
-/// A slice manifest (SPEC 15.13), by its entry's slice id and members hash.
+/// A slice manifest (SPEC 15.13), by its entry's slice id and members hash: held, or rebuilt from
+/// its members (G5, G10). `?after=&limit=` is the paged form; `?asof=` rebuilds a past read's list.
 #[utoipa::path(get, path = "/manifest/{slice_id}/{members_hash}",
-    params(("slice_id" = String, Path, description = "The slice id."), ("members_hash" = String, Path, description = "The members hash.")),
-    responses((status = 200, description = "The manifest's canonical JSON; immutable", content_type = "application/json"), (status = 404, description = "Not held")))]
+    params(("slice_id" = String, Path, description = "The slice id."), ("members_hash" = String, Path, description = "The members hash."),
+        ("after" = Option<String>, Query, description = "Paged: the members after this hash (exclusive)."),
+        ("limit" = Option<String>, Query, description = "Paged: at most this many members (1 to 10,000; default 1,000)."),
+        ("asof" = Option<String>, Query, description = "Rebuild as of this instant, from the slice's definition.")),
+    responses((status = 200, description = "The manifest's canonical JSON (immutable), or a page", content_type = "application/json"),
+        (status = 404, description = "Not held and not rebuildable"),
+        (status = 503, description = "`E_INPUT_UNAVAILABLE` (the members do not hash to the entry) or `E_EVAL_BUDGET`")))]
 async fn manifest(
     State(mesh): State<Mesh>,
     Path((slice_id, members)): Path<(String, String)>,
+    Query(q): Query<crate::manifest_route::ManifestQuery>,
     headers: HeaderMap,
     req: Request,
 ) -> Response {
@@ -862,7 +929,16 @@ async fn manifest(
     if lexical::check_hex(&slice_id, 64, "$").is_err() || lexical::check_hex(&members, 64, "$").is_err() {
         return not_found("manifest");
     }
-    manifest_of(mesh.inner.clone(), format!("slice:{slice_id}:{members}")).await
+    let (pool, inner) = (mesh.inner.pool.clone(), mesh.inner.clone());
+    let (reply, next) = pool
+        .run(move || crate::manifest_route::reply(&inner, &slice_id, &members, &q))
+        .await
+        .unwrap_or_else(|| (envelope::error_reply(ErrorCode::EvalUnavailable), None));
+    let mut resp = to_response(reply);
+    if let Some(v) = next.and_then(|n| HeaderValue::from_str(&format!("<{n}>; rel=\"next\"")).ok()) {
+        resp.headers_mut().insert(header::LINK, v);
+    }
+    resp
 }
 
 /// Blob content by SHA-256.
@@ -945,11 +1021,11 @@ impl Inner {
             }
             *budget -= 1;
             if e.starts_with("slice:") {
-                let m = self.store.manifest(&e).and_then(|m| datumesh_core::Manifest::from_json(&m).ok());
+                // G6: the count and the slice come from the member-set row (or a held manifest); no rebuild.
                 let mut node = vec![("entry".to_string(), Value::String(e.clone()))];
-                if let Some(m) = m {
-                    node.push(("members".to_string(), envelope::num(m.members().len() as u64)));
-                    node.push(("slice".to_string(), m.slice().to_value()));
+                if let Some((members, slice)) = crate::manifest_route::count_and_slice(self, &e) {
+                    node.push(("members".to_string(), envelope::num(members)));
+                    node.push(("slice".to_string(), slice));
                 }
                 out.push(Value::Object(node));
                 continue;
@@ -1344,6 +1420,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/slice/{*rest}" => "/slice/{cell}".to_string(),
         "/explain/{*rest}" => "/explain/{cell}".to_string(),
         "/versions/{*rest}" => "/versions/{cell}".to_string(),
+        "/x/versions/{*rest}" => "/x/versions/{cell}".to_string(),
         "/fn/{*name}" => "/fn/{name}".to_string(),
         "/takeover/{*domain}" => "/takeover/{domain}".to_string(),
         "/series/{*rest}" => "/series/{page}".to_string(),
@@ -1774,6 +1851,7 @@ impl Mesh {
             .route("/descriptor/{hash}", get(descriptor))
             .route("/manifest/{slice_id}/{members_hash}", get(manifest))
             .route("/versions/{*rest}", get(versions))
+            .route("/x/versions/{*rest}", get(x_versions))
             .route("/blob/{sha256}", get(blob))
             .route("/explain/{*rest}", get(explain))
             .route("/find", get(find))

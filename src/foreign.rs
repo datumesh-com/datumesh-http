@@ -202,6 +202,9 @@ pub struct Foreign {
     dirty: std::sync::atomic::AtomicBool,
     any: std::sync::atomic::AtomicBool,
     deps: Mutex<HashMap<String, Arc<Vec<Cell>>>>,
+    /// The mesh's engine, once built (G6: a slice's members are rebuilt for `foreign_deps`); weak, as
+    /// the engine holds this runtime.
+    engine: std::sync::OnceLock<std::sync::Weak<datumesh_engine::Engine>>,
     /// The namespaces this mesh hosts that it has seen (a hosted namespace never becomes foreign again).
     hosted: Mutex<std::collections::HashSet<String>>,
     /// Counters for /metrics.
@@ -237,6 +240,7 @@ impl Foreign {
             mesh_ttl: config.ttl.mesh_doc,
         };
         Foreign {
+            engine: std::sync::OnceLock::new(),
             store,
             client: Client::with_keys(cc, keys),
             clock,
@@ -584,6 +588,11 @@ impl Foreign {
 
     /// The foreign stored cells a receipt rests on, through its lineage in the store
     /// (bounded; cached by receipt hash).
+    /// Gives the foreign runtime the mesh's engine, once it is built (see the `engine` field).
+    pub(crate) fn set_engine(&self, engine: std::sync::Weak<datumesh_engine::Engine>) {
+        let _ = self.engine.set(engine);
+    }
+
     fn foreign_deps(&self, receipt_hash: &str) -> Arc<Vec<Cell>> {
         if let Some(d) = self.deps.lock().unwrap_or_else(|p| p.into_inner()).get(receipt_hash) {
             return d.clone();
@@ -596,8 +605,9 @@ impl Foreign {
                 continue;
             }
             if h.starts_with("slice:") {
-                if let Some(m) = self.store.manifest(&h) {
-                    if let Ok(m) = datumesh_core::Manifest::from_json(&m) {
+                let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
+                if let Some(e) = engine {
+                    if let Some(m) = crate::manifest_route::members_for_reader(&*self.store, &e, None, &h) {
                         todo.extend(m.members().iter().cloned());
                     }
                 }

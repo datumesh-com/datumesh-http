@@ -77,7 +77,11 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 
 fn store(pool: usize) -> PgStore {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| fail("DATABASE_URL is not set"));
-    let mut opts = PoolOptions::new().max_size(pool.max(2));
+    // Every version a store-writing command records at the system clock (guard patch G9): the
+    // mesh's own time, whatever the signed time of the receipt.
+    let recording: datumesh_store::RecordingClock =
+        std::sync::Arc::new(|| datumesh_engine::Clock::now(&datumesh_engine::SystemClock));
+    let mut opts = PoolOptions::new().max_size(pool.max(2)).recording_clock(recording);
     if let Ok(ca) = std::env::var("DATABASE_CA_FILE") {
         let pem = std::fs::read(&ca).unwrap_or_else(|e| fail(format!("{ca}: {e}")));
         opts = opts.tls_root_certificates_pem(&pem).unwrap_or_else(|e| fail(e));

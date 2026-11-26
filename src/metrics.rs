@@ -30,6 +30,10 @@ pub(crate) struct Metrics {
     index_truncated: std::sync::atomic::AtomicU64,
     /// The catalogue's subjects cut at `DATUMESH_CATALOG_MAX`, by each build that found more (CONTRACT-0.5.1 H2).
     catalog_truncated: std::sync::atomic::AtomicU64,
+    /// Manifests rebuilt from their member-set rows or slice definitions (every attempt; G5, G10).
+    manifest_rebuilds: std::sync::atomic::AtomicU64,
+    /// Rebuilds refused: a hash that does not match, a member that cannot be listed, the budget (G5, G10).
+    manifest_rebuild_failures: std::sync::atomic::AtomicU64,
 }
 
 impl Metrics {
@@ -89,6 +93,16 @@ impl Metrics {
     }
 
     /// One build of the catalogue's view that the cap `DATUMESH_CATALOG_MAX` cut.
+    /// A manifest rebuild was attempted (serving held bytes is not one).
+    pub(crate) fn manifest_rebuild(&self) {
+        self.manifest_rebuilds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A manifest rebuild was refused.
+    pub(crate) fn manifest_rebuild_failure(&self) {
+        self.manifest_rebuild_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn catalog_truncated(&self) {
         self.catalog_truncated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -153,6 +167,26 @@ impl Metrics {
             out,
             "datumesh_catalog_truncated_total {}",
             self.catalog_truncated.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP datumesh_manifest_rebuilds_total Manifests rebuilt from their members (every attempt)."
+        );
+        let _ = writeln!(out, "# TYPE datumesh_manifest_rebuilds_total counter");
+        let _ = writeln!(
+            out,
+            "datumesh_manifest_rebuilds_total {}",
+            self.manifest_rebuilds.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "# HELP datumesh_manifest_rebuild_failures_total Manifest rebuilds refused (hash, member, budget)."
+        );
+        let _ = writeln!(out, "# TYPE datumesh_manifest_rebuild_failures_total counter");
+        let _ = writeln!(
+            out,
+            "datumesh_manifest_rebuild_failures_total {}",
+            self.manifest_rebuild_failures.load(std::sync::atomic::Ordering::Relaxed)
         );
         let _ = writeln!(out, "# HELP datumesh_http_request_seconds Request latency, by route.");
         let _ = writeln!(out, "# TYPE datumesh_http_request_seconds histogram");

@@ -235,6 +235,10 @@ pub struct Config {
     pub explain_depth: usize,
     /// The most jobs held at once, running or done (default 10,000).
     pub max_jobs: usize,
+    /// The most members an evaluation started by a request may store as a manifest (default 0:
+    /// none; `DATUMESH_MANIFEST_STORE_MAX`). At 0 the engine keeps only member-set rows, and a
+    /// manifest is rebuilt on demand (guard patch G4).
+    pub manifest_store_max: usize,
     /// Rate limits.
     pub rate: RateLimits,
     /// Cache lifetimes.
@@ -374,6 +378,7 @@ impl Config {
             catalog_max: crate::catalog_build::DEFAULT_CATALOG_MAX,
             explain_depth: 4,
             max_jobs: 10_000,
+            manifest_store_max: 0,
             rate: RateLimits::default(),
             ttl: Ttls::default(),
             trust_proxy: false,
@@ -465,6 +470,7 @@ impl Config {
         c.catalog_max = catalog_max_of(get("DATUMESH_CATALOG_MAX"))?;
         c.explain_depth = num("DATUMESH_EXPLAIN_DEPTH", c.explain_depth)?;
         c.max_jobs = num("DATUMESH_MAX_JOBS", c.max_jobs)?;
+        c.manifest_store_max = num("DATUMESH_MANIFEST_STORE_MAX", c.manifest_store_max)?;
         c.trust_proxy = flag("DATUMESH_TRUST_PROXY", c.trust_proxy)?;
         c.cross_mesh = flag("DATUMESH_CROSS_MESH", c.cross_mesh)?;
         c.rate.enabled = flag("DATUMESH_RATE_LIMITS", c.rate.enabled)?;

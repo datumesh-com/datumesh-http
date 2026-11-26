@@ -11,7 +11,7 @@ use datumesh_core::{
     keys_from_response, verify, CellRef, ClassDescriptor, ErrorCode, FunctionDescriptor, KeyDoc, Keys, Receipt,
     SigningKey,
 };
-use datumesh_engine::{Answer, Clock, Engine, EngineError, Runtime, SystemClock};
+use datumesh_engine::{Answer, Clock, Engine, EngineError, ManifestPolicy, Runtime, SystemClock};
 use datumesh_formula::runtime::FormulaRuntime;
 use datumesh_store::Store;
 
@@ -138,7 +138,16 @@ impl MeshBuilder {
         };
         let keys = Arc::new(KeyCache::default());
         let foreign = Arc::new(Foreign::new(&self.config, self.store.clone(), keys.clone(), self.clock.clone()));
-        let mut b = Engine::builder(self.store.clone(), self.config.host.clone()).clock(self.clock.clone());
+        // Guard patch G4: no member list is stored unless DATUMESH_MANIFEST_STORE_MAX allows it;
+        // a read as of a past time stores nothing (G10).
+        let manifests = match self.config.manifest_store_max {
+            0 => ManifestPolicy::MemberSetOnly,
+            n => ManifestPolicy::StoreUpTo(n),
+        };
+        let mut b = Engine::builder(self.store.clone(), self.config.host.clone())
+            .clock(self.clock.clone())
+            .manifests(manifests)
+            .store_past_reads(false);
         b = match (self.key, &self.key_file) {
             (Some(k), _) => b.signing_key(k),
             (None, Some(p)) => {
@@ -168,7 +177,8 @@ impl MeshBuilder {
         if let Some(n) = self.memo_capacity {
             b = b.memo_capacity(n);
         }
-        let engine = b.build().map_err(BuildError::Engine)?;
+        let engine = Arc::new(b.build().map_err(BuildError::Engine)?);
+        foreign.set_engine(Arc::downgrade(&engine));
         let config = self.config;
         let embed = config.embed_url.as_deref().map(crate::embed::EmbedClient::new);
         let inner = Inner {
@@ -190,7 +200,7 @@ impl MeshBuilder {
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
             limiter: Limiter::new(config.rate.clone()),
             metrics: Metrics::default(),
-            engine: Arc::new(engine),
+            engine,
             store: self.store,
             clock: self.clock,
             keys,
@@ -1133,7 +1143,11 @@ impl Inner {
         }
         let mut attempt = 0;
         loop {
-            let r = self.engine.get_cell(&target.cell, Some(a));
+            // A request that named no asof is current, arrival `now` (G10); a named one is past or current.
+            let r = match target.asof() {
+                Some(t) => self.engine.get_cell(&target.cell, Some(t)),
+                None => self.engine.get_cell_current(&target.cell, now),
+            };
             let inval = self.foreign.take_invalidated();
             for id in &inval {
                 self.version_added(id);
@@ -1301,9 +1315,12 @@ impl Inner {
                 let mut members = Vec::new();
                 for i in ins.iter().filter_map(Value::as_str).take(10_000) {
                     if i.starts_with("slice:") {
-                        if let Some(m) =
-                            self.store.manifest(i).and_then(|m| datumesh_core::Manifest::from_json(&m).ok())
-                        {
+                        if let Some(m) = crate::manifest_route::members_for_reader(
+                            &*self.store,
+                            &self.engine,
+                            Some(&self.metrics),
+                            i,
+                        ) {
                             members.extend(m.members().iter().take(10_000).cloned());
                         }
                     } else {
@@ -1459,8 +1476,11 @@ impl Mesh {
     /// engine as the resolver unless `signed_only`; `blob` is content for step 7.7.
     pub fn verify(&self, receipt: &[u8], signed_only: bool, blob: Option<&[u8]>) -> Verified {
         let keys = self.inner.keys_for_receipt(receipt);
+        // The engine resolves the receipt's slices as of the receipt's own asof (G6, G10).
+        let asof = datumesh_core::Receipt::from_json(receipt).ok().map(|r| r.asof().to_string());
+        let resolver = asof.as_deref().map(|a| self.inner.engine.resolver_for(a));
         let resolver: Option<&dyn datumesh_core::Resolver> =
-            if signed_only { None } else { Some(&*self.inner.engine as &dyn datumesh_core::Resolver) };
+            if signed_only { None } else { resolver.as_ref().map(|r| r as &dyn datumesh_core::Resolver) };
         verified(verify(receipt, &keys, resolver, blob))
     }
 
