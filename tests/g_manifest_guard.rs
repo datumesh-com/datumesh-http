@@ -1255,3 +1255,25 @@ async fn a_version_slice_with_a_withdrawal_in_its_range_rebuilds_and_verifies() 
     full(&fresh, &w.inputs()[0]).await;
     verifies_recomputed(&fresh, &wb, "window over a withdrawn version").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_naming_a_future_asof_stores_nothing_and_its_list_is_served() {
+    // B1: any request that names an asof, past or future, answers and signs but stores nothing except
+    // the slice definition. A member recorded after the request, before the named time, does not
+    // spoil its list: /manifest?asof=<the receipt's asof> serves it, and the receipt verifies.
+    let n = guarded().await;
+    seed(&n);
+    let base = rows5(&n);
+    let future = "2026-11-17T00:00:00.000000Z";
+    let (r, b) = answer(&n, &flood_path(DAY, Some(future))).await;
+    assert_eq!(r.value().lexical(), "300");
+    let after = rows5(&n);
+    assert_eq!(after[..4], base[..4], "a named future asof stores nothing but the slice's definition");
+    // Station c recorded after the request, before the named time (no recording clock: at its tx).
+    publish(&n, &[level_line("c", DAY, "50", None)], "2026-11-16T12:00:00.000000Z");
+    let fresh = node_on(Some(n.db.clone()), |_| {}).await;
+    let m = fresh.get(&format!("{}?asof={}", manifest_path(&r.inputs()[0]), r.asof())).await;
+    assert_eq!(m.status, 200, "{}", m.text());
+    assert_eq!(Manifest::from_json(&m.body).unwrap().entry(), r.inputs()[0]);
+    verifies_recomputed(&fresh, &b, "the future-named read's receipt").await;
+}

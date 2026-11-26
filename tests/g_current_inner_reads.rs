@@ -191,17 +191,17 @@ async fn a_lookup_inside_a_past_request_stores_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_request_naming_an_asof_at_or_after_its_arrival_is_current() {
-    // Decided 26 Nov (review item 7): a request that names an asof at or after its arrival is current;
-    // the mesh decides at arrival, not at evaluation. The ticking clock reads later than the named
-    // asof by the time the request is evaluated; the link still stores.
-    let s = shop("g10-named-current").await;
-    // After the arrival whatever the clock read before it (the clock ticks a microsecond a reading).
+async fn a_request_naming_an_asof_after_its_arrival_stores_nothing() {
+    // Decided 27 Nov (second review, B1), replacing review item 7's "an asof at or after the arrival is
+    // current" (51e485d): any request that names an asof, past or future, answers and signs but stores
+    // nothing except the slice definition. Only a request with no asof, or a pending job, is current.
+    let s = shop("g10-named-future").await;
     let named = "2026-11-16T00:00:01.000000Z";
     let (status, v, text) = s.get(&path(&format!("{}(A1).successor().price({SHOP_DAY})", p()), Some(named))).await;
     assert_eq!((status, value(&v)), (200, Some("3")), "{text}");
-    assert!(
-        s.computed("successor", "sku", "A1").is_some(),
-        "an asof named after the arrival is a current read: the link stores"
+    assert_eq!(
+        s.computed("successor", "sku", "A1"),
+        None,
+        "a named asof, even after the arrival: the link stores nothing"
     );
 }
