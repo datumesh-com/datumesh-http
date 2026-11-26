@@ -1239,3 +1239,19 @@ async fn flood_case_2_verifies_through_its_asof_with_no_current_read_ever() {
     verifies_recomputed(&fresh, &b2, "case 2's receipt").await;
     assert_eq!(count(&n, "member_sets"), 0);
 }
+
+// ---- Second review (27 Nov) -----------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_version_slice_with_a_withdrawal_in_its_range_rebuilds_and_verifies() {
+    // A2: the hash listing of a version slice leaves out withdrawals, as slice_values does, so the
+    // rebuild matches the evaluation. a(DAY2) is withdrawn inside window's range.
+    let n = guarded().await;
+    seed(&n);
+    publish(&n, &run2(), R2);
+    publish(&n, &[withdrawal_line("a", DAY2, "a reading retracted")], "2026-11-15T12:00:04.000000Z");
+    let (w, wb) = answer(&n, &format!("/cell/{WINDOW}")).await;
+    let fresh = node_on(Some(n.db.clone()), |_| {}).await;
+    full(&fresh, &w.inputs()[0]).await;
+    verifies_recomputed(&fresh, &wb, "window over a withdrawn version").await;
+}
