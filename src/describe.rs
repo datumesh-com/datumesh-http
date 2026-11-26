@@ -452,6 +452,7 @@ impl Inner {
     /// or withdrawn label, and a class with no lookup, are `E_NAME_UNBOUND`.
     pub(crate) fn describe_label(&self, bindings: &dyn Bindings, id: &str, now: &str) -> Option<Reply> {
         let (class, written, asof) = label_form(id)?;
+        let current = asof.is_none();
         let at = asof.unwrap_or_else(|| now.to_string());
         let unbound = || Some(envelope::name_unbound_reply(self.config.ttl.latest_max_age.as_secs()));
         let c = match bindings.class(&class, &at) {
@@ -472,7 +473,7 @@ impl Inner {
             Ok(_) => written.clone(),
             Err(code) => return Some(envelope::error_reply(code)),
         };
-        let enc = match bindings.lookup(&class, &folded, &at) {
+        let enc = match bindings.lookup_read(&class, &folded, &at, current) {
             Ok(Some(enc)) if !enc.is_empty() => enc,
             Ok(_) => return unbound(),
             Err(code) => return Some(envelope::error_reply(code)),

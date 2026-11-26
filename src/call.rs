@@ -145,6 +145,21 @@ pub trait Bindings {
         let _ = (cell, asof);
         Ok(None)
     }
+
+    /// [`Bindings::lookup`] for a read a request makes inside it: `current` when the request named no
+    /// asof (`asof` is then its arrival), so the read is current; a named past asof stores nothing (G10).
+    /// Provided: the plain lookup.
+    fn lookup_read(&self, class: &str, label: &str, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
+        let _ = current;
+        self.lookup(class, label, asof)
+    }
+
+    /// [`Bindings::chain`] for a read a request makes inside it (G10, as [`Bindings::lookup_read`]).
+    /// Provided: the plain chain.
+    fn chain_read(&self, cell: &CellRef, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
+        let _ = current;
+        self.chain(cell, asof)
+    }
 }
 
 /// A request resolved to its cell (or slice, at `/slice`).
@@ -432,6 +447,8 @@ struct Env<'a> {
     bindings: &'a dyn Bindings,
     aliases: &'a BTreeMap<String, String>,
     now: &'a str,
+    /// The request named no asof: its reads are current (G10).
+    current: bool,
 }
 
 impl datumesh_formula::call::CallEnv for Env<'_> {
@@ -463,7 +480,7 @@ impl datumesh_formula::call::CallEnv for Env<'_> {
         Ok(Some(self.now.to_string()))
     }
     fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, String> {
-        self.bindings.lookup(class, label, asof).map_err(|c| c.as_str().to_string())
+        self.bindings.lookup_read(class, label, asof, self.current).map_err(|c| c.as_str().to_string())
     }
     fn class_name_of(&self, class_hash: &str, asof: Option<&str>) -> Result<Option<String>, String> {
         self.bindings.class_name_of(class_hash, asof.unwrap_or(self.now)).map_err(|c| c.as_str().to_string())
@@ -472,7 +489,7 @@ impl datumesh_formula::call::CallEnv for Env<'_> {
         self.bindings.class_by_hash(class_hash).map_err(|c| c.as_str().to_string())
     }
     fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, String> {
-        self.bindings.chain(cell, asof).map_err(|c| c.as_str().to_string())
+        self.bindings.chain_read(cell, asof, self.current).map_err(|c| c.as_str().to_string())
     }
 }
 
@@ -504,6 +521,11 @@ fn chain_links(text: &str) -> usize {
     links
 }
 
+/// Whether a call's query names an `asof` parameter.
+fn query_names_asof(query: Option<&str>) -> bool {
+    query.is_some_and(|q| q.split('&').any(|p| p.starts_with("asof=")))
+}
+
 /// Resolves a call (SPEC 5.8).
 pub fn resolve_call(
     rest: &str,
@@ -525,7 +547,9 @@ pub fn resolve_call(
     if chain_links(&text) > MAX_CHAIN_LINKS {
         return Err(Rejection::BadRequest(ErrorCode::ParseUri));
     }
-    let env = Env { bindings, aliases, now };
+    // A call that names no asof is current: its links and lookups are (G10). `now` is its arrival.
+    let current = !query_names_asof(query);
+    let env = Env { bindings, aliases, now, current };
     CALL_FAULT.with(|f| f.set(None));
     LABEL_WITHDRAWN.with(|l| *l.borrow_mut() = None);
     let call = datumesh_formula::call::parse_call(text.trim_start(), &env).map_err(|e| match e {

@@ -620,6 +620,10 @@ impl Bindings for Memo<'_> {
         Bindings::lookup(self.inner, class, label, asof)
     }
 
+    fn lookup_read(&self, class: &str, label: &str, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
+        Bindings::lookup_read(self.inner, class, label, asof, current)
+    }
+
     fn class_name_of(&self, class_hash: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
         Bindings::class_name_of(self.inner, class_hash, asof)
     }
@@ -630,6 +634,10 @@ impl Bindings for Memo<'_> {
 
     fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, ErrorCode> {
         Bindings::chain(self.inner, cell, asof)
+    }
+
+    fn chain_read(&self, cell: &CellRef, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
+        Bindings::chain_read(self.inner, cell, asof, current)
     }
 
     fn cached(&self, fn_hash: &str, rest: &str) -> Option<Arc<Target>> {
@@ -689,6 +697,10 @@ impl Bindings for Inner {
     /// A chain's link: the cell read as of `asof` through the engine, computed or stored (K10). Its value is a key
     /// encoding; a cell with no value is `None`.
     fn chain(&self, cell: &CellRef, asof: &str) -> Result<Option<String>, ErrorCode> {
+        self.chain_read(cell, asof, false)
+    }
+
+    fn chain_read(&self, cell: &CellRef, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
         let name = format!("{}/{}", cell.ns, cell.fn_name);
         let Some(b) = Bindings::binding(self, &name, asof)? else { return Ok(None) };
         let c = datumesh_core::Cell {
@@ -697,7 +709,7 @@ impl Bindings for Inner {
             fn_hash: b.fn_hash.clone(),
             args: cell.args.clone(),
         };
-        match self.engine.get_cell(&c, Some(asof)) {
+        match read_cell(&self.engine, &c, asof, current) {
             Ok(Answer::Receipt(bytes)) => match Receipt::from_json(&bytes).map(|r| r.value().clone()) {
                 Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
                 _ => Ok(None),
@@ -708,6 +720,10 @@ impl Bindings for Inner {
     }
 
     fn lookup(&self, class: &str, label: &str, asof: &str) -> Result<Option<String>, ErrorCode> {
+        self.lookup_read(class, label, asof, false)
+    }
+
+    fn lookup_read(&self, class: &str, label: &str, asof: &str, current: bool) -> Result<Option<String>, ErrorCode> {
         let Some(c) = Bindings::class(self, class, asof)? else { return Ok(None) };
         let Some(method) = &c.descriptor.lookup else { return Ok(None) };
         let name = format!("{class}/{method}");
@@ -716,7 +732,7 @@ impl Bindings for Inner {
         let mut args = datumesh_core::Args::new();
         args.insert("label".into(), datumesh_core::Arg::Value(datumesh_core::Scalar::String(label.to_string())));
         let cell = datumesh_core::Cell { ns: ns.into(), fn_name: fn_name.into(), fn_hash: b.fn_hash.clone(), args };
-        match self.engine.get_cell(&cell, Some(asof)) {
+        match read_cell(&self.engine, &cell, asof, current) {
             Ok(Answer::Receipt(bytes)) => match Receipt::from_json(&bytes).map(|r| r.value().clone()) {
                 Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
                 _ => Ok(None),
@@ -876,6 +892,16 @@ impl Targets {
 /// last good answer is kept for requests about now only).
 fn last_good_key(t: &Target) -> String {
     t.cell_key().to_string()
+}
+
+/// A read a request makes inside it (a chain's link, a lookup): current when the request named no
+/// asof (`asof` is then its arrival), else as of the named asof, storing nothing when past (G10).
+fn read_cell(engine: &Engine, cell: &datumesh_core::Cell, asof: &str, current: bool) -> Result<Answer, EngineError> {
+    if current {
+        engine.get_cell_current(cell, asof)
+    } else {
+        engine.get_cell(cell, Some(asof))
+    }
 }
 
 /// The engine's error as an envelope code (the engine's table, "For the HTTP layer").
