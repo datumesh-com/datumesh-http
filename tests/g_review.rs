@@ -170,3 +170,43 @@ async fn verify_finds_the_keys_of_a_past_reads_members() {
     assert_eq!(j.get("level").and_then(datumesh_core::json::Value::as_str), Some("recomputed"), "{}", v.text());
 }
 
+// ---- Item 5: the time budget applies to a rebuild ---------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_over_the_time_budget_is_e_eval_budget() {
+    let n = Node::start(MESH, |c| {
+        c.budget = Duration::from_secs(60);
+        c.rate.enabled = false;
+    })
+    .await;
+    let site =
+        r#"{"args":{"site":{"type":"string","valid":false}},"order":["site"],"returns":{"type":"number","unit":"1"}}"#;
+    let reading = format!("{MESH}/reading");
+    n.stored(&reading, site);
+    for k in 0..1000 {
+        n.put_value(&reading, &args(&[("site", s(&format!("s{k:04}")))]), common::n("1"), T1);
+    }
+    let empty = r#"{"args":{},"order":[],"returns":{"type":"number","unit":"1"}}"#;
+    n.formula(&format!("{MESH}/all"), &format!("sum({reading}(site: *))"), empty);
+    let r = n.get(&format!("/cell/{MESH}/all?asof={T2}")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
+    let rec = datumesh_core::Receipt::from_json(&r.json().get("receipt").unwrap().to_jcs()).unwrap();
+    let parts: Vec<&str> = rec.inputs()[0].split(':').collect();
+    let path = format!("/manifest/{}/{}?asof={}", parts[1], parts[2], rec.asof());
+    assert_eq!(n.get(&path).await.status, 200, "with time: served");
+    // The same database, a mesh with a budget of 1 ms: the rebuild of 1,000 members is refused.
+    let mut setup = Setup::new(MESH);
+    setup.db = Some(n.db.clone());
+    let none = Node::start_with(
+        setup,
+        |c| {
+            c.budget = Duration::from_millis(1);
+            c.rate.enabled = false;
+        },
+        |b| b,
+    )
+    .await;
+    let m = none.get(&path).await;
+    assert_eq!(m.status, 503, "{}", m.text());
+    assert!(m.text().contains("E_EVAL_BUDGET"), "{}", m.text());
+}
