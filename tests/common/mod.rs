@@ -232,12 +232,24 @@ impl Node {
         cfg: impl FnOnce(&mut Config),
         build: impl FnOnce(MeshBuilder) -> MeshBuilder,
     ) -> Node {
-        let host = setup.host.clone();
-        let db = match setup.db {
-            Some(db) => db,
+        let db = match &setup.db {
+            Some(db) => db.clone(),
             None => Arc::new(TestDb::migrated()),
         };
         let store = Arc::new(bl(|| db.store(40)));
+        Node::start_on_store(Setup { db: Some(db), ..setup }, store, cfg, build).await
+    }
+
+    /// As [`start_with`](Node::start_with), on a store of `setup.db` (which must be given) opened by the
+    /// test, e.g. with a recording clock (guard patch G9).
+    pub async fn start_on_store(
+        setup: Setup,
+        store: Arc<PgStore>,
+        cfg: impl FnOnce(&mut Config),
+        build: impl FnOnce(MeshBuilder) -> MeshBuilder,
+    ) -> Node {
+        let host = setup.host.clone();
+        let db = setup.db.clone().expect("start_on_store: the store's database");
         bl(|| {
             if store.namespace(&host).unwrap().is_none() {
                 store.put_namespace(&host, &key_doc(&host, &setup.key), BIND_TX).unwrap();
