@@ -137,3 +137,36 @@ async fn the_same_bundle_posted_twice_on_a_recording_store_writes_nothing_the_se
 /// The clock of the served Lite meshes (common/readpath.rs's MESH_NOW).
 const MESH_NOW_P: &str = "2026-11-16T00:00:00.000000Z";
 
+// ---- Item 4: the keys for a past read's receipt -----------------------------------------------
+
+const OTHER: &str = "gauges.example.org";
+const MESH: &str = "mesh-test.datumesh.com";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verify_finds_the_keys_of_a_past_reads_members() {
+    let n = Node::start(MESH, |c| {
+        c.namespaces = vec![MESH.to_string(), OTHER.to_string()];
+        c.rate.enabled = false;
+    })
+    .await;
+    let okey = key_for(OTHER);
+    bl(|| n.store.put_namespace(OTHER, &key_doc(OTHER, &okey), BIND_TX).unwrap());
+    let gauge = format!("{OTHER}/gauge");
+    let date_sig =
+        r#"{"args":{"d":{"type":"date","valid":false}},"order":["d"],"returns":{"type":"number","unit":"1"}}"#;
+    n.stored(&gauge, date_sig);
+    for (i, v) in [("2016-11-20", "5"), ("2016-11-21", "6")] {
+        n.put_value_signed(&okey, &gauge, &args(&[("d", d(i))]), common::n(v), T1);
+    }
+    let empty = r#"{"args":{},"order":[],"returns":{"type":"number","unit":"1"}}"#;
+    n.formula(&format!("{MESH}/gauges_total"), &format!("sum({gauge}(d: *))"), empty);
+    // A past read (the node's clock is the system's): no member-set row.
+    let r = n.get(&format!("/cell/{MESH}/gauges_total?asof=2026-06-01T00:00:00.000000Z")).await;
+    assert_eq!(r.outcome(), "ok", "{}", r.text());
+    let receipt = r.json().get("receipt").unwrap().to_jcs();
+    let v = n.post("/verify", receipt).await;
+    let j = v.json();
+    assert_eq!(j.get("ok"), Some(&datumesh_core::json::Value::Bool(true)), "{}", v.text());
+    assert_eq!(j.get("level").and_then(datumesh_core::json::Value::as_str), Some("recomputed"), "{}", v.text());
+}
+
