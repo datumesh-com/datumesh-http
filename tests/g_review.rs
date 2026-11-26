@@ -252,3 +252,32 @@ fn a_file_with_two_versions_of_one_cell_run_twice_on_a_recording_store_writes_no
 
 /// Before the run clock: when the function of the two-version file is bound.
 const BEFORE_RUN: &str = "2026-11-15T11:00:00.000000Z";
+
+#[test]
+fn a_bundle_correction_signed_earlier_is_accepted_when_recorded_later_and_again_is_a_no_op() {
+    // C: bundle import follows publish-stored's rule: a correction signed earlier than the cell's latest
+    // is accepted when it is recorded later (recording_time), and the same receipt again is a no-op.
+    let rec = Rec::at(NOW);
+    let lite = rec_lite("g-review-bundle-backfill", &rec);
+    let owned: Vec<String> = Vec::new();
+    bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock(NOW), &simple_bundle(HOST))
+        .unwrap_or_else(|e| panic!("first: {e:?}"));
+    let id = level_id(HOST, "N");
+    // A correction of N signed at 10:00, before its version of 11:00 (TX), recorded later.
+    rec.set(T2_RUN);
+    let correction = simple_bundle_with(
+        HOST,
+        &seed_for(HOST),
+        vec![level_receipt(HOST, "N", "43", "2026-11-15T10:00:00.000000Z")],
+        None,
+    );
+    bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock(T2_RUN), &correction)
+        .unwrap_or_else(|e| panic!("a correction signed earlier, recorded later, is accepted: {e:?}"));
+    let latest = lite.store.latest(&id).unwrap().unwrap();
+    assert_eq!((latest.tx.as_str(), latest.recorded.as_str()), ("2026-11-15T10:00:00.000000Z", T2_RUN));
+    assert_eq!(versions_of(&lite, &id), 2);
+    rec.set("2026-11-15T12:01:00.000000Z");
+    bundle::import_signed(&*lite.store, HOST, &owned, &FixedClock("2026-11-15T12:01:00.000000Z"), &correction)
+        .unwrap_or_else(|e| panic!("the same bundle again is a no-op: {e:?}"));
+    assert_eq!(versions_of(&lite, &id), 2, "nothing written");
+}
