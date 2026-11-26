@@ -46,6 +46,7 @@ use datumesh_core::{Manifest, Receipt, ReceiptBuilder};
 use datumesh_http::publish::{publish_stored_with, PublishOptions};
 use datumesh_http::Config;
 use datumesh_store::pg_unstable::postgres::{Config as PgConfig, NoTls};
+use datumesh_store::PgStore;
 
 const HOST: &str = "mesh-test.datumesh.com";
 const NS: &str = "mesh-test.datumesh.com/scratch_guard";
@@ -186,6 +187,26 @@ async fn node_at(db: Option<Arc<TestDb>>, clock: &'static str, cfg: impl FnOnce(
             cfg(c)
         },
         |b| b.clock(Arc::new(FixedClock(clock))),
+    )
+    .await
+}
+
+/// As [`node_at`], with the mesh builder changed by `build` (a fuel, say).
+async fn node_at_with(
+    db: Option<Arc<TestDb>>,
+    clock: &'static str,
+    cfg: impl FnOnce(&mut Config),
+    build: impl FnOnce(datumesh_http::MeshBuilder) -> datumesh_http::MeshBuilder,
+) -> Node {
+    let mut setup = Setup::new(HOST);
+    setup.db = db;
+    Node::start_with(
+        setup,
+        |c| {
+            c.rate.enabled = false;
+            cfg(c)
+        },
+        |b| build(b.clock(Arc::new(FixedClock(clock)))),
     )
     .await
 }
@@ -709,10 +730,10 @@ async fn flood_a_plain_read_first_writes_a_new_version_and_row() {
     verifies_recomputed(&m, &b3, "the new receipt").await;
 }
 
-// ---- The paths that store cells: a new member must be seen, whatever its tx ----------------------
+// ---- The paths that store cells: a new member (with the run's or a new signed time) is seen --------
 
 /// T0's flood, then `add` records station z's reading for DAY (value 7) by some path, then a fresh
-/// mesh reads flood now: 307, whatever tx the path recorded.
+/// mesh reads flood now: 307.
 async fn new_member_through(add: impl FnOnce(&Node)) -> (Receipt, Receipt) {
     let n = guarded().await;
     seed(&n);
@@ -728,13 +749,6 @@ async fn new_member_through(add: impl FnOnce(&Node)) -> (Receipt, Receipt) {
 async fn publish_stored_with_the_runs_tx_adds_a_member_that_is_seen() {
     let (_, now) = new_member_through(|n| publish(n, &[level_line("z", DAY, "7", None)], R2)).await;
     assert_eq!(now.value().lexical(), "307");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn publish_stored_with_an_older_tx_of_its_own_adds_a_member_that_is_seen() {
-    // A line with its own `tx` (and asof), older than T0's members (R1): the store keeps that tx.
-    let (_, now) = new_member_through(|n| publish(n, &[level_line("z", DAY, "7", Some(OLD))], R2)).await;
-    assert_eq!(now.value().lexical(), "307", "the member is new to this store, whatever its tx");
 }
 
 /// A bundle of NS with LEVEL and one receipt of level(z, DAY) = 7 recorded at `tx`.
@@ -786,65 +800,442 @@ async fn import_signed_with_a_new_tx_adds_a_member_that_is_seen() {
     assert_eq!(now.value().lexical(), "307");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn import_signed_with_an_older_tx_adds_a_member_that_is_seen() {
-    // The bundle's receipt keeps the tx it was signed with, older than T0's members: the store
-    // records no time of its own, so "the slice's latest change" must not be the greatest member tx
-    // alone, or this member is never read.
-    let (_, now) = new_member_through(|n| import(n, bundle_with(OLD))).await;
-    assert_eq!(now.value().lexical(), "307", "the member is new to this store, whatever its tx");
-}
-
-// ---- The recording-time rule (the user's decision of 26 Nov) -----------------------------------
+// ---- G9: the recorded time (decided 26 Nov) --------------------------------------------------------
 //
-// Every storing path records at this mesh's own time (the version's tx is when this store recorded
-// it) and keeps the source's time as a separate field (not designed yet: these tests only assert
-// the tx). Today three paths keep the source's time as the tx: publish-stored's own `tx` field
-// (src/publish.rs, the cell line's `tx`), bundle imports (`import-signed` and `POST /bundles`,
-// src/bundle.rs, `new_versions` from `r.tx()` then `put_version`) and cross-mesh imports
-// (src/foreign.rs, `put_version(&id, r.tx(), &h)`); the store itself requires a version's tx to be
-// its receipt's (datumesh-store `put_version`). These tests fail until the rule is in.
+// The store records every version at its clock (datumesh-store 0.6.5's `recording_clock`; the mesh
+// binary sets the system clock; without one a store records the signed time, as every row before
+// migration 17). These tests open their stores with a clock the test sets: the mesh's own time.
+// Before the patch three paths kept the source's time as the only time (publish-stored's own `tx`,
+// src/publish.rs:1385; bundle imports, src/bundle.rs:739 and :795; cross-mesh imports,
+// src/foreign.rs:533), and src/vectors.rs:402 too.
+//
+// The signed time is shown beside the recorded one at `GET /x/versions/<cell>` (the test writer's
+// choice): `{"cell", "versions": [{"recorded", "signed", "asof", "receipt"}]}`, ascending by
+// recorded. `GET /versions/<cell>` stays as the spec has it (versions.schema.json allows no other
+// member, and other meshes' imports check its `tx` against the receipt's): `tx` is the signed time.
 
-/// The tx of the latest version of level(station, DAY) in `n`'s store.
-fn recorded_tx(n: &Node, station: &str) -> String {
+/// A recording clock the test sets.
+#[derive(Clone)]
+struct Rec(Arc<std::sync::Mutex<String>>);
+
+impl Rec {
+    fn at(t: &str) -> Rec {
+        Rec(Arc::new(std::sync::Mutex::new(t.to_string())))
+    }
+    fn set(&self, t: &str) {
+        *self.0.lock().unwrap() = t.to_string();
+    }
+    fn f(&self) -> datumesh_store::RecordingClock {
+        let c = self.0.clone();
+        Arc::new(move || c.lock().unwrap().clone())
+    }
+}
+
+/// A node whose store records at `rec`, its mesh clock at `clock`; `build` changes the mesh builder.
+async fn rec_node(
+    db: Option<Arc<TestDb>>,
+    rec: &Rec,
+    clock: &'static str,
+    cfg: impl FnOnce(&mut Config),
+    build: impl FnOnce(datumesh_http::MeshBuilder) -> datumesh_http::MeshBuilder,
+) -> Node {
+    let db = db.unwrap_or_else(|| Arc::new(TestDb::migrated()));
+    let url = db.url();
+    let f = rec.f();
+    let store = Arc::new(bl(|| {
+        PgStore::connect_with(&url, datumesh_store::PoolOptions::new().max_size(40).recording_clock(f)).unwrap()
+    }));
+    let mut setup = Setup::new(HOST);
+    setup.db = Some(db);
+    Node::start_on_store(
+        setup,
+        store,
+        |c| {
+            c.rate.enabled = false;
+            cfg(c)
+        },
+        |b| build(b.clock(Arc::new(FixedClock(clock)))),
+    )
+    .await
+}
+
+/// The functions at R0 and T0's values at R1, each recorded at its run's time.
+fn rec_seed(n: &Node, rec: &Rec) {
+    rec.set(R0);
+    publish(n, &functions(), R0);
+    rec.set(R1);
+    publish(n, &run1(), R1);
+}
+
+fn latest_of(n: &Node, station: &str) -> datumesh_store::Version {
     let id = n.cell_id(LEVEL, &args(&[("d", d(DAY)), ("station", s(station))]));
-    bl(|| n.store.latest(&id).unwrap().expect("a version").tx)
+    bl(|| n.store.latest(&id).unwrap().expect("a version"))
+}
+
+/// T0 (a current read at A0), then `add` records station z's reading (7) signed at OLD, older than
+/// T0's members, while the recording clock is at R2; then, at MESH_NOW: (a) the next current read sees
+/// it; (b) a read as of before its arrival is the T0 version, and T0's receipt still rebuilds to its
+/// hash and verifies.
+async fn backfill_through(add: impl FnOnce(&Node)) {
+    let rec = Rec::at(R0);
+    let n = rec_node(None, &rec, MESH_NOW, |_| {}, |b| b).await;
+    rec_seed(&n, &rec);
+    let t0m = rec_node(Some(n.db.clone()), &rec, A0, |_| {}, |b| b).await;
+    let (r0, b0) = answer(&t0m, &flood_path(DAY, None)).await;
+    assert_eq!(r0.value().lexical(), "300");
+    rec.set(R2);
+    add(&n);
+    let v = latest_of(&n, "z");
+    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (OLD, R2), "signed time kept, recorded at the mesh's time");
+    rec.set(MESH_NOW);
+    let m = rec_node(Some(n.db.clone()), &rec, MESH_NOW, |_| {}, |b| b).await;
+    let (now, nb) = answer(&m, &flood_path(DAY, None)).await;
+    assert_eq!(now.value().lexical(), "307", "(a) the next current read recomputes with the backfill");
+    assert!(now.asof() >= R2, "the receipt's asof is not before the member's recorded time: {}", now.asof());
+    assert_eq!(answer(&m, &flood_path(DAY, Some(A1))).await.1, b0, "(b) as of before its arrival: the T0 version");
+    let old = Manifest::from_json(&full(&m, &r0.inputs()[0]).await).unwrap();
+    assert_eq!(old.members().len(), 2, "the old receipt's list leaves the backfill out");
+    verifies_recomputed(&m, &b0, "the T0 receipt").await;
+    verifies_recomputed(&m, &nb, "the receipt over the backfill").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn publish_stored_records_at_the_runs_time_even_with_a_tx_of_its_own() {
-    let n = guarded().await;
-    seed(&n);
-    publish(&n, &[level_line("y", DAY, "8", None)], R2);
-    assert_eq!(recorded_tx(&n, "y"), R2, "the run's clock");
-    publish(&n, &[level_line("z", DAY, "7", Some(OLD))], R2);
-    assert_eq!(recorded_tx(&n, "z"), R2, "recorded at the run's time, not the line's tx {OLD}");
+async fn a_backfill_through_publish_stored_with_an_old_tx() {
+    backfill_through(|n| publish(n, &[level_line("z", DAY, "7", Some(OLD))], R2)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn import_signed_records_at_the_mesh_time_not_the_receipts_tx() {
-    let n = guarded().await;
-    seed(&n);
-    import(&n, bundle_with(OLD));
-    assert_eq!(recorded_tx(&n, "z"), MESH_NOW, "recorded at the importing mesh's time, not the receipt's tx {OLD}");
+async fn a_backfill_through_a_bundle_import() {
+    // `import-signed` and `POST /bundles` share bundle::import_signed's writes.
+    backfill_through(|n| import(n, bundle_with(OLD))).await;
 }
 
 const PEER: &str = "mesh-b.example";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_cross_mesh_import_records_at_the_mesh_time_not_the_sources_tx() {
+async fn a_cross_mesh_import_records_at_the_mesh_time() {
+    // Slices of foreign functions are refused (foreign.rs), so a cross-mesh import never adds a
+    // member: only its recorded time is tested.
     let b = Node::start(PEER, |_| {}).await;
     let gauge = format!("{PEER}/gauge");
     b.stored(&gauge, &flood_sig());
     b.put_value(&gauge, &args(&[("d", d(DAY))]), common::n("5"), T1);
     let b_base = b.base.clone();
-    let a = node(|c| {
-        c.peers.insert(PEER.into(), b_base.clone());
-    })
+    let rec = Rec::at(MESH_NOW);
+    let a = rec_node(
+        None,
+        &rec,
+        MESH_NOW,
+        |c| {
+            c.peers.insert(PEER.into(), b_base.clone());
+        },
+        |x| x,
+    )
     .await;
     let r = a.get(&format!("/cell/{gauge}?d={DAY}")).await;
     assert_eq!(r.outcome(), "ok", "{}", r.text());
     let id = b.cell_id(&gauge, &args(&[("d", d(DAY))]));
-    let tx = bl(|| a.store.latest(&id).unwrap().expect("imported into A's store").tx);
-    assert_eq!(tx, MESH_NOW, "recorded at A's time, not B's tx {T1}");
+    let v = bl(|| a.store.latest(&id).unwrap().expect("imported into A's store"));
+    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (T1, MESH_NOW), "B's signed time kept, recorded at A's");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn import_vectors_records_at_the_mesh_time() {
+    // src/vectors.rs:402: the spec's vectors' stored cells, recorded at the store's clock.
+    let db = Arc::new(TestDb::migrated());
+    let rec = Rec::at(MESH_NOW);
+    let url = db.url();
+    let f = rec.f();
+    let store =
+        bl(|| PgStore::connect_with(&url, datumesh_store::PoolOptions::new().max_size(4).recording_clock(f)).unwrap());
+    let dir = spec_dir().join("vectors");
+    bl(|| datumesh_http::vectors::import(&store, &dir, MESH_NOW));
+    let v = datumesh_core::json::parse(&std::fs::read(dir.join("receipt/stored-number.json")).unwrap()).unwrap();
+    let r = Receipt::from_json(v.get("input").and_then(Value::as_str).unwrap().as_bytes()).unwrap();
+    let got = bl(|| store.latest(&r.cell().id()).unwrap().expect("the vector's cell"));
+    assert_eq!((got.tx.as_str(), got.recorded.as_str()), (r.tx(), MESH_NOW));
+    std::mem::forget(store);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mesh_binary_records_at_the_system_clock() {
+    // `datumesh-mesh import-signed` opens its store with the system clock: a receipt signed at OLD is
+    // recorded at the time of the import.
+    let db = TestDb::migrated();
+    bl(|| db.store(2).put_namespace(HOST, &key_doc(HOST, &key_for(HOST)), BIND_TX).unwrap());
+    let file = out_dir().join(format!("guard-g9-bundle-{}.json", std::process::id()));
+    std::fs::write(&file, bundle_with(OLD)).unwrap();
+    let before = now();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_datumesh-mesh"))
+        .args(["import-signed", file.to_str().unwrap()])
+        .env("DATABASE_URL", db.url())
+        .env("DATUMESH_HOST", HOST)
+        .output()
+        .unwrap();
+    let after = now();
+    let _ = std::fs::remove_file(&file);
+    assert!(out.status.success(), "{} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let cell = datumesh_core::Cell {
+        ns: NS.into(),
+        fn_name: "level".into(),
+        fn_hash: datumesh_core::FunctionDescriptor::from_json(
+            format!(r#"{{"code":{{"body":"","lang":"stored"}},"inputs":[],"signature":{}}}"#, level_sig()).as_bytes(),
+        )
+        .unwrap()
+        .hash(),
+        args: args(&[("d", d(DAY)), ("station", s("z"))]),
+    };
+    let v = bl(|| db.store(2).latest(&cell.id()).unwrap().expect("imported"));
+    assert_eq!(v.tx, OLD);
+    assert!(before <= v.recorded && v.recorded <= after, "recorded {} at the import ({before}..{after})", v.recorded);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plain_reads_and_slices_select_by_recorded() {
+    let rec = Rec::at(R0);
+    let n = rec_node(None, &rec, MESH_NOW, |_| {}, |b| b).await;
+    rec_seed(&n, &rec);
+    rec.set(R2);
+    publish(&n, &[level_line("z", DAY, "7", Some(OLD))], R2);
+    let cell = |asof: &str| format!("/cell/{LEVEL}?d={DAY}&station=z&asof={asof}");
+    assert_eq!(n.get(&cell(A1)).await.status, 404, "as of A1 (after its signed time, before its arrival): none");
+    assert_eq!(n.get(&cell(A2)).await.outcome(), "ok", "as of A2: recorded at R2");
+    let slice = |asof: &str| format!("/slice/{LEVEL}?d={DAY}&station=*&asof={asof}");
+    let members = |r: &Resp| array(r.json().get("members").expect("members")).len();
+    assert_eq!(members(&n.get(&slice(A1)).await), 2);
+    assert_eq!(members(&n.get(&slice(A2)).await), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_correction_signed_earlier_is_accepted_when_recorded_later_and_shown_beside_its_recorded_time() {
+    // The backdating rule (store `put_version`: later than the cell's latest version) is enforced on
+    // the recorded time: a correction of station a signed at OLD, before its R1 version, recorded at R2.
+    let rec = Rec::at(R0);
+    let n = rec_node(None, &rec, MESH_NOW, |_| {}, |b| b).await;
+    rec_seed(&n, &rec);
+    rec.set(R2);
+    publish(&n, &[level_line("a", DAY, "110", Some(OLD))], R2);
+    let v = latest_of(&n, "a");
+    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (OLD, R2));
+    let at = |asof: &str| format!("/cell/{LEVEL}?d={DAY}&station=a&asof={asof}");
+    let value =
+        |r: &Resp| r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str).map(str::to_string);
+    assert_eq!(value(&n.get(&at(A1)).await).as_deref(), Some("100"), "as of A1: the R1 version");
+    assert_eq!(value(&n.get(&at(A2)).await).as_deref(), Some("110"), "as of A2: the correction");
+    // Shown: recorded, with the signed time beside it.
+    let r = n.get(&format!("/x/versions/{LEVEL}?d={DAY}&station=a")).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = r.json();
+    let vs = array(v.get("versions").expect("versions"));
+    let pairs: Vec<(String, String)> = vs
+        .iter()
+        .map(|x| {
+            let g =
+                |k: &str| x.get(k).and_then(Value::as_str).unwrap_or_else(|| panic!("{k}: {}", r.text())).to_string();
+            assert_eq!(g("receipt").len(), 64);
+            assert!(!g("asof").is_empty());
+            (g("recorded"), g("signed"))
+        })
+        .collect();
+    assert_eq!(pairs, [(R1.to_string(), R1.to_string()), (R2.to_string(), OLD.to_string())], "ascending by recorded");
+    // The spec's listing keeps its shape: `tx` is the signed time.
+    let spec = n.get(&format!("/versions/{LEVEL}?d={DAY}&station=a")).await;
+    assert_eq!(spec.status, 200, "{}", spec.text());
+    let sv = spec.json();
+    let mut txs: Vec<String> = array(sv.get("versions").unwrap())
+        .iter()
+        .map(|x| x.get("tx").and_then(Value::as_str).unwrap().to_string())
+        .collect();
+    txs.sort();
+    assert_eq!(txs, [OLD.to_string(), R1.to_string()]);
+}
+
+// ---- G10: a past read's list, with nothing stored (decided 26 Nov) ---------------------------------
+//
+// `GET /manifest/<slice_id>/<members_hash>?asof=<A>` rebuilds as of A with no member-set row, from
+// the slice's definition (kept once per distinct slice, table `slice_definitions`). Without `asof`
+// and with no row nor manifest it is 404 as before. A rebuild counts against the evaluation's budget
+// (`MeshBuilder::fuel`): over it, 503 `E_EVAL_BUDGET`. A slice with no definition held is 404 at
+// once. Metrics: `datumesh_manifest_rebuilds_total` counts every rebuild attempted (serving held
+// bytes is not one), `datumesh_manifest_rebuild_failures_total` every one refused (hash, member,
+// budget). A failed rebuild logs a WARN or ERROR line naming the entry and the word "rebuild".
+
+fn rows5(n: &Node) -> [i64; 5] {
+    let r = stored_rows(n);
+    [r[0], r[1], r[2], r[3], count(n, "slice_definitions")]
+}
+
+async fn metric_of(n: &Node, name: &str) -> f64 {
+    let v = metric(&n.get("/metrics").await.text(), name);
+    if v.is_nan() {
+        0.0
+    } else {
+        v
+    }
+}
+
+static LOG: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+struct LogWriter;
+
+impl std::io::Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        LOG.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Captures the WARN and ERROR lines of every test of this file.
+fn capture_logs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(|| LogWriter)
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .try_init();
+    });
+}
+
+fn logged() -> String {
+    String::from_utf8_lossy(&LOG.lock().unwrap()).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_past_reads_list_is_rebuilt_as_of_its_asof_with_no_row_and_nothing_stored() {
+    let n = guarded().await;
+    seed(&n);
+    publish(&n, &run2(), R2);
+    let base = rows5(&n);
+    // A past read, and no current read ever.
+    let (r, b) = answer(&n, &flood_path(DAY, Some(A2))).await;
+    assert_eq!(r.value().lexical(), "350");
+    let after = rows5(&n);
+    assert_eq!(after[..4], base[..4], "nothing stored but the slice's definition");
+    assert_eq!(after[4], base[4] + 1, "the definition, once");
+    // Varying the date stores nothing new; another slice is one definition more.
+    for asof in [A1, A2, "2026-11-15T20:00:00.000000Z"] {
+        answer(&n, &flood_path(DAY, Some(asof))).await;
+    }
+    assert_eq!(rows5(&n), after, "nothing new per date");
+    answer(&n, &flood_path(DAY2, Some(A2))).await;
+    assert_eq!(rows5(&n)[4], after[4] + 1, "a distinct slice: one definition more");
+    let after = rows5(&n);
+    // No row: the plain form has nothing; the form with the receipt's asof rebuilds.
+    let entry = &r.inputs()[0];
+    assert_eq!(n.get(&manifest_path(entry)).await.status, 404, "no row, no manifest, no asof: not found");
+    let rebuilds = metric_of(&n, "datumesh_manifest_rebuilds_total").await;
+    let q = format!("{}?asof={}", manifest_path(entry), r.asof());
+    let m = n.get(&q).await;
+    assert_eq!(m.status, 200, "{}", m.text());
+    assert_eq!(m.header("cache-control").as_deref(), Some(IMMUTABLE));
+    let man = Manifest::from_json(&m.body).unwrap();
+    assert_eq!(man.entry(), *entry);
+    assert_eq!(man.members().len(), 3);
+    let slice = man.slice().clone();
+    let ms = vec![stored_hash(&n, "a", DAY).await, stored_hash(&n, "b", DAY).await, stored_hash(&n, "c", DAY).await];
+    assert_eq!(m.body, manifest_bytes(&slice, &ms), "the canonical bytes a stored manifest would hold");
+    assert!(metric_of(&n, "datumesh_manifest_rebuilds_total").await > rebuilds, "counted as a rebuild");
+    // The paged form takes the asof too.
+    let p = n.get(&format!("{q}&limit=2")).await;
+    assert_eq!(p.status, 200, "{}", p.text());
+    assert_eq!(members_of(&p).len(), 2);
+    // POST /verify of the past read's receipt: recomputed, its list as of its asof.
+    verifies_recomputed(&n, &b, "the past read's receipt").await;
+    assert_eq!(rows5(&n), after, "the rebuilds and the verification store nothing");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_false_asof_an_unknown_slice_and_a_failed_rebuild_are_refused_counted_and_logged() {
+    capture_logs();
+    let n = guarded().await;
+    seed(&n);
+    let (r, _) = answer(&n, &flood_path(DAY, Some(A1))).await;
+    let entry = r.inputs()[0].clone();
+    let failures = metric_of(&n, "datumesh_manifest_rebuild_failures_total").await;
+    // A false asof (before every member): the hash differs.
+    let f = n.get(&format!("{}?asof={R0}", manifest_path(&entry))).await;
+    assert_eq!(f.status, 503, "{}", f.text());
+    assert!(f.text().contains("E_INPUT_UNAVAILABLE"), "{}", f.text());
+    assert_ne!(f.header("cache-control").as_deref(), Some(IMMUTABLE));
+    assert!(metric_of(&n, "datumesh_manifest_rebuild_failures_total").await > failures, "counted");
+    let log = logged();
+    assert!(
+        log.lines().any(|l| l.contains(&entry) && l.to_lowercase().contains("rebuild")),
+        "a log line names the entry: {log}"
+    );
+    // A slice the mesh has no definition for: refused at once, no rebuild attempted.
+    let rebuilds = metric_of(&n, "datumesh_manifest_rebuilds_total").await;
+    let failures = metric_of(&n, "datumesh_manifest_rebuild_failures_total").await;
+    let u = n.get(&format!("/manifest/{}/{}?asof={A1}", "a".repeat(64), "b".repeat(64))).await;
+    assert_eq!(u.status, 404, "{}", u.text());
+    assert_eq!(metric_of(&n, "datumesh_manifest_rebuilds_total").await, rebuilds, "no rebuild attempted");
+    assert_eq!(metric_of(&n, "datumesh_manifest_rebuild_failures_total").await, failures);
+    // A malformed asof: 400.
+    assert_eq!(n.get(&format!("{}?asof=yesterday", manifest_path(&entry))).await.status, 400);
+    assert_eq!(manifest_rows(&n), (0, 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_counts_against_the_evaluation_budget() {
+    let n = node(|c| c.budget = std::time::Duration::from_secs(60)).await;
+    let mut lines = functions();
+    for k in 0..300 {
+        lines.push(level_line(&format!("s{k:03}"), DAY, "1", None));
+    }
+    publish(&n, &lines, R1);
+    let (cur, _) = answer(&n, &flood_path(DAY, None)).await;
+    let (past, _) = answer(&n, &flood_path(DAY, Some(A2))).await;
+    // A mesh with a fuel of 100: both rebuilds (from the row, and as of an asof) are over it.
+    let small = node_at_with(Some(n.db.clone()), MESH_NOW, |_| {}, |b| b.fuel(100)).await;
+    let failures = metric_of(&small, "datumesh_manifest_rebuild_failures_total").await;
+    for q in [manifest_path(&cur.inputs()[0]), format!("{}?asof={}", manifest_path(&past.inputs()[0]), past.asof())] {
+        let r = small.get(&q).await;
+        assert_eq!(r.status, 503, "{q}: {}", r.text());
+        assert!(r.text().contains("E_EVAL_BUDGET"), "{q}: {}", r.text());
+    }
+    assert!(metric_of(&small, "datumesh_manifest_rebuild_failures_total").await >= failures + 2.0);
+    // At the default fuel both are served.
+    full(&n, &cur.inputs()[0]).await;
+    let ok = n.get(&format!("{}?asof={}", manifest_path(&past.inputs()[0]), past.asof())).await;
+    assert_eq!(ok.status, 200, "{}", ok.text());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explain_takes_the_count_from_the_row_and_does_no_rebuild() {
+    let n = guarded().await;
+    seed(&n);
+    let (flood, _) = answer(&n, &flood_path(DAY, None)).await;
+    let m = node_on(Some(n.db.clone()), |_| {}).await;
+    let rebuilds = metric_of(&m, "datumesh_manifest_rebuilds_total").await;
+    let r = m.get(&format!("/explain/{FLOOD}?d={DAY}")).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let v = r.json();
+    let node = &array(v.get("inputs").expect("inputs"))[0];
+    assert_eq!(node.get("members").and_then(Value::as_number_text), Some("2"));
+    assert!(node.get("slice").is_some());
+    assert_eq!(metric_of(&m, "datumesh_manifest_rebuilds_total").await, rebuilds, "/explain rebuilt nothing");
+    full(&m, &flood.inputs()[0]).await;
+    assert!(metric_of(&m, "datumesh_manifest_rebuilds_total").await > rebuilds, "/manifest did");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flood_case_2_verifies_through_its_asof_with_no_current_read_ever() {
+    // The coordinator's timeline, case 2, alone: the past read's receipt, never followed by a current
+    // read, verifies at level recomputed and its list is served by ?asof=.
+    let n = guarded().await;
+    seed(&n);
+    publish(&n, &run2(), R2);
+    let (r2, b2) = answer(&n, &flood_path(DAY, Some(A2))).await;
+    assert_eq!(r2.value().lexical(), "350");
+    assert_eq!(count(&n, "member_sets"), 0, "no row: no current read ever");
+    let fresh = node_on(Some(n.db.clone()), |_| {}).await;
+    let m = fresh.get(&format!("{}?asof={}", manifest_path(&r2.inputs()[0]), r2.asof())).await;
+    assert_eq!(m.status, 200, "{}", m.text());
+    assert_eq!(Manifest::from_json(&m.body).unwrap().entry(), r2.inputs()[0]);
+    verifies_recomputed(&fresh, &b2, "case 2's receipt").await;
+    assert_eq!(count(&n, "member_sets"), 0);
 }
