@@ -142,7 +142,9 @@ async fn the_index_evaluates_nothing() {
     let a = Node::start(A, |c| c.budget = std::time::Duration::from_secs(30)).await;
     let (class, hash) = pair_world(&a).await;
     let twice = bl(|| a.store.resolve_name(&format!("{class}/twice"), "9999-12-31T23:59:59.999999Z").unwrap().unwrap());
-    let got = a.get(&format!("/cell/{class}/twice?base=EUR&date={DAY}&quote=GBP&asof={ASOF}")).await;
+    // A current read (no asof): a read as of a past time stores nothing (CONTRACT-guard-patch,
+    // decided 26 Nov), and this test needs a stored computed version to count.
+    let got = a.get(&format!("/cell/{class}/twice?base=EUR&date={DAY}&quote=GBP")).await;
     assert_eq!(got.status, 200, "{}", got.text());
     let names = ["base", "date", "quote"];
     let before = computed_count(&a, &format!("{class}/twice"), &twice, &names);
