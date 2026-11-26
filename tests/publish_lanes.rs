@@ -106,6 +106,16 @@ fn counts(node: &Node) -> [i64; 4] {
 
 /// Everything observable about the cells, per id: latest, version_asof at three instants, every
 /// version's receipt bytes.
+/// A version as the lanes must agree on it: every field but `seq` (store 0.6.5), the insertion
+/// sequence, which follows the order the lanes' writes interleave in. `recorded` is compared: these
+/// nodes' stores have no recording clock, so it is the signed tx on every lane.
+fn ver(v: &datumesh_store::Version) -> String {
+    format!(
+        "cell {} tx {} receipt {} asof {} withdrawn {} recorded {}",
+        v.cell_id, v.tx, v.receipt_hash, v.asof, v.withdrawn, v.recorded
+    )
+}
+
 fn state(node: &Node) -> BTreeMap<String, String> {
     bl(|| {
         (0..CELLS)
@@ -113,11 +123,14 @@ fn state(node: &Node) -> BTreeMap<String, String> {
                 let id = cell_id(i);
                 let mut out = String::new();
                 let latest = node.store.latest(&id).unwrap().unwrap_or_else(|| panic!("no version of {id}"));
-                out.push_str(&format!("latest {latest:?}\n"));
+                out.push_str(&format!("latest {}\n", ver(&latest)));
                 for n in [0, LINES / CELLS / 2, LINES / CELLS - 1] {
                     // Mid-way between version n and n+1 (after the last: the same as latest).
                     let at = plus(&tx_of(n), 500_000);
-                    out.push_str(&format!("asof {at} {:?}\n", node.store.version_asof(&id, &at).unwrap()));
+                    out.push_str(&format!(
+                        "asof {at} {:?}\n",
+                        node.store.version_asof(&id, &at).unwrap().as_ref().map(ver)
+                    ));
                 }
                 for n in 0..LINES / CELLS {
                     let tx = tx_of(n);
