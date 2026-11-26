@@ -15,6 +15,27 @@ use datumesh_http::call::{self, Bindings, Bound, Rejection};
 const A: &str = "mesh-a.example";
 
 /// Percent-encodes a call for a URL path.
+/// An answer (or a batch item, its `envelope`) without its `resolved` member and, for a read as of a
+/// past time, without its receipt's `issued` and `sig`.
+fn comparable(v: &Value, past: bool) -> Vec<u8> {
+    fn strip(v: &mut Value) {
+        if let Value::Object(m) = v {
+            for (k, x) in m.iter_mut() {
+                match (k.as_str(), x) {
+                    ("receipt", Value::Object(r)) => r.retain(|(f, _)| f != "issued" && f != "sig"),
+                    ("envelope", x) => strip(x),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut v = json::parse(&without_resolved(v)).unwrap();
+    if past {
+        strip(&mut v);
+    }
+    v.to_jcs()
+}
+
 fn enc(call: &str) -> String {
     let mut out = String::new();
     for b in call.bytes() {
@@ -77,9 +98,12 @@ async fn call_and_uri_are_one_request() {
             assert_eq!(r.status, base.status, "{c}: {}", r.text());
             // Since spec-0.5.0 an answer to a call that used an alias says so in `resolved` (5.5,
             // 16.7: every alias is a resolution); but for that member it is the URI's answer.
+            // As of a past time a computed cell is re-signed per read (decided 26 Nov: a past read
+            // stores nothing and is not memoised): the receipts differ in `issued` and `sig` only.
+            let past = uri.contains("&asof=");
             assert_eq!(
-                without_resolved(&r.json()),
-                without_resolved(&base.json()),
+                comparable(&r.json(), past),
+                comparable(&base.json(), past),
                 "{c} and {uri} differ:\n{}\n{}",
                 r.text(),
                 base.text()
@@ -117,10 +141,11 @@ async fn call_and_uri_are_one_request() {
     let r = a.post("/cells", body.into_bytes()).await;
     let Value::Array(items) = r.json() else { panic!("{}", r.text()) };
     let mut i = 0;
-    for (_, cs) in &groups {
-        let first = without_resolved(&items[i]);
+    for (uri, cs) in &groups {
+        let past = uri.contains("&asof=");
+        let first = comparable(&items[i], past);
         for k in 0..cs.len() {
-            assert_eq!(without_resolved(&items[i + 1 + k]), first);
+            assert_eq!(comparable(&items[i + 1 + k], past), first, "{uri}: batch item {k}");
         }
         i += 1 + cs.len();
     }
