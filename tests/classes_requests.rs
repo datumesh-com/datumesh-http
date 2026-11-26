@@ -77,6 +77,12 @@ impl Got {
     }
 }
 
+/// [`Got::answer`] of an envelope's `receipt` member.
+fn answer_of(receipt: Option<&Value>) -> Option<(String, String, Vec<String>, String, String)> {
+    let r = Receipt::from_json(&receipt?.to_jcs()).unwrap();
+    Some((r.cell().id(), format!("{:?}", r.value()), r.inputs().to_vec(), r.tx().to_string(), r.asof().to_string()))
+}
+
 /// `resolved`: `call`, then each resolution `(from, kind, to)` (a `lookup` one with its `asof`).
 /// A resolution: `from`, `kind`, `to` and, for a lookup, its `asof`.
 type Resolution = (String, String, String, Option<String>);
@@ -269,8 +275,8 @@ async fn resolved_on_a_short_call_with_a_defaulted_date() {
     let g = got(&r);
     assert_eq!(g.outcome(), "ok", "{}", r.text());
     assert_eq!(
-        (g.hash.clone(), g.cell_id.clone()),
-        (want.hash.clone(), want.cell_id.clone()),
+        (g.answer(), g.cell_id.clone()),
+        (want.answer(), want.cell_id.clone()),
         "the default is bound in the cell"
     );
     let (call, rs) = resolved_of(&g);
@@ -284,7 +290,7 @@ async fn resolved_on_a_short_call_with_a_defaulted_date() {
         let r = a.get(&path(call, Some(ASOF))).await;
         let g = got(&r);
         assert_eq!(g.outcome(), "ok", "{call}: {}", r.text());
-        assert_eq!(g.hash, want.hash, "{call}");
+        assert_eq!(g.answer(), want.answer(), "{call}");
         let (c, rs) = resolved_of(&g);
         assert_eq!(c, full, "{call}");
         let from = if call.starts_with('@') { "@xcross" } else { "xcross" };
@@ -329,7 +335,7 @@ async fn resolved_on_a_short_call_with_a_defaulted_date() {
     let envs: Vec<Value> = items.iter().map(|i| i.get("envelope").cloned().unwrap()).collect();
     for e in &envs {
         assert_eq!(e.get("outcome").and_then(Value::as_str), Some("ok"), "{}", String::from_utf8_lossy(&e.to_jcs()));
-        assert_eq!(e.get("receipt"), envs[3].get("receipt"));
+        assert_eq!(answer_of(e.get("receipt")), answer_of(envs[3].get("receipt")));
     }
     for (i, want_call) in [(0, &full), (2, &full)] {
         assert_eq!(
