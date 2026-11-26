@@ -56,6 +56,16 @@ fn got(r: &Resp) -> Got {
 }
 
 impl Got {
+    /// What a receipt says, but not when and by which signature it was issued: (cell id, value,
+    /// inputs, tx, asof). A read as of a past time stores nothing and is not memoised, so two such
+    /// reads of one cell sign two receipts that differ in `issued` and `sig` only (CONTRACT-guard-patch,
+    /// decided 26 Nov).
+    fn answer(&self) -> Option<(String, String, Vec<String>, String, String)> {
+        self.receipt.as_ref().map(|b| {
+            let r = Receipt::from_json(b).unwrap();
+            (r.cell().id(), format!("{:?}", r.value()), r.inputs().to_vec(), r.tx().to_string(), r.asof().to_string())
+        })
+    }
     fn resolved(&self) -> Option<&Value> {
         self.env.get("resolved")
     }
@@ -184,8 +194,13 @@ async fn a_method_call_and_the_plain_read_are_one_cell() {
             let g = got(&r);
             assert_eq!(g.status, 200, "{path}: {}", r.text());
             assert_eq!(g.cell_id, want.cell_id, "{path}: the cell id");
-            assert_eq!(g.hash, want.hash, "{path}: the receipt hash");
-            assert_eq!(g.receipt, want.receipt, "{path}: the receipt");
+            if asof.is_none() {
+                assert_eq!(g.hash, want.hash, "{path}: the receipt hash");
+                assert_eq!(g.receipt, want.receipt, "{path}: the receipt");
+            } else {
+                // As of a past time: re-signed per read; the same cell, value, inputs, tx and asof.
+                assert_eq!(g.answer(), want.answer(), "{path}: the receipt's cell, value, inputs, tx and asof");
+            }
             assert_eq!(g.env.get("trust"), want.env.get("trust"), "{path}");
             assert_eq!(g.env.get("fn_hash"), want.env.get("fn_hash"), "{path}");
             // The mesh has no reference classes (16.9): it never says `shadows`.
