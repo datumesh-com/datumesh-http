@@ -325,8 +325,14 @@ async fn every_endpoint_and_outcome() {
     let r = a.get(&format!("/versions/{A}/nothing?ccy=USD")).await;
     assert_eq!(r.json().get("error").and_then(Value::as_str), Some("E_NAME_UNBOUND"));
 
-    // GET /receipt, /descriptor, /blob: bytes, immutable.
-    let dr = Receipt::from_json(&double_receipt).unwrap();
+    // GET /receipt, /descriptor, /blob: bytes, immutable. The receipt of a current read is stored and
+    // served; that of the read as of T2 above, a past time, is answered but not stored (CONTRACT-guard-patch,
+    // decided 26 Nov): not found.
+    let past = Receipt::from_json(&double_receipt).unwrap();
+    assert_eq!(a.get(&format!("/receipt/{}", past.hash())).await.status, 404, "a past read stores no receipt");
+    let cur = a.get(&format!("/cell/{A}/double?ccy=USD&date=2026-03-01")).await;
+    assert_eq!(cur.outcome(), "ok", "{}", cur.text());
+    let dr = Receipt::from_json(&cur.json().get("receipt").unwrap().to_jcs()).unwrap();
     let r = a.get(&format!("/receipt/{}", dr.hash())).await;
     assert_eq!(r.status, 200);
     assert_eq!(Receipt::from_json(&r.body).unwrap().hash(), dr.hash());
