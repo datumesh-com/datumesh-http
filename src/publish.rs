@@ -1504,6 +1504,8 @@ impl<S: Store + ?Sized> Planner<'_, S> {
         // after that time must be this receipt (as of that time) or the line is refused.
         let recorded = self.store.recording_time(&s.tx);
         let version = match cell_latest(&mut self.reads, self.store, &self.sim, &s.id).map_err(err)? {
+            // The receipt is already the cell's latest version: a re-run writes nothing.
+            Some((_, latest_hash)) if latest_hash == s.hash => false,
             Some((latest_recorded, _)) if latest_recorded.as_str() >= recorded.as_str() => {
                 if cell_version_asof(self.store, &self.sim, &s.id, &recorded).map_err(err)?.as_deref()
                     != Some(s.hash.as_str())

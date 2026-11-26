@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.5
+
+Requires datumesh-engine 0.6.2 and datumesh-store 0.6.5 (migrations 17 and 13, applied at start).
+
+- **Manifests are rebuilt, not stored, by default (guard patch G4, G5, G10).** `DATUMESH_MANIFEST_STORE_MAX` (default 0) is the most members an evaluation may store as a manifest; at 0 the mesh keeps only the member-set row and serves `GET /manifest/<slice>/<members>` by rebuilding the list from it. `?asof=` rebuilds a past read's list from the slice's definition, storing nothing; `?after=&limit=` pages it (default 1,000, at most 10,000). A rebuild over `DATUMESH_BUDGET_MS` is `503 E_EVAL_BUDGET`. Cost: the first request for a manifest that is not held is slower; no receipt changes.
+- **Recorded time (guard patch G9).** Every version is recorded at the mesh's time, not its signed tx; `GET /x/versions/<cell>` shows both. As-of reads, slices and the reuse check select by recorded time. Re-running a publish file or importing a bundle again writes nothing. Cost: `GET /versions` is unchanged; its `tx` is the signed time.
+- **Past reads store nothing (guard patch G10).** A request naming an asof before its arrival stores nothing; one with no asof, or one at or after its arrival, is current and stores. `POST /verify` resolves a receipt's slices as of its own asof. Cost: a past read's receipt is not found by `GET /receipt/<hash>`.
+- **`GET /explain` reads a slice's count and slice from its row** (no rebuild).
+- Metrics: `datumesh_manifest_rebuilds_total`, `datumesh_manifest_rebuild_failures_total`.
+
 ## Unreleased
 
 - **A batch looks each class up once (guard patch B, item 16).** `Memo::class` shares the batch's lookups as `Memo::binding` does: one store read per (class name, asof) for all chunks of a batch, at most 64 asofs per name, one lookup at a time per key. Before, every method call of a batch read its class from the store. Cost: none to the answers; a failed lookup is still not kept.

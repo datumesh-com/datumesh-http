@@ -737,14 +737,12 @@ fn import_with<S: Store + ?Sized>(
     for (_, r) in &receipts {
         let id = r.cell().id();
         let tx = r.tx();
-        match store.version_asof(&id, tx).map_err(|e| BundleError::Store(e.to_string()))? {
-            Some(v) if v.tx == tx => {
-                if v.receipt_hash != r.hash() {
-                    return Err(BundleError::Store(format!("{id} has another version at {tx}")));
-                }
-                continue;
+        // A version already at this signed tx: the same receipt is a no-op (a re-import writes nothing).
+        if let Some(v) = store.versions(&id, tx, tx).map_err(|e| BundleError::Store(e.to_string()))?.first() {
+            if v.receipt_hash != r.hash() {
+                return Err(BundleError::Store(format!("{id} has another version at {tx}")));
             }
-            _ => {}
+            continue;
         }
         if let Some(l) = store.latest(&id).map_err(|e| BundleError::Store(e.to_string()))? {
             if l.tx.as_str() >= tx {

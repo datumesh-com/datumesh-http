@@ -111,7 +111,8 @@ fn held_or_rebuilt(inner: &Inner, slice_id: &str, entry: &str, q: &ManifestQuery
         Err(_) => return Err(envelope::error_reply(ErrorCode::InputUnavailable)),
     }
     inner.metrics.manifest_rebuild();
-    match inner.engine.manifest_asof(entry, &asof) {
+    let deadline = std::time::Instant::now() + inner.config.budget;
+    match inner.engine.manifest_asof_until(entry, &asof, deadline) {
         Ok(Some(b)) => Ok(b),
         Ok(None) => Err(not_found()),
         Err(e) => {
@@ -138,29 +139,35 @@ fn refusal(e: &EngineError) -> Reply {
 }
 
 /// The members of a slice entry for a reader that needs them (G6: `keys_for_receipt`,
-/// `foreign_deps`): the held manifest, else the rebuild as of the member-set row's `asof`. Counted as
-/// a rebuild when `metrics` is given; nothing is stored. `None` when neither gives the members.
+/// `foreign_deps`): the held manifest, else the rebuild as of the member-set row's `asof`, or as of
+/// `asof` (the receipt's own, for a past read with no row). Counted as a rebuild when `metrics` is
+/// given; within `deadline` (the time budget); nothing is stored. `None` when neither gives the members.
 pub(crate) fn members_for_reader(
     store: &(dyn datumesh_store::Store + Send + Sync),
     engine: &datumesh_engine::Engine,
     metrics: Option<&crate::metrics::Metrics>,
     entry: &str,
+    asof: Option<&str>,
+    deadline: std::time::Instant,
 ) -> Option<Manifest> {
     if let Some(b) = store.manifest(entry) {
         return Manifest::from_json(&b).ok();
     }
-    let row = store.member_set(entry).ok().flatten()?;
+    let at = match store.member_set(entry).ok().flatten() {
+        Some(row) => row.asof,
+        None => asof?.to_string(),
+    };
     if let Some(m) = metrics {
         m.manifest_rebuild();
     }
-    match engine.manifest_asof(entry, &row.asof) {
+    match engine.manifest_asof_until(entry, &at, deadline) {
         Ok(Some(b)) => Manifest::from_json(&b).ok(),
         Ok(None) => None,
         Err(e) => {
             if let Some(m) = metrics {
                 m.manifest_rebuild_failure();
             }
-            tracing::warn!(entry, asof = row.asof.as_str(), "manifest rebuild refused: {e}");
+            tracing::warn!(entry, asof = at.as_str(), "manifest rebuild refused: {e}");
             None
         }
     }

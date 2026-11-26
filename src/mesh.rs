@@ -1169,9 +1169,11 @@ impl Inner {
         }
         let mut attempt = 0;
         loop {
-            // A request that named no asof is current, arrival `now` (G10); a named one is past or current.
+            // The mesh decides at arrival (G10, review item 7): a request that named no asof, or one at or
+            // after its arrival, is current; only a named asof before the arrival is a past read.
             let r = match target.asof() {
-                Some(t) => self.engine.get_cell(&target.cell, Some(t)),
+                Some(t) if t < now => self.engine.get_cell(&target.cell, Some(t)),
+                Some(t) => self.engine.get_cell_current(&target.cell, t),
                 None => self.engine.get_cell_current(&target.cell, now),
             };
             let inval = self.foreign.take_invalidated();
@@ -1192,7 +1194,7 @@ impl Inner {
                         return envelope::error_answer_reply(ErrorCode::EvalUnavailable, Some(&target.bound.fn_hash));
                     };
                     if attempt < 2 {
-                        match self.foreign.refresh_deps(&info.hash, a) {
+                        match self.foreign.refresh_deps(&info.hash, a, &self.metrics) {
                             Ok(true) => {
                                 for id in self.foreign.take_invalidated() {
                                     self.version_added(&id);
@@ -1333,6 +1335,9 @@ impl Inner {
     /// namespace records.
     pub(crate) fn keys_for_receipt(&self, receipt: &[u8]) -> Keys {
         let mut hosts = std::collections::BTreeSet::new();
+        // The receipt's own asof is the rebuild's, for a past read's members (G6).
+        let asof = datumesh_core::Receipt::from_json(receipt).ok().map(|r| r.asof().to_string());
+        let deadline = std::time::Instant::now() + self.config.budget;
         if let Ok(v) = json::parse(receipt) {
             if let Some(h) = v.get("computed_by").and_then(Value::as_str) {
                 hosts.insert(h.split('#').next().unwrap_or("").to_string());
@@ -1346,6 +1351,8 @@ impl Inner {
                             &self.engine,
                             Some(&self.metrics),
                             i,
+                            asof.as_deref(),
+                            deadline,
                         ) {
                             members.extend(m.members().iter().take(10_000).cloned());
                         }

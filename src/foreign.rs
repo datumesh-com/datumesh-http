@@ -205,6 +205,8 @@ pub struct Foreign {
     /// The mesh's engine, once built (G6: a slice's members are rebuilt for `foreign_deps`); weak, as
     /// the engine holds this runtime.
     engine: std::sync::OnceLock<std::sync::Weak<datumesh_engine::Engine>>,
+    /// The time budget of a rebuild (`DATUMESH_BUDGET_MS`).
+    budget: Duration,
     /// The namespaces this mesh hosts that it has seen (a hosted namespace never becomes foreign again).
     hosted: Mutex<std::collections::HashSet<String>>,
     /// Counters for /metrics.
@@ -241,6 +243,7 @@ impl Foreign {
         };
         Foreign {
             engine: std::sync::OnceLock::new(),
+            budget: config.budget,
             store,
             client: Client::with_keys(cc, keys),
             clock,
@@ -593,22 +596,32 @@ impl Foreign {
         let _ = self.engine.set(engine);
     }
 
-    fn foreign_deps(&self, receipt_hash: &str) -> Arc<Vec<Cell>> {
+    fn foreign_deps(&self, receipt_hash: &str, metrics: &crate::metrics::Metrics) -> Arc<Vec<Cell>> {
         if let Some(d) = self.deps.lock().unwrap_or_else(|p| p.into_inner()).get(receipt_hash) {
             return d.clone();
         }
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        let mut todo = vec![receipt_hash.to_string()];
-        while let Some(h) = todo.pop() {
+        // Each entry carries the asof of the receipt that cites it: a slice's members are rebuilt as of it (G6).
+        let mut todo: Vec<(String, Option<String>)> = vec![(receipt_hash.to_string(), None)];
+        let deadline = Instant::now() + self.budget;
+        let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
+        while let Some((h, citing)) = todo.pop() {
             if !seen.insert(h.clone()) || seen.len() > 100_000 {
                 continue;
             }
             if h.starts_with("slice:") {
-                let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
-                if let Some(e) = engine {
-                    if let Some(m) = crate::manifest_route::members_for_reader(&*self.store, &e, None, &h) {
-                        todo.extend(m.members().iter().cloned());
+                if let Some(e) = &engine {
+                    let m = crate::manifest_route::members_for_reader(
+                        &*self.store,
+                        e,
+                        Some(metrics),
+                        &h,
+                        citing.as_deref(),
+                        deadline,
+                    );
+                    if let Some(m) = m {
+                        todo.extend(m.members().iter().map(|x| (x.clone(), citing.clone())));
                     }
                 }
                 continue;
@@ -620,7 +633,8 @@ impl Foreign {
             if self.is_foreign(&r.cell().ns) && r.inputs().is_empty() {
                 out.push(r.cell().clone());
             } else {
-                todo.extend(r.inputs().iter().cloned());
+                let asof = Some(r.asof().to_string());
+                todo.extend(r.inputs().iter().map(|x| (x.clone(), asof.clone())));
             }
         }
         let d = Arc::new(out);
@@ -635,12 +649,17 @@ impl Foreign {
     /// Confirms the foreign cells an answer rests on, for an answer as of `asof`: those not
     /// confirmed within the TTL and confirmed before `asof` are fetched again. `Ok(true)` when
     /// versions were added (the caller answers again).
-    pub fn refresh_deps(&self, receipt_hash: &str, asof: &str) -> Result<bool, ForeignError> {
+    pub fn refresh_deps(
+        &self,
+        receipt_hash: &str,
+        asof: &str,
+        metrics: &crate::metrics::Metrics,
+    ) -> Result<bool, ForeignError> {
         if !self.any_cells() {
             return Ok(false);
         }
         let mut added = false;
-        for cell in self.foreign_deps(receipt_hash).iter() {
+        for cell in self.foreign_deps(receipt_hash, metrics).iter() {
             let stale = match self.cells.lock().unwrap_or_else(|p| p.into_inner()).get(&cell.id()) {
                 Some(c) => c.at.elapsed() >= self.ttl_current && asof > c.instant.as_str(),
                 None => true,
