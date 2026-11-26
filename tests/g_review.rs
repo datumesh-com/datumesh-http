@@ -210,3 +210,45 @@ async fn a_rebuild_over_the_time_budget_is_e_eval_budget() {
     assert_eq!(m.status, 503, "{}", m.text());
     assert!(m.text().contains("E_EVAL_BUDGET"), "{}", m.text());
 }
+
+// ---- Second review (27 Nov) -----------------------------------------------------------------------
+
+#[test]
+fn a_file_with_two_versions_of_one_cell_run_twice_on_a_recording_store_writes_nothing_the_second_time() {
+    // B5: publish-stored skips a line when its receipt is any version of the cell at its signed tx. A
+    // recording store with a fixed clock: both versions are recorded at the same instant's ordering.
+    let rec = Rec::at(NOW);
+    let lite = rec_lite("g-review-two-versions", &rec);
+    let c = calculus::calc();
+    let cell = |value: &str, tx: &str| {
+        serde_json::json!({
+            "cell": {"fn": c.reading, "args": {"site": {"type": "string", "value": "N"}}},
+            "licence": "CC0-1.0", "summary": "Synthetic test data.",
+            "value": {"type": "number", "value": value}, "tx": tx, "asof": tx,
+        })
+        .to_string()
+    };
+    let fns = common::pub031::write(
+        &lite,
+        "fns.jsonl",
+        &[common::pub031::function_line(&c.reading, &calculus::reading_sig(), None)],
+    );
+    common::pub031::run(&lite, &fns, BEFORE_RUN).unwrap_or_else(|e| panic!("the function: {e}"));
+    let lines = vec![cell("10", "2026-11-15T11:30:00.000000Z"), cell("11", "2026-11-15T11:45:00.000000Z")];
+    let f = common::pub031::write(&lite, "two.jsonl", &lines);
+    common::pub031::run(&lite, &f, NOW).unwrap_or_else(|e| panic!("first run: {e}"));
+    let fn_hash = lite.store.resolve_name(&c.reading, END).unwrap().expect("bound");
+    let id = Cell {
+        ns: c.reading.rsplit_once('/').unwrap().0.into(),
+        fn_name: "reading".into(),
+        fn_hash,
+        args: args(&[("site", s("N"))]),
+    }
+    .id();
+    assert_eq!(versions_of(&lite, &id), 2);
+    common::pub031::run(&lite, &f, NOW).unwrap_or_else(|e| panic!("the second run must succeed: {e}"));
+    assert_eq!(versions_of(&lite, &id), 2, "nothing written");
+}
+
+/// Before the run clock: when the function of the two-version file is bound.
+const BEFORE_RUN: &str = "2026-11-15T11:00:00.000000Z";
