@@ -341,6 +341,9 @@ pub datumesh_http::config::Config::index_max: usize
 pub datumesh_http::config::Config::index_secs: core::time::Duration
 pub datumesh_http::config::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::config::Config::key_names: bool
+pub datumesh_http::config::Config::listed_meshes: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::config::Config::listing_first_delay: core::time::Duration
+pub datumesh_http::config::Config::listing_interval: core::time::Duration
 pub datumesh_http::config::Config::log_dir: core::option::Option<std::path::PathBuf>
 pub datumesh_http::config::Config::manifest_store_max: usize
 pub datumesh_http::config::Config::max_jobs: usize
@@ -556,6 +559,43 @@ pub fn datumesh_http::envelope::trust_of(&datumesh_core::receipt::Receipt, &str)
 pub fn datumesh_http::envelope::unlicensed() -> alloc::vec::Vec<u8>
 pub fn datumesh_http::envelope::with_fn_hash(datumesh_core::answer::Answer, core::option::Option<&str>) -> datumesh_core::answer::Answer
 pub fn datumesh_http::envelope::with_resolved(datumesh_http::envelope::Reply, &datumesh_core::envelope::Resolved) -> datumesh_http::envelope::Reply
+pub mod datumesh_http::find_order
+pub struct datumesh_http::find_order::FindKey
+pub datumesh_http::find_order::FindKey::kind: u8
+pub datumesh_http::find_order::FindKey::match_type: u8
+pub datumesh_http::find_order::FindKey::name: alloc::string::String
+pub datumesh_http::find_order::FindKey::score: f64
+pub datumesh_http::find_order::FindKey::subject: core::option::Option<datumesh_http::find_order::SubjectRank>
+impl core::clone::Clone for datumesh_http::find_order::FindKey
+pub fn datumesh_http::find_order::FindKey::clone(&self) -> Self
+impl core::cmp::PartialEq for datumesh_http::find_order::FindKey
+pub fn datumesh_http::find_order::FindKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::find_order::FindKey
+pub fn datumesh_http::find_order::FindKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::find_order::FindKey
+pub struct datumesh_http::find_order::SortKey
+impl core::clone::Clone for datumesh_http::find_order::SortKey
+pub fn datumesh_http::find_order::SortKey::clone(&self) -> Self
+impl core::cmp::PartialEq for datumesh_http::find_order::SortKey
+pub fn datumesh_http::find_order::SortKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::find_order::SortKey
+pub fn datumesh_http::find_order::SortKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::find_order::SortKey
+pub struct datumesh_http::find_order::SubjectRank
+pub datumesh_http::find_order::SubjectRank::rank: u32
+pub datumesh_http::find_order::SubjectRank::subject: alloc::string::String
+impl core::clone::Clone for datumesh_http::find_order::SubjectRank
+pub fn datumesh_http::find_order::SubjectRank::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::find_order::SubjectRank
+impl core::cmp::PartialEq for datumesh_http::find_order::SubjectRank
+pub fn datumesh_http::find_order::SubjectRank::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::find_order::SubjectRank
+pub fn datumesh_http::find_order::SubjectRank::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::find_order::SubjectRank
+pub fn datumesh_http::find_order::cmp_sort_keys(&datumesh_http::find_order::SortKey, &datumesh_http::find_order::SortKey) -> core::cmp::Ordering
+pub fn datumesh_http::find_order::order(&[datumesh_http::find_order::FindKey]) -> alloc::vec::Vec<usize>
+pub fn datumesh_http::find_order::sort_keys(&[datumesh_http::find_order::FindKey]) -> alloc::vec::Vec<datumesh_http::find_order::SortKey>
+pub fn datumesh_http::find_order::today_cmp(&datumesh_http::find_order::FindKey, &datumesh_http::find_order::FindKey) -> core::cmp::Ordering
 pub mod datumesh_http::foreign
 pub struct datumesh_http::foreign::CrossMesh
 impl datumesh_http::foreign::CrossMesh
@@ -628,6 +668,117 @@ pub fn datumesh_http::keydoc::declare_at<S: datumesh_store::Store + ?core::marke
 pub fn datumesh_http::keydoc::with_declaration(&str, &[u8], &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(alloc::vec::Vec<u8>, datumesh_http::keydoc::Declared), datumesh_core::error::Error>
 pub fn datumesh_http::keydoc::with_key(&str, core::option::Option<&[u8]>, &datumesh_core::sign::SigningKey, &str) -> core::result::Result<alloc::vec::Vec<u8>, datumesh_core::error::Error>
 pub fn datumesh_http::keydoc::with_registered(&str, &[u8], &[u8; 32], &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, datumesh_core::error::Error>
+pub mod datumesh_http::listing
+pub enum datumesh_http::listing::Cut
+pub datumesh_http::listing::Cut::Bytes
+pub datumesh_http::listing::Cut::Names
+pub datumesh_http::listing::Cut::Time
+impl core::clone::Clone for datumesh_http::listing::Cut
+pub fn datumesh_http::listing::Cut::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::Cut
+impl core::cmp::PartialEq for datumesh_http::listing::Cut
+pub fn datumesh_http::listing::Cut::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::listing::Cut
+pub fn datumesh_http::listing::Cut::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_http::listing::Cut
+impl core::marker::StructuralPartialEq for datumesh_http::listing::Cut
+pub enum datumesh_http::listing::Fetch
+pub datumesh_http::listing::Fetch::Fetched
+pub datumesh_http::listing::Fetch::Fetched::cut: core::option::Option<datumesh_http::listing::Cut>
+pub datumesh_http::listing::Fetch::Fetched::key_id: alloc::string::String
+pub datumesh_http::listing::Fetch::Fetched::names: alloc::vec::Vec<datumesh_http::listing::FetchedName>
+pub datumesh_http::listing::Fetch::Fetched::refused: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::listing::Fetch::KeyDocFailed
+pub datumesh_http::listing::Fetch::KeyDocFailed::detail: alloc::string::String
+pub datumesh_http::listing::Fetch::MeshDocFailed
+pub datumesh_http::listing::Fetch::MeshDocFailed::detail: alloc::string::String
+pub datumesh_http::listing::Fetch::Unreachable
+pub datumesh_http::listing::Fetch::Unreachable::detail: alloc::string::String
+impl core::clone::Clone for datumesh_http::listing::Fetch
+pub fn datumesh_http::listing::Fetch::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::Fetch
+impl core::cmp::PartialEq for datumesh_http::listing::Fetch
+pub fn datumesh_http::listing::Fetch::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::listing::Fetch
+pub fn datumesh_http::listing::Fetch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::listing::Fetch
+pub enum datumesh_http::listing::Outcome
+pub datumesh_http::listing::Outcome::Cut
+pub datumesh_http::listing::Outcome::KeyDocFailed
+pub datumesh_http::listing::Outcome::MeshDocFailed
+pub datumesh_http::listing::Outcome::Ok
+pub datumesh_http::listing::Outcome::Unreachable
+impl datumesh_http::listing::Outcome
+pub fn datumesh_http::listing::Outcome::as_str(self) -> &'static str
+impl core::clone::Clone for datumesh_http::listing::Outcome
+pub fn datumesh_http::listing::Outcome::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::Outcome
+impl core::cmp::PartialEq for datumesh_http::listing::Outcome
+pub fn datumesh_http::listing::Outcome::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::listing::Outcome
+pub fn datumesh_http::listing::Outcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for datumesh_http::listing::Outcome
+impl core::marker::StructuralPartialEq for datumesh_http::listing::Outcome
+#[non_exhaustive] pub struct datumesh_http::listing::Applied
+pub datumesh_http::listing::Applied::added: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::listing::Applied::changed: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::listing::Applied::cut: core::option::Option<datumesh_http::listing::Cut>
+pub datumesh_http::listing::Applied::dropped: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::listing::Applied::listed: usize
+pub datumesh_http::listing::Applied::outcome: datumesh_http::listing::Outcome
+pub datumesh_http::listing::Applied::writes: u64
+impl datumesh_http::listing::Applied
+pub fn datumesh_http::listing::Applied::changed_any(&self) -> bool
+impl core::clone::Clone for datumesh_http::listing::Applied
+pub fn datumesh_http::listing::Applied::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::Applied
+impl core::cmp::PartialEq for datumesh_http::listing::Applied
+pub fn datumesh_http::listing::Applied::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::listing::Applied
+pub fn datumesh_http::listing::Applied::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::listing::Applied
+pub struct datumesh_http::listing::FetchedName
+pub datumesh_http::listing::FetchedName::description: alloc::string::String
+pub datumesh_http::listing::FetchedName::descriptor: alloc::vec::Vec<u8>
+pub datumesh_http::listing::FetchedName::fn_hash: alloc::string::String
+pub datumesh_http::listing::FetchedName::label: alloc::string::String
+pub datumesh_http::listing::FetchedName::name: alloc::string::String
+pub datumesh_http::listing::FetchedName::subjects: alloc::vec::Vec<datumesh_store::listings::SubjectKeys>
+impl core::clone::Clone for datumesh_http::listing::FetchedName
+pub fn datumesh_http::listing::FetchedName::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::FetchedName
+impl core::cmp::PartialEq for datumesh_http::listing::FetchedName
+pub fn datumesh_http::listing::FetchedName::eq(&self, &Self) -> bool
+impl core::fmt::Debug for datumesh_http::listing::FetchedName
+pub fn datumesh_http::listing::FetchedName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::listing::FetchedName
+pub struct datumesh_http::listing::Limits
+pub datumesh_http::listing::Limits::bytes: u64
+pub datumesh_http::listing::Limits::names: usize
+pub datumesh_http::listing::Limits::time: core::time::Duration
+impl core::clone::Clone for datumesh_http::listing::Limits
+pub fn datumesh_http::listing::Limits::clone(&self) -> Self
+impl core::cmp::Eq for datumesh_http::listing::Limits
+impl core::cmp::PartialEq for datumesh_http::listing::Limits
+pub fn datumesh_http::listing::Limits::eq(&self, &Self) -> bool
+impl core::default::Default for datumesh_http::listing::Limits
+pub fn datumesh_http::listing::Limits::default() -> Self
+impl core::fmt::Debug for datumesh_http::listing::Limits
+pub fn datumesh_http::listing::Limits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for datumesh_http::listing::Limits
+pub struct datumesh_http::listing::ListingError
+impl core::error::Error for datumesh_http::listing::ListingError
+impl core::fmt::Debug for datumesh_http::listing::ListingError
+pub fn datumesh_http::listing::ListingError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for datumesh_http::listing::ListingError
+pub fn datumesh_http::listing::ListingError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const datumesh_http::listing::DEFAULT_INTERVAL: core::time::Duration
+pub const datumesh_http::listing::MAX_HOSTS: usize
+pub const datumesh_http::listing::UNREACHABLE_DROP_AFTER: core::time::Duration
+pub fn datumesh_http::listing::apply<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &datumesh_http::listing::Fetch, &str) -> core::result::Result<datumesh_http::listing::Applied, datumesh_http::listing::ListingError>
+pub fn datumesh_http::listing::fetch(&str, &str, &datumesh_http::listing::Limits, &str) -> datumesh_http::listing::Fetch
+pub fn datumesh_http::listing::origin_of(&datumesh_http::config::Config, &str) -> alloc::string::String
+pub fn datumesh_http::listing::run_host<S: datumesh_store::Store + ?core::marker::Sized>(&S, &str, &str, &datumesh_http::listing::Limits, &str) -> core::result::Result<datumesh_http::listing::Applied, datumesh_http::listing::ListingError>
 pub mod datumesh_http::publish
 #[non_exhaustive] pub enum datumesh_http::publish::PublishErrorKind
 pub datumesh_http::publish::PublishErrorKind::Backfill(alloc::string::String)
@@ -737,6 +888,9 @@ pub datumesh_http::Config::index_max: usize
 pub datumesh_http::Config::index_secs: core::time::Duration
 pub datumesh_http::Config::key_challenge_ttl: core::time::Duration
 pub datumesh_http::Config::key_names: bool
+pub datumesh_http::Config::listed_meshes: alloc::vec::Vec<alloc::string::String>
+pub datumesh_http::Config::listing_first_delay: core::time::Duration
+pub datumesh_http::Config::listing_interval: core::time::Duration
 pub datumesh_http::Config::log_dir: core::option::Option<std::path::PathBuf>
 pub datumesh_http::Config::manifest_store_max: usize
 pub datumesh_http::Config::max_jobs: usize
