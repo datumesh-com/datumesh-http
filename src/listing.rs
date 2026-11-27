@@ -18,9 +18,12 @@
 //! [`run_host`] is the two together; the mesh's listing thread calls it for each host of
 //! [`Config::listed_meshes`](crate::Config::listed_meshes) every [`Config::listing_interval`](crate::Config::listing_interval).
 
-use std::time::Duration;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
-use datumesh_store::{Store, SubjectKeys};
+use datumesh_core::json::{self, Value};
+use datumesh_core::{Keys, KeyDocument};
+use datumesh_store::{Listing, ListedHost, ListingWrite, Store, SubjectKeys};
 
 /// The default interval between two runs of one host (`DATUMESH_LISTING_INTERVAL_SECS`, six hours).
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(21_600);
@@ -183,15 +186,233 @@ impl std::error::Error for ListingError {}
 /// Where `host` is reached: its origin in [`Config::peers`](crate::Config::peers) when it has one, else
 /// `https://<host>`.
 pub fn origin_of(config: &crate::Config, host: &str) -> String {
-    let _ = (config, host);
-    todo!("listing 0.6.0: origin_of")
+    match config.peers.get(host) {
+        Some(origin) => origin.clone(),
+        None => format!("https://{host}"),
+    }
+}
+
+/// Why a request of a run stopped it.
+enum Stop {
+    /// No answer, or a 5xx (L8).
+    Unreachable(String),
+    /// The byte limit was passed.
+    Bytes,
+}
+
+/// One run's requests: each one's timeout is the time left, its body counted against the bytes left.
+struct Run {
+    agent: ureq::Agent,
+    started: Instant,
+    limits: Limits,
+    bytes: u64,
+}
+
+impl Run {
+    fn new(limits: &Limits) -> Run {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .user_agent(concat!("datumesh-http/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        Run { agent, started: Instant::now(), limits: limits.clone(), bytes: 0 }
+    }
+
+    /// The time left of the run, or `None` when it is spent.
+    fn left(&self) -> Option<Duration> {
+        self.limits.time.checked_sub(self.started.elapsed()).filter(|d| !d.is_zero())
+    }
+
+    /// `GET url`: the status and the body, or why it stopped the run.
+    fn get(&mut self, url: &str) -> Result<(u16, Vec<u8>), Stop> {
+        let Some(left) = self.left() else { return Err(Stop::Unreachable("the run's time is spent".into())) };
+        let resp = self
+            .agent
+            .get(url)
+            .config()
+            .timeout_global(Some(left))
+            .build()
+            .call()
+            .map_err(|e| Stop::Unreachable(format!("{url}: {e}")))?;
+        let status = resp.status().as_u16();
+        if status >= 500 {
+            return Err(Stop::Unreachable(format!("{url}: status {status}")));
+        }
+        let room = self.limits.bytes.saturating_sub(self.bytes);
+        let body = resp
+            .into_body()
+            .with_config()
+            .limit(room.saturating_add(1))
+            .read_to_vec()
+            .map_err(|e| match e {
+                ureq::Error::BodyExceedsLimit(_) => Stop::Bytes,
+                e => Stop::Unreachable(format!("{url}: {e}")),
+            })?;
+        self.bytes += body.len() as u64;
+        if self.bytes > self.limits.bytes {
+            return Err(Stop::Bytes);
+        }
+        Ok((status, body))
+    }
+}
+
+/// The key of `doc` valid at `now` (`valid_from <= now < valid_to`), if any.
+fn key_valid_at(doc: &KeyDocument, now: &str) -> Option<String> {
+    doc.keys
+        .keys
+        .iter()
+        .find(|k| k.valid_from.as_str() <= now && k.valid_to.as_deref().map_or(true, |t| now < t))
+        .map(|k| k.id.clone())
+}
+
+/// The function name's subjects and source names, from the host's signed catalogue cells (L2.3): each member's receipt
+/// is verified against the host's key document; a member that does not verify is skipped. Pages are followed.
+fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Result<BTreeMap<String, BTreeSet<SubjectKeys>>, Stop> {
+    let mut keys = Keys::new();
+    keys.insert_document(doc.clone());
+    let mut out: BTreeMap<String, BTreeSet<SubjectKeys>> = BTreeMap::new();
+    let mut url = format!("{origin}/slice/{host}/catalog/subject/source?domain=*&measure=*&rank=*&region=*&thing=*");
+    loop {
+        let (status, body) = run.get(&url)?;
+        if status == 404 {
+            break;
+        }
+        if status != 200 {
+            return Err(Stop::Unreachable(format!("{url}: status {status}")));
+        }
+        let page = json::parse(&body).map_err(|_| Stop::Unreachable(format!("{url}: not JSON")))?;
+        if let Some(Value::Array(members)) = page.get("members") {
+            for m in members {
+                let Some(receipt) = m.get("receipt") else { continue };
+                let r = datumesh_core::verify(&receipt.to_jcs(), &keys, None, None);
+                if r.error().is_some() {
+                    continue;
+                }
+                let Some(cell) = receipt.get("cell") else { continue };
+                let arg = |k: &str| -> Option<String> {
+                    cell.get("args")?.get(k)?.get("value")?.as_str().map(str::to_string)
+                };
+                let (Some(d), Some(t), Some(me), Some(rg)) = (arg("domain"), arg("thing"), arg("measure"), arg("region"))
+                else {
+                    continue;
+                };
+                let value = receipt.get("value");
+                let name = value
+                    .and_then(|v| v.as_str().or_else(|| v.get("value").and_then(Value::as_str)));
+                let Some(name) = name else { continue };
+                if name.starts_with(&format!("{host}/")) {
+                    out.entry(name.to_string()).or_default().insert(SubjectKeys::new(&d, &t, &me, &rg));
+                }
+            }
+        }
+        match page.get("next").and_then(Value::as_str) {
+            Some(next) => {
+                url = match next.strip_prefix("https://") {
+                    Some(r) => format!("{origin}{}", &r[r.find('/').unwrap_or(r.len())..]),
+                    None if next.starts_with('/') => format!("{origin}{next}"),
+                    None => next.to_string(),
+                };
+            }
+            None => break,
+        }
+    }
+    Ok(out)
 }
 
 /// Fetches `host` at `origin` (L2), read-only, within `limits`; `now` (an instant) is the time the key document's keys
 /// must be valid at.
 pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
-    let _ = (host, origin, limits, now);
-    todo!("listing 0.6.0: fetch")
+    let mut run = Run::new(limits);
+    let unreachable = |s: Stop| match s {
+        Stop::Unreachable(detail) => Fetch::Unreachable { detail },
+        Stop::Bytes => Fetch::Unreachable { detail: "the byte limit, before the key document".into() },
+    };
+    // 1. the key document
+    let (status, body) = match run.get(&format!("{origin}/.well-known/datumesh.json")) {
+        Ok(x) => x,
+        Err(s) => return unreachable(s),
+    };
+    let doc = match datumesh_core::key_document_from_response(host, status, Some(&body)) {
+        Ok(d) if status == 200 => d,
+        Ok(_) => return Fetch::KeyDocFailed { detail: format!("status {status}") },
+        Err(e) => return Fetch::KeyDocFailed { detail: e.to_string() },
+    };
+    let Some(key_id) = key_valid_at(&doc, now) else {
+        return Fetch::KeyDocFailed { detail: format!("no key of {host} is valid at {now}") };
+    };
+    let proto = json::parse(&body).ok().and_then(|v| v.get("proto").and_then(Value::as_str).map(str::to_string));
+    // 2. the mesh document, agreeing on host and proto
+    let (status, mbody) = match run.get(&format!("{origin}/.well-known/datumesh-mesh.json")) {
+        Ok(x) => x,
+        Err(s) => return unreachable(s),
+    };
+    if status != 200 {
+        return Fetch::MeshDocFailed { detail: format!("status {status}") };
+    }
+    let Ok(m) = json::parse(&mbody) else { return Fetch::MeshDocFailed { detail: "not JSON".into() } };
+    if m.get("host").and_then(Value::as_str) != Some(host) || m.get("proto").and_then(Value::as_str) != proto.as_deref() {
+        return Fetch::MeshDocFailed { detail: "disagrees with the key document on host or proto".into() };
+    }
+    // 3. the host's own catalogue, verified and not stored
+    let subjects = match catalogue(&mut run, host, origin, &doc) {
+        Ok(x) => x,
+        Err(s) => return unreachable(s),
+    };
+    let mut cut = None;
+    let mut all: Vec<(String, Vec<SubjectKeys>)> =
+        subjects.into_iter().map(|(n, s)| (n, s.into_iter().collect())).collect();
+    if all.len() > limits.names {
+        all.truncate(limits.names);
+        cut = Some(Cut::Names);
+    }
+    // 4. each name: describe, descriptor, and its label and description
+    let mut names = Vec::new();
+    let mut refused = Vec::new();
+    for (name, subjects) in all {
+        if run.left().is_none() {
+            cut = Some(Cut::Time);
+            break;
+        }
+        let base = format!("{origin}/");
+        let step = (|| -> Result<Option<FetchedName>, Stop> {
+            let (status, d) = run.get(&format!("{base}describe/{name}"))?;
+            let fn_hash = match (status, json::parse(&d)) {
+                (200, Ok(v)) => v.get("fn_hash").and_then(Value::as_str).map(str::to_string),
+                _ => None,
+            };
+            let Some(fn_hash) = fn_hash else { return Ok(None) };
+            let (status, bytes) = run.get(&format!("{base}descriptor/{fn_hash}"))?;
+            if status != 200 || datumesh_core::function_hash(&bytes).ok().as_deref() != Some(fn_hash.as_str()) {
+                return Ok(None);
+            }
+            let (mut label, mut description) = (String::new(), String::new());
+            let (status, f) = run.get(&format!("{base}fn/{name}?format=json"))?;
+            if status == 200 {
+                if let Ok(v) = json::parse(&f) {
+                    label = v.get("label").and_then(Value::as_str).unwrap_or_default().to_string();
+                    description = v.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+                }
+            }
+            Ok(Some(FetchedName { name: name.clone(), fn_hash, subjects: subjects.clone(), descriptor: bytes, label, description }))
+        })();
+        match step {
+            Ok(Some(n)) => names.push(n),
+            Ok(None) => refused.push(name),
+            Err(Stop::Bytes) => {
+                cut = Some(Cut::Bytes);
+                break;
+            }
+            Err(Stop::Unreachable(detail)) => {
+                if run.left().is_none() {
+                    cut = Some(Cut::Time);
+                    break;
+                }
+                return Fetch::Unreachable { detail };
+            }
+        }
+    }
+    Fetch::Fetched { key_id, names, refused, cut }
 }
 
 /// Applies a fetch of `host` at `now` (an instant) to the store (L3, L8):
@@ -207,8 +428,115 @@ pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
 ///
 /// A run that finds nothing changed writes nothing.
 pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str) -> Result<Applied, ListingError> {
-    let _ = (store, host, fetch, now);
-    todo!("listing 0.6.0: apply")
+    let se = |e: &dyn std::fmt::Display| ListingError { detail: e.to_string() };
+    let mut applied = Applied {
+        outcome: Outcome::Ok,
+        cut: None,
+        added: Vec::new(),
+        changed: Vec::new(),
+        dropped: Vec::new(),
+        listed: 0,
+        writes: 0,
+    };
+    let existing: Vec<String> = store.listings_of(host).map_err(|e| se(&e))?.into_iter().map(|l| l.name).collect();
+    let mut drop_all = false;
+    let mut drop_set: BTreeSet<String> = BTreeSet::new();
+    match fetch {
+        Fetch::Fetched { key_id, names, refused, cut } => {
+            let mut verified = BTreeSet::new();
+            let mut refuse: BTreeSet<String> = refused.iter().cloned().collect();
+            for n in names {
+                let under = n.name.starts_with(&format!("{host}/"));
+                let ok = under && datumesh_core::function_hash(&n.descriptor).ok().as_deref() == Some(n.fn_hash.as_str());
+                if !ok {
+                    refuse.insert(n.name.clone());
+                    continue;
+                }
+                let mut subjects = n.subjects.clone();
+                subjects.sort();
+                subjects.dedup();
+                let l = Listing {
+                    host: host.to_string(),
+                    name: n.name.clone(),
+                    fn_hash: n.fn_hash.clone(),
+                    subjects,
+                    descriptor: n.descriptor.clone(),
+                    key_id: key_id.clone(),
+                    label: n.label.clone(),
+                    description: n.description.clone(),
+                    fetched_at: now.to_string(),
+                    listed_at: now.to_string(),
+                };
+                match store.put_listing(&l).map_err(|e| se(&e))? {
+                    ListingWrite::Unchanged => {}
+                    ListingWrite::Inserted => {
+                        applied.added.push(n.name.clone());
+                        applied.writes += 1;
+                    }
+                    ListingWrite::Changed => {
+                        applied.changed.push(n.name.clone());
+                        applied.writes += 1;
+                    }
+                }
+                verified.insert(n.name.clone());
+            }
+            if cut.is_none() {
+                drop_set.extend(existing.iter().filter(|e| !verified.contains(*e)).cloned());
+            } else {
+                drop_set.extend(existing.iter().filter(|e| refuse.contains(*e)).cloned());
+                applied.cut = *cut;
+                applied.outcome = Outcome::Cut;
+            }
+            let day = &now[..10];
+            let row = ListedHost { host: host.to_string(), last_seen: Some(day.to_string()), unreachable_since: None };
+            if store.put_listed_host(&row).map_err(|e| se(&e))? {
+                applied.writes += 1;
+            }
+        }
+        Fetch::KeyDocFailed { .. } => {
+            applied.outcome = Outcome::KeyDocFailed;
+            drop_all = true;
+        }
+        Fetch::MeshDocFailed { .. } => {
+            applied.outcome = Outcome::MeshDocFailed;
+            drop_all = true;
+        }
+        Fetch::Unreachable { .. } => {
+            applied.outcome = Outcome::Unreachable;
+            let row = store.listed_host(host).map_err(|e| se(&e))?;
+            match row {
+                None => {
+                    let r = ListedHost { host: host.to_string(), last_seen: None, unreachable_since: Some(now.to_string()) };
+                    store.put_listed_host(&r).map_err(|e| se(&e))?;
+                    applied.writes += 1;
+                }
+                Some(r) => match r.unreachable_since.as_deref() {
+                    None => {
+                        let r2 = ListedHost { unreachable_since: Some(now.to_string()), ..r };
+                        store.put_listed_host(&r2).map_err(|e| se(&e))?;
+                        applied.writes += 1;
+                    }
+                    Some(since) => {
+                        let due = crate::keynames::add_seconds(since, UNREACHABLE_DROP_AFTER.as_secs());
+                        if due.is_some_and(|d| d.as_str() <= now) {
+                            drop_all = true;
+                        }
+                    }
+                },
+            }
+        }
+    }
+    if drop_all {
+        drop_set.extend(existing.iter().cloned());
+    }
+    for name in &drop_set {
+        if store.delete_listing(name).map_err(|e| se(&e))? {
+            applied.dropped.push(name.clone());
+            applied.writes += 1;
+        }
+    }
+    applied.listed = store.listings_of(host).map_err(|e| se(&e))?.len();
+    Ok(applied)
 }
 
 /// [`fetch`] then [`apply`].
@@ -219,6 +547,6 @@ pub fn run_host<S: Store + ?Sized>(
     limits: &Limits,
     now: &str,
 ) -> Result<Applied, ListingError> {
-    let _ = (store, host, origin, limits, now);
-    todo!("listing 0.6.0: run_host")
+    let f = fetch(host, origin, limits, now);
+    apply(store, host, &f, now)
 }
