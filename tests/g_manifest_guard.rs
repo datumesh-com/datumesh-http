@@ -1007,21 +1007,38 @@ async fn plain_reads_and_slices_select_by_recorded() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_correction_signed_earlier_is_accepted_when_recorded_later_and_shown_beside_its_recorded_time() {
-    // The backdating rule (store `put_version`: later than the cell's latest version) is enforced on
-    // the recorded time: a correction of station a signed at OLD, before its R1 version, recorded at R2.
+async fn a_correction_signed_earlier_is_refused_and_a_later_one_shown_beside_its_recorded_time() {
+    // Decided 27 Nov (user), "backdating on the same cell is refused": a version of an existing cell
+    // signed not later than its latest signed tx is refused, whatever its recorded time, and nothing
+    // changes. (Before: a correction signed earlier was accepted when recorded later.) A version signed
+    // later is accepted, and /x/versions shows its recorded time with its signed time beside it.
     let rec = Rec::at(R0);
     let n = rec_node(None, &rec, MESH_NOW, |_| {}, |b| b).await;
     rec_seed(&n, &rec);
+    // A correction of station a signed at OLD, before its R1 version: refused.
     rec.set(R2);
-    publish(&n, &[level_line("a", DAY, "110", Some(OLD))], R2);
+    let path = out_dir().join(format!("guard-g-backdated-{}.jsonl", std::process::id()));
+    std::fs::write(&path, format!("{}\n", level_line("a", DAY, "110", Some(OLD)))).unwrap();
+    let opts = PublishOptions { clock: Arc::new(FixedClock(R2)), backfill: None };
+    let refused = bl(|| publish_stored_with(&*n.store, &n.key, &n.host, std::slice::from_ref(&n.host), &path, &opts));
+    let _ = std::fs::remove_file(&path);
+    assert!(refused.is_err(), "a correction signed before the cell's latest is refused");
     let v = latest_of(&n, "a");
-    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (OLD, R2));
+    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (R1, R1), "nothing changes");
+    // A version signed later (R2, the run's clock), recorded later still (A2).
+    rec.set(A2);
+    publish(&n, &[level_line("a", DAY, "120", None)], R2);
+    let v = latest_of(&n, "a");
+    assert_eq!((v.tx.as_str(), v.recorded.as_str()), (R2, A2));
     let at = |asof: &str| format!("/cell/{LEVEL}?d={DAY}&station=a&asof={asof}");
     let value =
         |r: &Resp| r.json().get("receipt").and_then(|x| x.get("value")).and_then(Value::as_str).map(str::to_string);
-    assert_eq!(value(&n.get(&at(A1)).await).as_deref(), Some("100"), "as of A1: the R1 version");
-    assert_eq!(value(&n.get(&at(A2)).await).as_deref(), Some("110"), "as of A2: the correction");
+    assert_eq!(
+        value(&n.get(&at(R2)).await).as_deref(),
+        Some("100"),
+        "as of R2 (signed, not yet recorded): the R1 version"
+    );
+    assert_eq!(value(&n.get(&at(A2)).await).as_deref(), Some("120"), "as of A2: the later version");
     // Shown: recorded, with the signed time beside it.
     let r = n.get(&format!("/x/versions/{LEVEL}?d={DAY}&station=a")).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -1037,17 +1054,16 @@ async fn a_correction_signed_earlier_is_accepted_when_recorded_later_and_shown_b
             (g("recorded"), g("signed"))
         })
         .collect();
-    assert_eq!(pairs, [(R1.to_string(), R1.to_string()), (R2.to_string(), OLD.to_string())], "ascending by recorded");
+    assert_eq!(pairs, [(R1.to_string(), R1.to_string()), (A2.to_string(), R2.to_string())], "ascending by recorded");
     // The spec's listing keeps its shape: `tx` is the signed time.
     let spec = n.get(&format!("/versions/{LEVEL}?d={DAY}&station=a")).await;
     assert_eq!(spec.status, 200, "{}", spec.text());
     let sv = spec.json();
-    let mut txs: Vec<String> = array(sv.get("versions").unwrap())
+    let txs: Vec<String> = array(sv.get("versions").unwrap())
         .iter()
         .map(|x| x.get("tx").and_then(Value::as_str).unwrap().to_string())
         .collect();
-    txs.sort();
-    assert_eq!(txs, [OLD.to_string(), R1.to_string()]);
+    assert_eq!(txs, [R1.to_string(), R2.to_string()]);
 }
 
 // ---- G10: a past read's list, with nothing stored (decided 26 Nov) ---------------------------------
