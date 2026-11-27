@@ -4,9 +4,9 @@
 //! * N1: a catalogue that cannot be read (404, 5xx, no answer on its first page) makes the run `Unreachable` for the host:
 //!   `last_seen` is not written and the host's 7-day clock runs. A name not reached in a run whose catalogue was read gets
 //!   its own clock (`Store::listing_unreached`), set at the first such run, cleared when it answers, written only on a
-//!   change; the name drops at 7 days, not at 6 days 23 hours.
+//!   change; the name drops at 7 days, not at 6 days 23 hours. The re-check: in a run cut for any reason.
 //! * N2: a request looks up only the words whose host is listed, each once (`datumesh_listing_lookups_total`).
-//! * N3: the 64 subjects a host's listings create are counted across runs.
+//! * N3: the 64 subjects a host's listings create are counted across runs, an offered name's old ones not (re-check).
 //! * N4: a cut in the middle of the catalogue keeps a name's earlier subjects (and so the ranks).
 //! * N6: `/x/interval` refuses a listed name with `E_LISTED_ELSEWHERE`.
 //! * C3 (config): a listed host that `DATUMESH_PUBLISH_DOMAINS` allows, or `DATUMESH_CROSS_MESH_HOSTS` names, is refused
@@ -221,6 +221,68 @@ async fn n4_a_catalogue_cut_keeps_a_names_subjects_and_ranks() {
         assert_eq!(m.lite.store.listing(&bank_rate()).unwrap().unwrap().subjects, [ea.clone(), gb()], "{cut:?}");
     }
     assert_eq!(build(&m.lite, T4).cells, 0, "the cut runs change no rank");
+}
+
+// ---- the re-check (CONTRACT "Decided 27 Nov (d)") ------------------------------------------------------------------------
+
+/// N1, every cut: a held name that a run cut for names, bytes or time neither offered nor refused has its own clock too: set
+/// at that run, kept at 6 days 23 hours, dropped at 7 days. The name that was offered has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn n1_a_name_not_reached_by_any_cut_has_its_own_clock() {
+    for (i, cut) in [Cut::Names, Cut::Bytes, Cut::Time].into_iter().enumerate() {
+        let lite = listing_lite(&format!("r4-n1cut{i}"));
+        let other = format!("{SRC}/other_rate");
+        let both = vec![name_of(&bank_rate(), "a", vec![gb()]), name_of(&other, "b", vec![gb()])];
+        apply(&lite, &fetched(both), RUN1);
+        assert_eq!(listed(&lite).len(), 2);
+        let partial = Fetch::Fetched {
+            key_id: src_key_id(),
+            names: vec![name_of(&bank_rate(), "a", vec![gb()])],
+            refused: vec![],
+            cut: Some(cut),
+        };
+        let a = apply(&lite, &partial, RUN2);
+        assert!(a.dropped.is_empty(), "{cut:?}: {a:?}");
+        assert_eq!(lite.store.listing_unreached(&other).unwrap().as_deref(), Some(RUN2), "{cut:?}: its clock starts");
+        assert_eq!(lite.store.listing_unreached(&bank_rate()).unwrap(), None, "{cut:?}: the offered name has no clock");
+        let a = apply(&lite, &partial, "2026-11-24T00:59:59.000000Z");
+        assert!(a.dropped.is_empty(), "{cut:?}: kept before 7 days: {a:?}");
+        assert_eq!(lite.store.listing_unreached(&other).unwrap().as_deref(), Some(RUN2), "{cut:?}: the first stays");
+        let a = apply(&lite, &partial, "2026-11-24T01:00:00.000000Z");
+        assert_eq!(a.dropped, [other.as_str()], "{cut:?}: dropped at 7 days of its own");
+        assert_eq!(listed(&lite), [bank_rate()], "{cut:?}");
+    }
+}
+
+/// N3, no double count: a host holding 64 created subjects whose next full run offers the same 64 names, each in a new
+/// subject in place of its old one, is not cut: every name moves to its new subject, and the host still holds 64.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn n3_a_name_that_changes_its_subjects_is_not_counted_twice() {
+    let lite = listing_lite("r4-n3move");
+    let offer = |region: &str| -> Vec<_> {
+        (0..64)
+            .map(|i| {
+                name_of(
+                    &format!("{SRC}/m{i:02}"),
+                    &format!("m{i}"),
+                    vec![SubjectKeys::new("finance", "rate", "interest_rate", &format!("{region}{i:02}"))],
+                )
+            })
+            .collect()
+    };
+    let a = apply(&lite, &fetched(offer("r")), RUN1);
+    assert_eq!(a.cut, None, "64 is within the cap: {a:?}");
+    assert_eq!(listed(&lite).len(), 64);
+    let a = apply(&lite, &fetched(offer("q")), RUN2);
+    assert_eq!(a.cut, None, "the old subjects of offered names do not count: {a:?}");
+    assert_eq!(a.changed.len(), 64, "{a:?}");
+    let all = lite.store.listings_of(SRC).unwrap();
+    assert!(
+        all.iter().all(|l| l.subjects.len() == 1 && l.subjects[0].region.starts_with('q')),
+        "moved to the new subjects"
+    );
+    let subjects: std::collections::BTreeSet<SubjectKeys> = all.iter().flat_map(|l| l.subjects.clone()).collect();
+    assert_eq!(subjects.len(), 64);
 }
 
 // ---- N6 ------------------------------------------------------------------------------------------------------------------
