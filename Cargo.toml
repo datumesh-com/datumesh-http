@@ -1,6 +1,6 @@
 [package]
 name = "datumesh-http"
-version = "0.5.5"
+version = "0.6.0"
 description = "The Datumesh engine behind HTTPS: cell envelopes, batches, slices (JSON and Arrow), receipts, jobs, verification and cross-mesh resolution; the datumesh-mesh server."
 edition = "2021"
 rust-version = "1.97"
@@ -25,7 +25,7 @@ path = "src/bin/datumesh-mesh.rs"
 # `sign` for the keys the binary generates.
 datumesh-core = { version = "0.3.14", features = ["sign"] }
 # PostgreSQL only (PgStore): no SQLite in the mesh binary or the image.
-datumesh-store = { version = "0.6.5", default-features = false }
+datumesh-store = { version = "0.7.0", default-features = false }
 datumesh-engine = "0.6.2"
 # The formula runtime, and the call syntax (section 15's read syntax) parsed by its parser.
 datumesh-formula = "0.6.2"
@@ -57,7 +57,10 @@ unicode-normalization = "0.1"
 reqwest = { version = "0.12.23", default-features = false, features = ["json"] }
 jsonschema = { version = "0.33.0", default-features = false }
 # SQLite stores for the 0.3.0 tests (CONTRACT-1.8b H1, H2); the library itself is PostgreSQL only.
-datumesh-store = { version = "0.6.5", features = ["sqlite"] }
+datumesh-store = { version = "0.7.0", features = ["sqlite"] }
+# Row counts of the listing tests (listing_060_*): the SQLite file of a test store, read directly. The same rusqlite the
+# store bundles.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
 
 # The engine signs and the store verifies many receipts in the tests: curve25519 and sha2

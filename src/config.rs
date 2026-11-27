@@ -332,6 +332,14 @@ pub struct Config {
     /// The most distinct values a string key takes from the cells of a function before it is open
     /// (`DATUMESH_DICTIONARY_MAX`; default 1000, at least 1; CONTRACT-0.4.9 H7).
     pub dictionary_max: usize,
+    /// The hosts whose meshes this mesh lists (`DATUMESH_LISTED_MESHES`, comma-separated; default none; CONTRACT-http-listing
+    /// L1, since 0.6.0): their functions as descriptions only, no cells. Refused by [`Config::check`]: a host that is one
+    /// of [`Config::namespaces`], a host that is not a DNS name, more than 64 hosts. Empty: nothing is fetched.
+    pub listed_meshes: Vec<String>,
+    /// How often each listed host is fetched (`DATUMESH_LISTING_INTERVAL_SECS`; default 21,600 s; at least 1 s).
+    pub listing_interval: Duration,
+    /// How long the listing thread waits after start before its first run (`DATUMESH_LISTING_FIRST_DELAY_SECS`; default 0).
+    pub listing_first_delay: Duration,
 }
 
 /// Which hosts may publish with `POST /bundles` (`DATUMESH_PUBLISH_DOMAINS`): the mesh's own
@@ -424,6 +432,9 @@ impl Config {
             find_first_build_delay: Duration::ZERO,
             value_counts_refresh: Duration::from_secs(3600),
             dictionary_max: 1000,
+            listed_meshes: Vec::new(),
+            listing_interval: crate::listing::DEFAULT_INTERVAL,
+            listing_first_delay: Duration::ZERO,
             log_dir: None,
             series: Vec::new(),
         }
