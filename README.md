@@ -169,16 +169,22 @@ descriptor (whose bytes must hash to the function hash) and the label and descri
 per host and run: 2,000 names, 32 MB, 120 s; past one, what was verified is kept and the run is recorded as cut.
 
 A listed name is ranked in the catalogue by the same rule as any other, so a listed source can rank above a relay of it.
-It is described here, not served here: `/cell`, `/slice`, `/series`, `/versions`, `/explain` and `/x/calc` answer
-`404` with `E_LISTED_ELSEWHERE` and the `mesh` that holds it (the spec 0.7 code; this release writes it itself until the
-spec round). `/describe` and `/fn` describe it with `listed: true`, the mesh and the day it was last seen. Its values are
+It is described here, not served here: `/cell`, `/slice`, `/series`, `/versions`, `/explain`, `/x/versions`, `/x/calc`,
+`/whatif` and each item of `POST /cells` answer `404` with `E_LISTED_ELSEWHERE` and the `mesh` that holds it, whatever the
+method and whether the name comes by an alias (the spec 0.7 code; this release writes it itself until the spec round). A
+store that cannot tell whether a name is listed answers `503`: a listed name is never resolved across meshes. `/describe` and `/fn` describe it with `listed: true`, the mesh and the day it was last seen. Its values are
 not vouched for by this mesh: the catalogue cells say only that the name exists on its mesh.
 
 An unreachable mesh is not a withdrawal: its names stay, with the day last seen, for seven days from the first failed run
 after its last success; a key document or mesh document that fails the checks, a name no longer in its catalogue, or a
 descriptor that does not verify withdraws the name at once. The table `listed_hosts` keeps one row per host; rows of a host
-removed from the list stay until they are deleted (`delete_listed_host`). `/metrics` reports, per host, the names listed,
-the outcome of the last run and its time, and `datumesh_listed_names_total`. Bundles of a listed host are refused.
+removed from the list, or the list emptied, loses its rows at start (logged as `unlisted`). A name the store refuses (its
+bounds, or a catalogue entry of another source of the same name) is refused, and the run goes on with the others. A listed
+host creates at most 64 subjects in this mesh's catalogue (subjects that no member bound here holds); a name past that is
+cut. The catalogue's cut at `DATUMESH_CATALOG_MAX` keeps this mesh's own subjects before the listed-only ones. `/metrics`
+reports, per host, the names listed, the outcome of the last run (`error` when the run failed) and its time,
+`datumesh_listed_names_total` (absent when the store cannot count) and `datumesh_listing_lookups_total`. Bundles of a listed
+host are refused.
 
 ## Dictionary values
 

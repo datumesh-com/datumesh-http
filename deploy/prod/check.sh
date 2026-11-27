@@ -21,7 +21,11 @@ m="$(curl -fsS --max-time 10 "http://$ip:8080/metrics" 2>/dev/null)" || { alert=
 e5="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_http_requests_total\{.*status="5/ {s+=$NF} END {print s+0}')"
 ee="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_envelopes_total\{.*outcome="error"/ {s+=$NF} END {print s+0}')"
 listed="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_listed_names_total / {print $NF}')"
-listed="${listed:-0}"
+# An absent total is a store that could not count, not an empty list: reported as null and alerted (smaller 9).
+if [ -z "$listed" ]; then
+  if [ -n "$m" ]; then alert="$alert listed-names-unknown"; fi
+  listed=null
+fi
 state="$dir/status/check.state"
 if [ -f "$state" ]; then read -r p5 pe < "$state"; else p5=$e5; pe=$ee; fi
 # A restart resets the counters: a lower count is a new baseline, not an error.

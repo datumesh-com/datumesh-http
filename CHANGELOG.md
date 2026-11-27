@@ -2,8 +2,8 @@
 
 ## 0.6.0
 
-Requires datumesh-store 0.7.0 (migrations 18 and 14: the tables `listings` and `listed_hosts`, and `catalog_entries.source`
-may be `listed`; applied at start). No stored row changes.
+Requires datumesh-store 0.7.1 (migrations 18 and 14: the tables `listings` and `listed_hosts`, and `catalog_entries.source`
+may be `listed`; applied at start), datumesh-engine 0.7.0 and datumesh-formula 0.7.0 (re-pins). No stored row changes.
 
 - **Listing another mesh (CONTRACT-http-listing L1 to L12).** `DATUMESH_LISTED_MESHES` lists the functions of other meshes as
   descriptions only: nothing of the other mesh's cells, receipts, versions or bindings is stored or fetched beyond what
@@ -16,7 +16,20 @@ may be `listed`; applied at start). No stored row changes.
   `datumesh_listing_last_run_seconds{host}`, `datumesh_listed_names_total`. `deploy/prod/check.sh` reports `listed names <n>`.
 - **Bundles of a listed host are refused** (`E_DOMAIN_NOT_ALLOWED`), whatever `DATUMESH_PUBLISH_DOMAINS` says.
 - The catalogue rule gains one sentence: listed names are ranked by the same rule, and are described here, not served here.
-- Public API: additions only (`datumesh_http::listing`, `datumesh_http::find_order`, the listing `Config` fields).
+- **Review round (REVIEW-listing-060.md).** A listed name is refused on every read route and method (HEAD, `POST /cells` per
+  item, `/x/versions`, `/whatif`, an alias), and `Foreign` never resolves a listed host; a store failure there answers `503`.
+  The catalogue's `next` link is followed only on the host's own origin (and never `http://`); a page that cannot be read is a
+  cut that keeps the names read. A name the store refuses is refused alone; the run goes on. A name whose describe, descriptor
+  or function page does not answer (429, 5xx, no answer) is not reached and keeps its listing (`Cut::Unreached`); a describe
+  404 drops it. A listing may create at most 64 subjects per listed host here (a cut past that). A listing never overwrites
+  another source's catalogue entry of the same name (store 0.7.1). With `DATUMESH_LISTED_MESHES` empty, `/find` keeps 0.5.x's
+  order (the grouped order applies only to a group with a listed result), and no request looks up a listing. The catalogue cut
+  at `DATUMESH_CATALOG_MAX` keeps this mesh's own subjects first. Relay and takeover pages name the listed name that ranks first
+  in the relay's own subject. A host removed from `DATUMESH_LISTED_MESHES` loses its rows at start. A failed run is recorded as
+  `outcome="error"`; `datumesh_listed_names_total` is absent when the store cannot count; `datumesh_listing_lookups_total` is new.
+  Duplicate hosts in `DATUMESH_LISTED_MESHES` count once. Key validity compares instants. `deploy/prod/check.sh` reports
+  `listed names null` and alerts when the total is absent.
+- Public API: additions only (`datumesh_http::listing`, `datumesh_http::find_order`, the listing `Config` fields, `Cut::Unreached`).
 
 ## 0.5.5
 
