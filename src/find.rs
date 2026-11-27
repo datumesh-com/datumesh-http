@@ -434,7 +434,7 @@ fn result_value(ctx: &Ctx, lk: &mut Lookup, name: &str, mt: &str, score: f64) ->
 
 /// Whether `name` has the first rank in its subject, by the last find build (CONTRACT-http-listing L7).
 pub(crate) fn rank_one(inner: &Inner, name: &str) -> bool {
-    built(inner).is_some_and(|b| b.places.get(name).is_some_and(|p| p.rank == 1))
+    crate::catalog_view::built(inner).is_some_and(|b| b.places.get(name).is_some_and(|p| p.rank == 1))
 }
 
 /// The result of a listed function: its description and where it is served, with no cell and no slice of this mesh.
@@ -965,9 +965,9 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
 
     // 6. Ranked: exact, text, vector; then by score, kind and name, the groups of a subject together and in its rank order
     // (find_order, CONTRACT-http-listing L5). At most `limit`.
-    let built_now = built(inner);
+    let catalogue = crate::catalog_view::built(inner);
     let empty = BTreeMap::new();
-    let places = built_now.as_ref().map(|b| &b.places).unwrap_or(&empty);
+    let places = catalogue.as_ref().map(|b| &b.places).unwrap_or(&empty);
     let all: Vec<Scored> = board.best.into_values().collect();
     let keys: Vec<crate::find_order::FindKey> = all
         .iter()
@@ -1012,8 +1012,6 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
 pub(crate) struct Built {
     summary: Value,
     listing: Vec<Value>,
-    /// Each name's place among the catalogue's subjects, for the order of results (CONTRACT-http-listing L5).
-    places: BTreeMap<String, crate::find_order::SubjectRank>,
 }
 
 /// Builds the summary and the listing now (the find thread's work; never a request's).
@@ -1023,8 +1021,7 @@ pub(crate) fn build(inner: &Inner) -> Built {
     let mut lk = Lookup::default();
     let mut listing = listing(&ctx, &mut lk, MAX_LIMIT);
     annotate(inner, &mut listing);
-    let places = crate::catalog_view::subject_places(inner);
-    Built { summary, listing, places }
+    Built { summary, listing }
 }
 
 /// The last build of the find thread's answers, or `None` before its first build.

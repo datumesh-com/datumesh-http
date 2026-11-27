@@ -83,6 +83,9 @@ pub(crate) struct Built {
     pages: BTreeMap<String, Vec<u8>>,
     /// Each domain's subjects' key texts, in page order.
     domain_order: BTreeMap<String, Vec<String>>,
+    /// Each name's place among the subjects, for find's order and the relay pages (CONTRACT-http-listing L5), taken from the
+    /// same read as the pages: no read of its own.
+    pub(crate) places: BTreeMap<String, crate::find_order::SubjectRank>,
     /// The class pages, by class name: HTML and JSON.
     classes: BTreeMap<String, ClassPage>,
     /// The generation the build read (see the module documentation).
@@ -115,12 +118,10 @@ struct Read {
     generation: u64,
 }
 
-/// Each name's place among the subjects of the catalogue (CONTRACT-http-listing L5): the subject where it has its lowest
-/// rank (on a tie, the subject whose key encoding is first), by name. Read once per find build.
-pub(crate) fn subject_places(inner: &Inner) -> BTreeMap<String, crate::find_order::SubjectRank> {
+/// Each name's place among the subjects (CONTRACT-http-listing L5): the subject where it has its lowest rank (on a tie, the
+/// subject whose key encoding is first), by name, from a catalogue read.
+fn places_of(read: &Read) -> BTreeMap<String, crate::find_order::SubjectRank> {
     let mut out: BTreeMap<String, crate::find_order::SubjectRank> = BTreeMap::new();
-    let host = inner.config.host.clone();
-    let Some(read) = read(inner, &host, &inner.now()) else { return out };
     for s in &read.subjects {
         for (i, src) in s.sources.iter().enumerate() {
             let cand = crate::find_order::SubjectRank { subject: s.text.clone(), rank: (i + 1) as u32 };
@@ -822,6 +823,7 @@ fn class_cells(store: &dyn Store, class: &str, hash: &str) -> u64 {
 
 /// Builds the view from what [`read`] read (the catalogue thread's work, never a request's).
 fn build_from(inner: &Inner, read: Read) -> Built {
+    let places = places_of(&read);
     let host = inner.config.host.clone();
     let origin = inner.config.origin();
     let now = inner.now();
@@ -851,7 +853,7 @@ fn build_from(inner: &Inner, read: Read) -> Built {
         .map(|d| (d.name.clone(), d.subjects.iter().map(|&i| read.subjects[i].text.clone()).collect()))
         .collect();
     let classes = class_pages(inner, &host, &now, &read);
-    Built { root, held, pages, domain_order, classes, generation: read.generation }
+    Built { root, held, pages, domain_order, classes, generation: read.generation, places }
 }
 
 /// Runs one build when the catalogue changed since the last one (or none is built yet), and makes it the one requests read;
@@ -868,7 +870,7 @@ pub(crate) fn rebuild(inner: &Inner, by: &'static str) {
     inner.metrics.catalog_build(by);
 }
 
-fn built(inner: &Inner) -> Option<Arc<Built>> {
+pub(crate) fn built(inner: &Inner) -> Option<Arc<Built>> {
     inner.catalog.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
