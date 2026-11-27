@@ -125,6 +125,15 @@ network of its own, no port), and `drill.py` sends the same requests to both mes
 stored cell of the vectors as of its receipt's asof, the documents, the bindings, and, once the
 seed is loaded, every ECB cell, every tenth scripture cell and a hundred blobs): every answer
 must be identical byte for byte. The containers and the network are removed after.
+A second mesh started with a `DATUMESH_LISTED_MESHES` that does not name a restored listed host drops its listings at start, and logs each drop (see "Listed meshes").
+
+## Listed meshes (`DATUMESH_LISTED_MESHES`, http 0.6.0)
+
+Start-up drops the listings of every host the setting does not name (CONTRACT-http-listing L1, C5, decided 27 Nov). An empty
+or mistyped `DATUMESH_LISTED_MESHES` therefore withdraws every listing, and the names listed again later are new listings
+(a new `listed_at`, so they lose their tie-break among equals). Each drop is logged at warn with the host, `cause="unlisted"`
+and `count`, the number of listings it withdrew. Check the log for that line after any restart or restore in which the
+setting was changed. A mesh started on a restored copy drops that copy's listings of any host the setting does not name.
 
 ## The domain re-check
 

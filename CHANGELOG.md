@@ -2,8 +2,9 @@
 
 ## 0.6.0
 
-Requires datumesh-store 0.7.1 (migrations 18 and 14: the tables `listings` and `listed_hosts`, and `catalog_entries.source`
-may be `listed`; applied at start), datumesh-engine 0.7.0 and datumesh-formula 0.7.0 (re-pins). No stored row changes.
+Requires datumesh-store 0.7.2 (migrations 19 and 15: `listings.unreached_since`, a listed name's own clock; migrations 18 and 14:
+the tables `listings` and `listed_hosts`, and `catalog_entries.source` may be `listed`; applied at start), datumesh-engine 0.7.0
+and datumesh-formula 0.7.0 (re-pins). No stored row changes.
 
 - **Listing another mesh (CONTRACT-http-listing L1 to L12).** `DATUMESH_LISTED_MESHES` lists the functions of other meshes as
   descriptions only: nothing of the other mesh's cells, receipts, versions or bindings is stored or fetched beyond what
@@ -29,6 +30,24 @@ may be `listed`; applied at start), datumesh-engine 0.7.0 and datumesh-formula 0
   `outcome="error"`; `datumesh_listed_names_total` is absent when the store cannot count; `datumesh_listing_lookups_total` is new.
   Duplicate hosts in `DATUMESH_LISTED_MESHES` count once. Key validity compares instants. `deploy/prod/check.sh` reports
   `listed names null` and alerts when the total is absent.
+- **Re-review round (REVIEW-listing-060.md, "Re-review"; decided 27 Nov).**
+  - **A catalogue that cannot be read is the host unreachable (N1).** When no page of the host's catalogue was read (a 404, a 5xx,
+    no answer or a time-out on the first page) the run is `Unreachable`: `last_seen` is not written and the seven-day clock runs.
+    A stop on a later page, or the byte limit, is still a cut that keeps the names read.
+  - **A name not reached drops after seven days of its own (N1).** In a run whose catalogue was read, a held name that is neither
+    verified nor refused (describe, descriptor or function page did not answer) keeps its listing and gets `unreached_since` (store
+    0.7.2), set at the first such run, cleared when it answers, written only on a change. It drops at seven days; a quiet run writes
+    nothing.
+  - **Lookups only for listed hosts, each once (N2).** A read, `/cells` item, `/whatif` or `/x/calc` looks up only words whose host is
+    in `DATUMESH_LISTED_MESHES`; a batch remembers each lookup. `datumesh_listing_lookups_total` counts store lookups.
+  - **The 64 created subjects count across runs (N3).** The subjects that held listings create count, the kept ones too.
+  - **A cut keeps a name's subjects (N4).** A cut run merges each name's fetched subjects with the stored ones: a cut mid-catalogue
+    never removes a subject, so it changes no rank.
+  - **`/x/interval/<listed>` is refused like the other reads (N6), with `E_LISTED_ELSEWHERE`.**
+  - **Each start-up drop is logged with its count (N5).** `cause="unlisted"`, `host`, `count`; see `deploy/README.md`.
+  - **A listed host may not publish or be resolved here (C3, config).** `DATUMESH_PUBLISH_DOMAINS` allowing it (`*` included) or
+    `DATUMESH_CROSS_MESH_HOSTS` naming it is refused at start, the error naming `DATUMESH_LISTED_MESHES`.
+  - Public API: additions only: `call::Bindings::listing` (a provided method; the mesh's own bindings look listings up).
 - Public API: additions only (`datumesh_http::listing`, `datumesh_http::find_order`, the listing `Config` fields, `Cut::Unreached`).
 
 ## 0.5.5

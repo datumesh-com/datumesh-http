@@ -142,6 +142,7 @@ pub fn datumesh_http::call::Bindings::chain_read(&self, &datumesh_core::model::C
 pub fn datumesh_http::call::Bindings::class(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::BoundClass>>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::class_by_hash(&self, &str) -> core::result::Result<core::option::Option<datumesh_core::class::ClassDescriptor>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::class_name_of(&self, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
+pub fn datumesh_http::call::Bindings::listing(&self, &str) -> core::result::Result<core::option::Option<datumesh_store::Listing>, datumesh_http::listing::ListingError>
 pub fn datumesh_http::call::Bindings::lookup(&self, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::lookup_read(&self, &str, &str, &str, bool) -> core::result::Result<core::option::Option<alloc::string::String>, datumesh_core::error::ErrorCode>
 pub fn datumesh_http::call::Bindings::pinned(&self, &str) -> core::result::Result<core::option::Option<alloc::rcs::arc::Arc<datumesh_http::call::Bound>>, datumesh_core::error::ErrorCode>

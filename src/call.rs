@@ -99,6 +99,13 @@ pub trait Bindings {
         Ok(None)
     }
 
+    /// The listing of `name`, a name of another mesh that this mesh lists (CONTRACT-http-listing L6). Provided: none, so no
+    /// listed name is found; the mesh's own bindings look it up, and a batch's memo remembers each lookup (N2).
+    fn listing(&self, name: &str) -> Result<Option<datumesh_store::Listing>, crate::listing::ListingError> {
+        let _ = name;
+        Ok(None)
+    }
+
     /// The fully qualified name an alias (without `@`) stands for. Provided: none.
     fn alias(&self, alias: &str) -> Option<String> {
         let _ = alias;

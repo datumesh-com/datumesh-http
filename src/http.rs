@@ -1432,7 +1432,7 @@ pub(crate) fn metrics_text(inner: &Inner, listed_names: Option<u64>) -> String {
 /// The refusal of a read whose path text names a listed name (B1): `None` when it names none; a store failure is `503`.
 fn refuse_text(inner: &Inner, text: &str) -> Option<Reply> {
     let alias = |a: &str| inner.config.aliases.get(a).cloned();
-    match crate::listing::checked_in(inner, &alias, text) {
+    match crate::listing::checked_in(inner, inner, &alias, text) {
         Ok(Some(l)) => Some(crate::listing::refusal(&l)),
         Ok(None) => None,
         Err(_) => Some(crate::listing::unavailable()),
@@ -1488,6 +1488,7 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/versions/{cell}" => Some("/versions/"),
         "/explain/{cell}" => Some("/explain/"),
         "/x/versions/{cell}" => Some("/x/versions/"),
+        "/x/interval/{function}" => Some("/x/interval/"),
         _ => None,
     };
     let listed_refusal = match listed_prefix {

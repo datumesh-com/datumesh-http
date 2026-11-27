@@ -364,8 +364,10 @@ impl MeshBuilder {
                 if mesh.inner.config.listed_meshes.contains(&h.host) {
                     continue;
                 }
+                // N5 (re-review): each drop is logged with the number of listings it withdraws.
+                let count = mesh.inner.store.listings_of(&h.host).map(|v| v.len()).unwrap_or(0);
                 match mesh.inner.store.delete_listed_host(&h.host) {
-                    Ok(_) => tracing::warn!(target: "datumesh_http", host = %h.host, cause = "unlisted",
+                    Ok(_) => tracing::warn!(target: "datumesh_http", host = %h.host, count, cause = "unlisted",
                         "listing: the host is not in DATUMESH_LISTED_MESHES; its listings are withdrawn"),
                     Err(e) => tracing::warn!(target: "datumesh_http", host = %h.host, error = %e,
                         "listing: the unlisted host's rows are not dropped"),
@@ -518,6 +520,8 @@ impl std::fmt::Debug for Mesh {
 pub(crate) struct Memo<'a> {
     inner: &'a Inner,
     seen: std::borrow::Cow<'a, Seen>,
+    /// The listings looked up through this memo (N2): each name once.
+    listings: std::cell::RefCell<std::collections::BTreeMap<String, Option<datumesh_store::Listing>>>,
 }
 
 /// A binding or class a batch looks up: the lookup's result once one succeeded, and the lock held
@@ -650,17 +654,26 @@ impl Seen {
 
 impl<'a> Memo<'a> {
     pub(crate) fn new(inner: &'a Inner) -> Memo<'a> {
-        Memo { inner, seen: std::borrow::Cow::Owned(Seen::default()) }
+        Memo { inner, seen: std::borrow::Cow::Owned(Seen::default()), listings: Default::default() }
     }
 
     pub(crate) fn shared(inner: &'a Inner, seen: &'a Seen) -> Memo<'a> {
-        Memo { inner, seen: std::borrow::Cow::Borrowed(seen) }
+        Memo { inner, seen: std::borrow::Cow::Borrowed(seen), listings: Default::default() }
     }
 }
 
 impl Bindings for Memo<'_> {
     fn pinned(&self, fn_hash: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
         Bindings::pinned(self.inner, fn_hash)
+    }
+
+    fn listing(&self, name: &str) -> Result<Option<datumesh_store::Listing>, crate::listing::ListingError> {
+        if let Some(found) = self.listings.borrow().get(name) {
+            return Ok(found.clone());
+        }
+        let found = crate::listing::lookup(self.inner, name)?;
+        self.listings.borrow_mut().insert(name.to_string(), found.clone());
+        Ok(found)
     }
 
     fn alias(&self, alias: &str) -> Option<String> {
@@ -713,6 +726,10 @@ impl Bindings for Memo<'_> {
 }
 
 impl Bindings for Inner {
+    fn listing(&self, name: &str) -> Result<Option<datumesh_store::Listing>, crate::listing::ListingError> {
+        crate::listing::lookup(self, name)
+    }
+
     fn pinned(&self, fn_hash: &str) -> Result<Option<Arc<Bound>>, ErrorCode> {
         match self.descriptor(fn_hash) {
             Ok(d) => Ok(Some(Arc::new(Bound::new(fn_hash, "", d)))),
@@ -1174,7 +1191,7 @@ impl Inner {
     ) -> Reply {
         // A listed name is refused as a read is (CONTRACT-http-listing L6, B1): in a batch too, and through an alias.
         let alias = |a: &str| bindings.alias(a);
-        match crate::listing::checked_in(self, &alias, rest) {
+        match crate::listing::checked_in(self, bindings, &alias, rest) {
             Ok(Some(l)) => return crate::listing::refusal(&l),
             Ok(None) => {}
             Err(_) => return crate::listing::unavailable(),

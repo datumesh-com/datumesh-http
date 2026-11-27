@@ -639,6 +639,19 @@ impl Config {
             if self.namespaces.contains(h) {
                 return Err(ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h} is hosted here (a namespace)")));
             }
+            // C3 (re-review, decided 27 Nov): a listed host may not also publish here or be resolved here.
+            if self.publish_domains.allows(h) {
+                return Err(ConfigError::new(
+                    "DATUMESH_LISTED_MESHES",
+                    format!("{h} may publish here (DATUMESH_PUBLISH_DOMAINS): a listed host publishes elsewhere"),
+                ));
+            }
+            if self.cross_mesh_hosts.as_ref().is_some_and(|hosts| hosts.iter().any(|x| x == h)) {
+                return Err(ConfigError::new(
+                    "DATUMESH_LISTED_MESHES",
+                    format!("{h} is resolved here (DATUMESH_CROSS_MESH_HOSTS): a listed host is not one"),
+                ));
+            }
         }
         Ok(())
     }

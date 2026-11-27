@@ -289,8 +289,8 @@ type Members = BTreeMap<String, BTreeSet<SubjectKeys>>;
 
 /// The function name's subjects and source names, from the host's signed catalogue cells (L2.3): each member's receipt
 /// is verified against the host's key document; a member that does not verify is skipped. Pages are followed. A page
-/// that cannot be read ends the catalogue as a cut (C1, C2), keeping the members read so far; only a request that
-/// fails (no answer, a 5xx) is a hard failure of the run.
+/// after the first that cannot be read ends the catalogue as a cut (C1, C2), keeping the members read so far. When no
+/// page was read (a 404, a 5xx, no answer, a time-out), the catalogue cannot be read: `Stop::Unreachable` (N1).
 fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Result<(Members, Option<Cut>), Stop> {
     let mut keys = Keys::new();
     keys.insert_document(doc.clone());
@@ -298,24 +298,29 @@ fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Resu
     let mut url = format!("{origin}/slice/{host}/catalog/subject/source?domain=*&measure=*&rank=*&region=*&thing=*");
     // The cell of a subject's source: the method `source` of the class `<host>/catalog/subject` (receipt `ns` and `fn`).
     let source_ns = format!("{host}/catalog/subject");
+    // N1 (re-review): a catalogue none of whose pages was read cannot be read, so the host is unreachable; a stop on a
+    // later page is a cut, keeping the members read.
+    let mut pages = 0usize;
     loop {
         let (status, body) = match run.get(&url) {
             Ok(x) => x,
             Err(Stop::Bytes) => return Ok((out, Some(Cut::Bytes))),
             Err(Stop::Unreachable(detail)) => {
-                if run.left().is_none() {
-                    return Ok((out, Some(Cut::Time)));
+                if pages == 0 {
+                    return Err(Stop::Unreachable(detail));
                 }
-                return Err(Stop::Unreachable(detail));
+                let cut = if run.left().is_none() { Cut::Time } else { Cut::Unreached };
+                return Ok((out, Some(cut)));
             }
         };
-        if status == 408 || status == 429 {
-            return Err(Stop::Unreachable(format!("{url}: status {status}")));
-        }
-        if status != 200 {
+        let page = if status == 200 { json::parse(&body).ok() } else { None };
+        let Some(page) = page else {
+            if pages == 0 {
+                return Err(Stop::Unreachable(format!("{url}: status {status}")));
+            }
             return Ok((out, Some(Cut::Unreached)));
-        }
-        let Ok(page) = json::parse(&body) else { return Ok((out, Some(Cut::Unreached))) };
+        };
+        pages += 1;
         if let Some(Value::Array(members)) = page.get("members") {
             for m in members {
                 let Some(receipt) = m.get("receipt") else { continue };
@@ -490,13 +495,17 @@ pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
 /// whose subjects would pass it is cut, in name order.
 const MAX_CREATED_SUBJECTS: usize = 64;
 
-/// Applies a fetch of `host` at `now` (an instant) to the store (L3, L8):
+/// Applies a fetch of `host` at `now` (an instant) to the store (L3, L8, the re-review's N1, N3, N4):
 ///
-/// * [`Fetch::Fetched`]: each name of `names` whose descriptor hashes to its `fn_hash` is put; a name the store refuses
-///   (its bounds, or another source's entry of the name, `Invalid`) is refused, and the run goes on. A name whose subjects
-///   would create more than 64 subjects here (`MAX_CREATED_SUBJECTS`) is cut, and the run is a cut (`Cut::Names`). Without a
-///   cut, every listing of the host not among the verified names drops out; with a cut, only the `refused` ones do. The
-///   host's row: `last_seen` the day of `now`, `unreachable_since` none, written only when that changes it.
+/// * [`Fetch::Fetched`]: each name of `names` whose descriptor hashes to its `fn_hash` is put, with the subjects it has
+///   and, in a cut run, those it held (N4: a cut keeps what a name was in); a name the store refuses (its bounds, or
+///   another source's entry of the name, `Invalid`) is refused, and the run goes on. The subjects this run may create here
+///   are at most `MAX_CREATED_SUBJECTS` (B4), counted across runs: the subjects the host's held listings create count, the
+///   kept ones too (N3); a name over it is cut, and the run is a cut (`Cut::Names`). Without a cut, every listing of the host
+///   not among the verified names drops out; with a cut, the `refused` ones drop, and so does a listing not reached by a run
+///   whose catalogue was read (`Cut::Unreached`) once it has been unreached for seven days (its own clock, N1). A verified
+///   name's clock is cleared. The host's row: `last_seen` the day of `now`, `unreachable_since` none, written only when that
+///   changes it.
 /// * [`Fetch::KeyDocFailed`], [`Fetch::MeshDocFailed`]: every listing of the host drops out at once; the host's row is
 ///   left as it was.
 /// * [`Fetch::Unreachable`]: the listings stay; the host's `unreachable_since` is written once, at the first failed run;
@@ -514,16 +523,27 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
         listed: 0,
         writes: 0,
     };
-    let existing: Vec<String> = store.listings_of(host).map_err(|e| se(&e))?.into_iter().map(|l| l.name).collect();
+    let held: Vec<Listing> = store.listings_of(host).map_err(|e| se(&e))?;
+    let existing: Vec<String> = held.iter().map(|l| l.name.clone()).collect();
     let mut drop_all = false;
     let mut drop_set: BTreeSet<String> = BTreeSet::new();
     match fetch {
         Fetch::Fetched { key_id, names, refused, cut } => {
             let mut verified = BTreeSet::new();
+            let offered: BTreeSet<&str> = names.iter().map(|n| n.name.as_str()).collect();
             let mut refuse: BTreeSet<String> = refused.iter().cloned().collect();
-            // The subjects no member bound here holds: a listing creates these (B4), at most MAX_CREATED_SUBJECTS.
+            let stored: BTreeMap<&str, &Listing> = held.iter().map(|l| (l.name.as_str(), l)).collect();
+            // The subjects no member bound here holds: a listing creates these (B4), at most MAX_CREATED_SUBJECTS. The
+            // held listings that stay (offered, or kept by a cut run) count from the start (N3).
             let bound = crate::catalog_build::bound_subjects(store).map_err(|e| se(&e))?;
-            let mut created: BTreeSet<SubjectKeys> = BTreeSet::new();
+            let staying =
+                |l: &Listing| offered.contains(l.name.as_str()) || (cut.is_some() && !refused.contains(&l.name));
+            let mut created: BTreeSet<SubjectKeys> = held
+                .iter()
+                .filter(|l| staying(l))
+                .flat_map(|l| l.subjects.iter().cloned())
+                .filter(|s| !bound.contains(s))
+                .collect();
             let mut cap_cut = false;
             let mut ordered: Vec<&FetchedName> = names.iter().collect();
             ordered.sort_by(|a, b| a.name.cmp(&b.name));
@@ -536,6 +556,12 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                     continue;
                 }
                 let mut subjects = n.subjects.clone();
+                if cut.is_some() {
+                    // N4: a cut run may have read only some of the catalogue's pages: the subjects it held stay.
+                    if let Some(s) = stored.get(n.name.as_str()) {
+                        subjects.extend(s.subjects.iter().cloned());
+                    }
+                }
                 subjects.sort();
                 subjects.dedup();
                 let new: Vec<SubjectKeys> =
@@ -574,6 +600,10 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                     }
                     Err(e) => return Err(se(&e)),
                 }
+                // Reached: its own clock (N1) is cleared, if it had one.
+                if store.set_listing_unreached(&n.name, None).map_err(|e| se(&e))? {
+                    applied.writes += 1;
+                }
                 created.extend(new);
                 verified.insert(n.name.clone());
             }
@@ -582,6 +612,24 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                 None => drop_set.extend(existing.iter().filter(|e| !verified.contains(*e)).cloned()),
                 Some(c) => {
                     drop_set.extend(existing.iter().filter(|e| refuse.contains(*e)).cloned());
+                    if c == Cut::Unreached {
+                        // N1: a held name the run did not reach (not offered, not refused) has a clock of its own: set at the
+                        // first such run, cleared when it answers, dropped seven days after it was set.
+                        for name in existing.iter().filter(|e| !offered.contains(e.as_str()) && !refuse.contains(*e)) {
+                            let since = match store.listing_unreached(name).map_err(|e| se(&e))? {
+                                Some(since) => since,
+                                None => {
+                                    store.set_listing_unreached(name, Some(now)).map_err(|e| se(&e))?;
+                                    applied.writes += 1;
+                                    now.to_string()
+                                }
+                            };
+                            let due = crate::keynames::add_seconds(&since, UNREACHABLE_DROP_AFTER.as_secs());
+                            if due.is_some_and(|d| d.as_str() <= now) {
+                                drop_set.insert(name.clone());
+                            }
+                        }
+                    }
                     applied.cut = Some(c);
                     applied.outcome = Outcome::Cut;
                 }
@@ -663,8 +711,14 @@ fn active(inner: &crate::mesh::Inner) -> bool {
     !inner.config.listed_meshes.is_empty()
 }
 
+/// Whether `word` is a name under a host of `DATUMESH_LISTED_MESHES` (N2): only such a word is looked up, so a read of any
+/// other name costs no store lookup.
+fn under_listed(inner: &crate::mesh::Inner, word: &str) -> bool {
+    word.split_once('/').is_some_and(|(host, _)| inner.config.listed_meshes.iter().any(|h| h == host))
+}
+
 /// One counted store lookup of a listing (`datumesh_listing_lookups_total`).
-fn lookup(inner: &crate::mesh::Inner, name: &str) -> Result<Option<Listing>, ListingError> {
+pub(crate) fn lookup(inner: &crate::mesh::Inner, name: &str) -> Result<Option<Listing>, ListingError> {
     inner.listing_lookups.fetch_add(1, Ordering::Relaxed);
     inner.store.listing(name).map_err(|e| ListingError { detail: e.to_string() })
 }
@@ -695,9 +749,11 @@ fn resolve_alias(text: &str, alias: &dyn Fn(&str) -> Option<String>) -> String {
 }
 
 /// The listed name a read names (B1): `text` is a read's path rest, a call or a name, `name`, `name(args)` or `name?query`,
-/// a series page below a name or an alias of one. Each prefix that is a listed name is looked up, the first one returned.
+/// a series page below a name or an alias of one. Each prefix under a listed host is looked up through `bindings` (N2: a
+/// batch's bindings remember each lookup), the first one returned.
 pub(crate) fn checked_in(
     inner: &crate::mesh::Inner,
+    bindings: &dyn crate::call::Bindings,
     alias: &dyn Fn(&str) -> Option<String>,
     text: &str,
 ) -> Result<Option<Listing>, ListingError> {
@@ -709,8 +765,8 @@ pub(crate) fn checked_in(
         text.char_indices().filter(|(_, c)| matches!(c, '/' | '(' | '?' | ' ')).map(|(i, _)| i).collect();
     ends.push(text.len());
     for e in ends {
-        if text[..e].contains('/') {
-            if let Some(l) = lookup(inner, &text[..e])? {
+        if under_listed(inner, &text[..e]) {
+            if let Some(l) = bindings.listing(&text[..e])? {
                 return Ok(Some(l));
             }
         }
@@ -718,12 +774,15 @@ pub(crate) fn checked_in(
     Ok(None)
 }
 
-/// The listed name a text names among its words (a formula's, or a scenario's body): any word with a `/` that is one.
+/// The listed name a text names among its words (a formula's, or a scenario's body): any word under a listed host that is
+/// one. Each distinct word is looked up once (N2).
 pub(crate) fn checked_words(inner: &crate::mesh::Inner, text: &str) -> Result<Option<Listing>, ListingError> {
     if !active(inner) {
         return Ok(None);
     }
-    for w in text.split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c))).filter(|w| w.contains('/')) {
+    let words: BTreeSet<&str> =
+        text.split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c))).filter(|w| under_listed(inner, w)).collect();
+    for w in words {
         if let Some(l) = lookup(inner, w)? {
             return Ok(Some(l));
         }
