@@ -269,6 +269,11 @@ impl Inner {
 
     /// Answers a slice request (blocking) in the form asked, with the `Link` to the next page of a whole-slice answer.
     pub(crate) fn slice(&self, rest: &str, now: &str, form: Form) -> (Reply, Option<String>) {
+        // The store's barrier first (second review B2): a slice's answer is immutable, so it waits for the writers
+        // in flight, and a store that does not answer in time is 503.
+        if self.store.barrier().is_err() {
+            return (envelope::error_reply(datumesh_core::ErrorCode::InputUnavailable), None);
+        }
         let mut next = None;
         let r = self.slice_answer(rest, now, form, &mut next);
         (r, next)

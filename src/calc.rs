@@ -532,6 +532,10 @@ impl Inner {
             return too_large_reply();
         }
         let at = asof.unwrap_or_else(|| self.now());
+        // The store's barrier first (second review B2): the body's reads wait for the writers in flight.
+        if self.store.barrier().is_err() {
+            return envelope::error_reply(ErrorCode::InputUnavailable);
+        }
         let store: &(dyn Store + Send + Sync) = &*self.store;
         // The callees the body names are read in one pass (datumesh-formula 0.6.2's `read_names`): each name's
         // descriptor as of the asof is read once, so a positional read binds by the callee's declared order (SPEC

@@ -521,12 +521,10 @@ fn chain_links(text: &str) -> usize {
     links
 }
 
-/// Whether a call's reads are current: it names no asof, or one at or after `now` (its arrival).
-fn is_current(query: Option<&str>, now: &str) -> bool {
-    match query.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("asof="))) {
-        None => true,
-        Some(a) => a >= now,
-    }
+/// Whether a call's reads are current: it names no asof (a request naming one, past or future, stores
+/// nothing; G10, second review B1).
+fn is_current(query: Option<&str>) -> bool {
+    !query.is_some_and(|q| q.split('&').any(|p| p.starts_with("asof=")))
 }
 
 /// Resolves a call (SPEC 5.8).
@@ -550,9 +548,8 @@ pub fn resolve_call(
     if chain_links(&text) > MAX_CHAIN_LINKS {
         return Err(Rejection::BadRequest(ErrorCode::ParseUri));
     }
-    // A call that names no asof, or one at or after its arrival, is current: its links and lookups
-    // are (G10). `now` is its arrival.
-    let current = is_current(query, now);
+    // A call that names no asof is current: its links and lookups are (G10).
+    let current = is_current(query);
     let env = Env { bindings, aliases, now, current };
     CALL_FAULT.with(|f| f.set(None));
     LABEL_WITHDRAWN.with(|l| *l.borrow_mut() = None);

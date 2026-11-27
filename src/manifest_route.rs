@@ -33,6 +33,10 @@ pub(crate) const MAX_LIMIT: usize = 10_000;
 /// The reply of the route, and the path of the next page when there is one (a `Link` header).
 pub(crate) fn reply(inner: &Inner, slice_id: &str, members_hash: &str, q: &ManifestQuery) -> (Reply, Option<String>) {
     let entry = format!("slice:{slice_id}:{members_hash}");
+    // The store's barrier first (second review B2): a held manifest is immutable, so the answer waits for writers.
+    if inner.store.barrier().is_err() {
+        return (envelope::error_reply(ErrorCode::InputUnavailable), None);
+    }
     let paged = q.after.is_some() || q.limit.is_some();
     let limit = match q.limit.as_deref() {
         None => DEFAULT_LIMIT,

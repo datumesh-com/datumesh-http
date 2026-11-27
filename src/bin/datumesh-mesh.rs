@@ -81,7 +81,9 @@ fn store(pool: usize) -> PgStore {
     // mesh's own time, whatever the signed time of the receipt.
     let recording: datumesh_store::RecordingClock =
         std::sync::Arc::new(|| datumesh_engine::Clock::now(&datumesh_engine::SystemClock));
-    let mut opts = PoolOptions::new().max_size(pool.max(2)).recording_clock(recording);
+    let barrier = datumesh_http::config::barrier_timeout_of(std::env::var("DATUMESH_BARRIER_TIMEOUT_MS").ok())
+        .unwrap_or_else(|e| fail(e));
+    let mut opts = PoolOptions::new().max_size(pool.max(2)).recording_clock(recording).barrier_timeout(barrier);
     if let Ok(ca) = std::env::var("DATABASE_CA_FILE") {
         let pem = std::fs::read(&ca).unwrap_or_else(|e| fail(format!("{ca}: {e}")));
         opts = opts.tls_root_certificates_pem(&pem).unwrap_or_else(|e| fail(e));

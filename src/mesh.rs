@@ -714,7 +714,7 @@ impl Bindings for Inner {
                 Ok(datumesh_core::Scalar::String(k)) => Ok(Some(k)),
                 _ => Ok(None),
             },
-            Err(EngineError::Store(_)) => Err(ErrorCode::InputUnavailable),
+            Err(EngineError::Store(_) | EngineError::InputUnavailable { .. }) => Err(ErrorCode::InputUnavailable),
             _ => Ok(None),
         }
     }
@@ -742,7 +742,7 @@ impl Bindings for Inner {
                 crate::call::set_label_withdrawn(reason);
                 Ok(None)
             }
-            Err(EngineError::Store(_)) => Err(ErrorCode::InputUnavailable),
+            Err(EngineError::Store(_) | EngineError::InputUnavailable { .. }) => Err(ErrorCode::InputUnavailable),
             _ => Ok(None),
         }
     }
@@ -912,7 +912,7 @@ pub(crate) fn engine_code(e: &EngineError) -> (bool, ErrorCode) {
         EngineError::NameUnresolved { .. } => (false, ErrorCode::FnUnavailable),
         EngineError::UndeclaredInput { .. } => (false, ErrorCode::InputUndeclared),
         EngineError::Sign(e) if envelope::is_error_code(e.code()) => (false, e.code()),
-        EngineError::Store(_) => (false, ErrorCode::InputUnavailable),
+        EngineError::Store(_) | EngineError::InputUnavailable { .. } => (false, ErrorCode::InputUnavailable),
         _ => (false, ErrorCode::EvalUnavailable),
     }
 }
@@ -1169,11 +1169,10 @@ impl Inner {
         }
         let mut attempt = 0;
         loop {
-            // The mesh decides at arrival (G10, review item 7): a request that named no asof, or one at or
-            // after its arrival, is current; only a named asof before the arrival is a past read.
+            // A request that names an asof, past or future, stores nothing (G10, second review B1); only a
+            // request with no asof is current, at its arrival.
             let r = match target.asof() {
-                Some(t) if t < now => self.engine.get_cell(&target.cell, Some(t)),
-                Some(t) => self.engine.get_cell_current(&target.cell, t),
+                Some(t) => self.engine.get_cell(&target.cell, Some(t)),
                 None => self.engine.get_cell_current(&target.cell, now),
             };
             let inval = self.foreign.take_invalidated();
@@ -1277,6 +1276,10 @@ impl Inner {
                     }
                     if bad {
                         envelope::bad_request_reply(code)
+                    } else if matches!(e, EngineError::InputUnavailable { .. }) {
+                        // A store that did not answer in time (the barrier's included): 503, never cached, and no
+                        // stale answer in its place (second review B3).
+                        envelope::error_answer_reply(code, Some(&target.bound.fn_hash))
                     } else if code == ErrorCode::InputUnavailable {
                         self.unavailable(target, ForeignError { code, detail: e.to_string() })
                     } else {

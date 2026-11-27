@@ -16,6 +16,20 @@ use crate::apikeys::ApiKeys;
 
 /// The default wall-clock budget of a request before it is answered `pending` (SPEC 5.5).
 pub const DEFAULT_BUDGET: Duration = Duration::from_secs(1);
+
+/// The store barrier's default timeout (`DATUMESH_BARRIER_TIMEOUT_MS`, second review B3).
+pub const DEFAULT_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `DATUMESH_BARRIER_TIMEOUT_MS`: a positive number of milliseconds (default 5,000).
+pub fn barrier_timeout_of(v: Option<String>) -> Result<Duration, ConfigError> {
+    match v {
+        None => Ok(DEFAULT_BARRIER_TIMEOUT),
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => Ok(Duration::from_millis(n)),
+            _ => Err(ConfigError::new("DATUMESH_BARRIER_TIMEOUT_MS", format!("not a positive number: {v}"))),
+        },
+    }
+}
 /// The default size of the blocking pool, which is the concurrency limit of evaluation and
 /// store access (see the crate documentation for why).
 pub const DEFAULT_POOL_SIZE: usize = 32;
@@ -239,6 +253,9 @@ pub struct Config {
     /// none; `DATUMESH_MANIFEST_STORE_MAX`). At 0 the engine keeps only member-set rows, and a
     /// manifest is rebuilt on demand (guard patch G4).
     pub manifest_store_max: usize,
+    /// How long a request waits for the writers in flight (the store's barrier) before it fails 503
+    /// `E_INPUT_UNAVAILABLE` (default 5 s; `DATUMESH_BARRIER_TIMEOUT_MS`; second review B3).
+    pub barrier_timeout: Duration,
     /// Rate limits.
     pub rate: RateLimits,
     /// Cache lifetimes.
@@ -379,6 +396,7 @@ impl Config {
             explain_depth: 4,
             max_jobs: 10_000,
             manifest_store_max: 0,
+            barrier_timeout: DEFAULT_BARRIER_TIMEOUT,
             rate: RateLimits::default(),
             ttl: Ttls::default(),
             trust_proxy: false,
@@ -471,6 +489,7 @@ impl Config {
         c.explain_depth = num("DATUMESH_EXPLAIN_DEPTH", c.explain_depth)?;
         c.max_jobs = num("DATUMESH_MAX_JOBS", c.max_jobs)?;
         c.manifest_store_max = num("DATUMESH_MANIFEST_STORE_MAX", c.manifest_store_max)?;
+        c.barrier_timeout = barrier_timeout_of(get("DATUMESH_BARRIER_TIMEOUT_MS"))?;
         c.trust_proxy = flag("DATUMESH_TRUST_PROXY", c.trust_proxy)?;
         c.cross_mesh = flag("DATUMESH_CROSS_MESH", c.cross_mesh)?;
         c.rate.enabled = flag("DATUMESH_RATE_LIMITS", c.rate.enabled)?;
