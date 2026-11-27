@@ -14,7 +14,7 @@
 //!   domain proof (E_KEY_DOC for a key document that is unreadable, or that does not hold the
 //!   manifest's key valid now, E_KEY_UNAVAILABLE for no answer within 5 s, E_NOT_OWNED for a name outside
 //!   the host), then the allow list (E_DOMAIN_NOT_ALLOWED, 403), then `import-signed`'s rules
-//!   (since the B5 follow-up a receipt older than a version the mesh holds is accepted), then the public test rule
+//!   (E_BACKDATED for a receipt older than a version the mesh holds), then the public test rule
 //!   (E_TESTS_MISSING, with the lists), nothing written on any refusal;
 //! * `DATUMESH_PUBLISH_DOMAINS` (`Config::from_vars`): empty or unset is the mesh's own namespaces only;
 //!   a comma-separated list of hosts; `*` is any host with a valid key document;
@@ -272,10 +272,8 @@ async fn a_name_outside_the_host() {
     assert!(p.m.lite.store.resolve_name("other.example/b4/level", END).unwrap().is_none());
 }
 
-/// A receipt signed before a version the mesh holds: since the B5 follow-up (decided 27 Nov: the
-/// recorded time strictly increases per cell, so a new version is never refused for its time, and a
-/// bundle import follows publish-stored's rule) it is accepted, recorded after the held version, and
-/// answers from then on; the bundle's other name is bound too.
+/// A receipt older than a version the mesh holds is backdating: E_BACKDATED, and nothing of the
+/// refused bundle (not its other name either, not its receipt) is written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backdated_receipt() {
     let (p, _stub) = allowed(PUB).await;
@@ -293,12 +291,13 @@ async fn a_backdated_receipt() {
     )
     .unwrap();
     let r = p.post(second).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    assert!(p.m.lite.store.resolve_name(&extra, END).unwrap().is_some(), "the other name is bound");
-    assert_eq!(p.get(&format!("/receipt/{early_hash}"), &[]).await.status, 200, "the receipt is stored");
-    // the correction, recorded after the first bundle's version, answers now
+    assert_eq!(r.status, 422, "{}", r.text());
+    p.refused(&r, "E_BACKDATED");
+    assert!(p.m.lite.store.resolve_name(&extra, END).unwrap().is_none(), "the other name is bound");
+    assert_eq!(p.get(&format!("/receipt/{early_hash}"), &[]).await.status, 404, "the receipt is stored");
+    // the value the first bundle gave still answers
     let c = p.get(&level_cell_path(PUB, "N"), &[]).await.json();
-    assert_eq!(c["receipt"]["value"], "2", "{c}");
+    assert_eq!(c["receipt"]["value"], "1", "{c}");
 }
 
 /// A computed function without tests: E_TESTS_MISSING, with what the mesh asks for; nothing of the
