@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+Requires datumesh-store 0.7.0 (migrations 18 and 14: the tables `listings` and `listed_hosts`, and `catalog_entries.source`
+may be `listed`; applied at start). No stored row changes.
+
+- **Listing another mesh (CONTRACT-http-listing L1 to L12).** `DATUMESH_LISTED_MESHES` lists the functions of other meshes as
+  descriptions only: nothing of the other mesh's cells, receipts, versions or bindings is stored or fetched beyond what
+  verifies its catalogue. A listed name is ranked by the catalogue rule, is described (`describe`, `/fn`) with `listed: true`,
+  and is refused for reads with `E_LISTED_ELSEWHERE` (404, `not_covered`, `mesh`). Find orders results that share a subject
+  by its catalogue rank (a true order, `find_order`). An unreachable mesh keeps its names for seven days. Settings:
+  `DATUMESH_LISTED_MESHES`, `DATUMESH_LISTING_INTERVAL_SECS` (default 21600), `DATUMESH_LISTING_FIRST_DELAY_SECS` (default 0).
+  Empty list: nothing changes, and no request leaves the mesh.
+- **Metrics and check.** `datumesh_listed_names{host}`, `datumesh_listing_outcome{host,outcome}`,
+  `datumesh_listing_last_run_seconds{host}`, `datumesh_listed_names_total`. `deploy/prod/check.sh` reports `listed names <n>`.
+- **Bundles of a listed host are refused** (`E_DOMAIN_NOT_ALLOWED`), whatever `DATUMESH_PUBLISH_DOMAINS` says.
+- The catalogue rule gains one sentence: listed names are ranked by the same rule, and are described here, not served here.
+- Public API: additions only (`datumesh_http::listing`, `datumesh_http::find_order`, the listing `Config` fields).
+
 ## 0.5.5
 
 Requires datumesh-engine 0.6.2 and datumesh-store 0.6.5 (migrations 17 and 13, applied at start).

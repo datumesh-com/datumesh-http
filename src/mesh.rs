@@ -356,6 +356,42 @@ impl MeshBuilder {
                 tracing::warn!(error = %e, "the series thread is not started; the series overview is never built");
             }
         }
+        // The listing thread (CONTRACT-http-listing L2): only when DATUMESH_LISTED_MESHES names a host. Each listed host is
+        // run after the first delay, then every interval. With the list empty nothing runs and no request leaves the mesh.
+        if !mesh.inner.config.listed_meshes.is_empty() {
+            let weak = Arc::downgrade(&mesh.inner);
+            let (first, every) = (mesh.inner.config.listing_first_delay, mesh.inner.config.listing_interval);
+            let spawned = std::thread::Builder::new().name("datumesh-listing".into()).spawn(move || {
+                std::thread::sleep(first);
+                loop {
+                    let Some(inner) = weak.upgrade() else { break };
+                    for host in inner.config.listed_meshes.clone() {
+                        let origin = crate::listing::origin_of(&inner.config, &host);
+                        let now = inner.now();
+                        let limits = crate::listing::Limits::default();
+                        match crate::listing::run_host(&*inner.store, &host, &origin, &limits, &now) {
+                            Ok(a) => {
+                                let at = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0);
+                                let run = crate::metrics::ListingRun { outcome: a.outcome.as_str(), listed: a.listed, at };
+                                inner.metrics.record_listing(&host, run);
+                                if a.changed_any() {
+                                    tracing::info!(target: "datumesh_http", host = %host, added = a.added.len(), changed = a.changed.len(), dropped = a.dropped.len(), "listing: the listed names changed");
+                                }
+                            }
+                            Err(e) => tracing::warn!(target: "datumesh_http", host = %host, error = %e, "listing: the run failed"),
+                        }
+                    }
+                    drop(inner);
+                    std::thread::sleep(every);
+                }
+            });
+            if let Err(e) = spawned {
+                tracing::warn!(error = %e, "the listing thread is not started; no mesh is listed");
+            }
+        }
         Ok(mesh)
     }
 }
@@ -1648,7 +1684,7 @@ impl Mesh {
 
     /// The Prometheus text of `/metrics`.
     pub fn metrics(&self) -> String {
-        crate::http::metrics_text(&self.inner)
+        crate::http::metrics_text(&self.inner, self.inner.store.listing_count().unwrap_or(0))
     }
 
     /// The number of requests counted for a route template (e.g. `/cell/{cell}`).

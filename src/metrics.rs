@@ -34,9 +34,28 @@ pub(crate) struct Metrics {
     manifest_rebuilds: std::sync::atomic::AtomicU64,
     /// Rebuilds refused: a hash that does not match, a member that cannot be listed, the budget (G5, G10).
     manifest_rebuild_failures: std::sync::atomic::AtomicU64,
+    /// The last run of each listed host (CONTRACT-http-listing L10).
+    listing: Mutex<BTreeMap<String, ListingRun>>,
+}
+
+/// The outcomes a listing run reports (`datumesh_listing_outcome`).
+pub(crate) const LISTING_OUTCOMES: [&str; 5] =
+    ["ok", "key_document_failed", "mesh_document_failed", "cut", "unreachable"];
+
+/// The last run of one listed host: its outcome, the names listed after it and the unix time it ran.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ListingRun {
+    pub(crate) outcome: &'static str,
+    pub(crate) listed: usize,
+    pub(crate) at: u64,
 }
 
 impl Metrics {
+    /// The last run of a listed host, for `/metrics`.
+    pub(crate) fn record_listing(&self, host: &str, run: ListingRun) {
+        self.listing.lock().unwrap_or_else(|p| p.into_inner()).insert(host.to_string(), run);
+    }
+
     pub(crate) fn record(&self, route: &str, status: u16, elapsed: Duration) {
         *self.requests.lock().unwrap_or_else(|p| p.into_inner()).entry((route.to_string(), status)).or_default() += 1;
         let mut l = self.latency.lock().unwrap_or_else(|p| p.into_inner());
@@ -119,6 +138,32 @@ impl Metrics {
 
     pub(crate) fn write(&self, out: &mut String) {
         use std::fmt::Write;
+        let listing = self.listing.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let _ = writeln!(out, "# HELP datumesh_listed_names Names this mesh lists from another mesh, by listed host.");
+        let _ = writeln!(out, "# TYPE datumesh_listed_names gauge");
+        for (h, r) in &listing {
+            let _ = writeln!(out, "datumesh_listed_names{{host=\"{h}\"}} {}", r.listed);
+        }
+        let _ =
+            writeln!(out, "# HELP datumesh_listing_outcome The outcome of the last listing run of a host (1 for it).");
+        let _ = writeln!(out, "# TYPE datumesh_listing_outcome gauge");
+        for (h, r) in &listing {
+            for o in LISTING_OUTCOMES {
+                let _ = writeln!(
+                    out,
+                    "datumesh_listing_outcome{{host=\"{h}\",outcome=\"{o}\"}} {}",
+                    u8::from(o == r.outcome)
+                );
+            }
+        }
+        let _ = writeln!(
+            out,
+            "# HELP datumesh_listing_last_run_seconds When the last listing run of a host ran (unix seconds)."
+        );
+        let _ = writeln!(out, "# TYPE datumesh_listing_last_run_seconds gauge");
+        for (h, r) in &listing {
+            let _ = writeln!(out, "datumesh_listing_last_run_seconds{{host=\"{h}\"}} {}", r.at);
+        }
         let _ = writeln!(out, "# HELP datumesh_http_requests_total Requests answered, by route and HTTP status.");
         let _ = writeln!(out, "# TYPE datumesh_http_requests_total counter");
         for ((r, s), n) in self.requests.lock().unwrap_or_else(|p| p.into_inner()).iter() {

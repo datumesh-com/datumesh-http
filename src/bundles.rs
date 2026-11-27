@@ -197,7 +197,9 @@ fn check(inner: &Inner, bytes: &[u8], seen: &mut Seen) -> (Reply, String) {
     if let Some(name) = outside_namespace(&doc, namespace) {
         return fail(422, "E_NOT_OWNED", format!("{name} is not under {namespace}/"));
     }
-    if !own && !inner.config.publish_domains.allows(&host) {
+    // A listed mesh is described here, never hosted (CONTRACT-http-listing L9): no bundle of it, whatever the domains say.
+    let listed = inner.config.listed_meshes.contains(&host);
+    if !own && (listed || !inner.config.publish_domains.allows(&host)) {
         return fail(403, "E_DOMAIN_NOT_ALLOWED", format!("{host} may not publish to this mesh"));
     }
     if let Err(wait) = inner.publish_limits.lock().unwrap_or_else(|p| p.into_inner()).admit(&host, Instant::now()) {

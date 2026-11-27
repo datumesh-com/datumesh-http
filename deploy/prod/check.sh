@@ -20,6 +20,8 @@ ip="$(docker inspect -f '{{(index .NetworkSettings.Networks "khatm_default").IPA
 m="$(curl -fsS --max-time 10 "http://$ip:8080/metrics" 2>/dev/null)" || { alert="$alert mesh-unreachable"; m=""; }
 e5="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_http_requests_total\{.*status="5/ {s+=$NF} END {print s+0}')"
 ee="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_envelopes_total\{.*outcome="error"/ {s+=$NF} END {print s+0}')"
+listed="$(printf '%s\n' "$m" | awk -F'[ ]' '/^datumesh_listed_names_total / {print $NF}')"
+listed="${listed:-0}"
 state="$dir/status/check.state"
 if [ -f "$state" ]; then read -r p5 pe < "$state"; else p5=$e5; pe=$ee; fi
 # A restart resets the counters: a lower count is a new baseline, not an error.
@@ -44,9 +46,9 @@ if [ -n "$prev" ]; then mfg=$((mf - prev)); else mfg=0; fi
 [ "$mem" -gt 80 ] && alert="$alert memory"
 [ "$pg" -gt 50000000000 ] && alert="$alert postgres"
 ok=true; [ -n "$alert" ] && ok=false
-printf '{"checked": "%s", "ok": %s, "alert": "%s", "new_5xx": %s, "new_error_envelopes": %s, "disk_percent": %s, "memory_percent": %s, "postgres_bytes": %s, "manifest_bytes": %s, "manifest_growth_since_yesterday": %s}\n' \
-  "$now" "$ok" "$(echo $alert)" "$n5" "$ne" "$disk" "$mem" "$pg" "$mf" "$mfg" > "$dir/status/check.json"
-line="$now $($ok && echo OK || echo "ALERT:$alert"): 5xx +$n5, error envelopes +$ne, disk $disk%, memory $mem%, postgres $pg bytes, manifests $mf bytes (+$mfg since yesterday)"
+printf '{"checked": "%s", "ok": %s, "alert": "%s", "new_5xx": %s, "new_error_envelopes": %s, "listed_names": %s, "disk_percent": %s, "memory_percent": %s, "postgres_bytes": %s, "manifest_bytes": %s, "manifest_growth_since_yesterday": %s}\n' \
+  "$now" "$ok" "$(echo $alert)" "$n5" "$ne" "$listed" "$disk" "$mem" "$pg" "$mf" "$mfg" > "$dir/status/check.json"
+line="$now $($ok && echo OK || echo "ALERT:$alert"): 5xx +$n5, error envelopes +$ne, listed names $listed, disk $disk%, memory $mem%, postgres $pg bytes, manifests $mf bytes (+$mfg since yesterday)"
 echo "$line" > "$dir/status/check.txt"
 echo "$line"
 $ok

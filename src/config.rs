@@ -623,10 +623,14 @@ impl Config {
             return Err(ConfigError::new("DATUMESH_LISTING_INTERVAL_SECS", "at least 1 second"));
         }
         if self.listed_meshes.len() > crate::listing::MAX_HOSTS {
-            return Err(ConfigError::new("DATUMESH_LISTED_MESHES", format!("at most {} hosts", crate::listing::MAX_HOSTS)));
+            return Err(ConfigError::new(
+                "DATUMESH_LISTED_MESHES",
+                format!("at most {} hosts", crate::listing::MAX_HOSTS),
+            ));
         }
         for h in &self.listed_meshes {
-            lexical::check_dns_name(h, "$").map_err(|e| ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h}: {e}")))?;
+            lexical::check_dns_name(h, "$")
+                .map_err(|e| ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h}: {e}")))?;
             if self.namespaces.contains(h) {
                 return Err(ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h} is hosted here (a namespace)")));
             }

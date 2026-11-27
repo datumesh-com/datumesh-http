@@ -64,7 +64,7 @@ is broken by the name, in ascending order. The rank one source of a subject is t
 rank k is the k-th; a subject keeps at most twenty sources. A subject with no relay and no view has no source domain, so its sources \
 are level one under their own hosts. The job that writes the catalogue applies this rule to the facets the publishers give. \
 Addresses: a cell address and a class name carry no facet value and no rank; a page path may carry a facet value, as \
-the domain pages of the catalogue do.";
+the domain pages of the catalogue do. Listed names are ranked by the same rule: a listed name is described here, not served here.";
 
 /// The file name of the rule text in the job's blobs.
 const RULE_FILE: &str = "rule.txt";
@@ -439,7 +439,11 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
     for e in &listed {
         let listing = listings.get(&e.name);
         let keys: Vec<SubjectKey> = match listing {
-            Some(l) => l.subjects.iter().map(|s| (s.domain.clone(), s.thing.clone(), s.measure.clone(), s.region.clone())).collect(),
+            Some(l) => l
+                .subjects
+                .iter()
+                .map(|s| (s.domain.clone(), s.thing.clone(), s.measure.clone(), s.region.clone()))
+                .collect(),
             None => subject_keys(&e.facets),
         };
         let relay = relay_domain(host, &e.name).is_some();
