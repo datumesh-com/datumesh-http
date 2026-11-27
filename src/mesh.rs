@@ -1150,7 +1150,10 @@ impl Inner {
         let a = target.asof().unwrap_or(now);
         let stored = target.bound.descriptor.lang == "stored";
         let local = stored && !self.foreign.is_foreign(&target.cell.ns);
-        if local {
+        // The latest cache serves only a request that names no asof (third review): a named asof goes through
+        // the engine, which passes the store's barrier, so no answer to it is cached from a write the store
+        // has not yet told the mesh of.
+        if local && target.asof().is_none() {
             if let Some(info) = self.latest.get(target.cell_key(), a) {
                 let mut reply = Reply::json(200, info.ok.clone(), Cache::Immutable);
                 self.cache_rules(&mut reply, target, a, now, private, link);
@@ -1183,6 +1186,15 @@ impl Inner {
                 attempt += 1;
                 continue;
             }
+            // A named asof's answer from a stored cell must be the store's own version as of it (third review:
+            // the engine's memo can hold a version the store has since recorded). A mismatch drops the memo
+            // entry and answers again; an answer still unverified is never cached as immutable.
+            let unverified = self.named_stale(target, &r);
+            if unverified && attempt < 2 {
+                self.version_added(&target.cell.id());
+                attempt += 1;
+                continue;
+            }
             // A formula cell answered: the describe index learns of it (CONTRACT-1.8b H4).
             if !stored && matches!(r, Ok(Answer::Receipt(_))) {
                 self.index_cell_now(&target.cell);
@@ -1208,7 +1220,11 @@ impl Inner {
                     if local && target.asof().is_none() {
                         self.remember_latest(target, &info, a);
                     }
-                    self.ok_reply(target, info, a, now, private, link)
+                    let mut reply = self.ok_reply(target, info, a, now, private, link);
+                    if unverified {
+                        reply.cache = Cache::NoStore;
+                    }
+                    reply
                 }
                 Ok(Answer::Withdrawn { receipt, reason: _ }) => {
                     // R1: the cell's latest version is a withdrawal: `not_covered` with the withdrawal, its trust and reason.
@@ -1287,6 +1303,22 @@ impl Inner {
                     }
                 }
             };
+        }
+    }
+
+    /// Whether a named asof's answer from a local stored cell differs from the store's version as of that
+    /// asof (read after the engine's barrier). Only such answers can be stale: a computed cell's answer is
+    /// the engine's own, and a request with no asof is current.
+    fn named_stale(&self, target: &Target, r: &Result<Answer, EngineError>) -> bool {
+        let Some(t) = target.asof() else { return false };
+        if target.bound.descriptor.lang != "stored" || self.foreign.is_foreign(&target.cell.ns) {
+            return false;
+        }
+        let Ok(Answer::Receipt(bytes)) = r else { return false };
+        let Some(info) = self.receipt_info(bytes) else { return false };
+        match self.store.version_asof(&target.cell.id(), t) {
+            Ok(Some(v)) => v.receipt_hash != info.hash,
+            Ok(None) | Err(_) => true,
         }
     }
 
