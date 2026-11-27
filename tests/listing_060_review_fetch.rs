@@ -342,12 +342,24 @@ async fn s6_key_validity_compares_instants() {
 /// names verified are kept, and the name stays listed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn s7_a_5xx_on_one_name_is_not_the_whole_run_unreachable() {
-    let more = src_fn_lines(&format!("{SRC}/a_rate"), "A rate", "A rate of the source.", gb_facets());
+    // a_rate needs a descriptor of its own (a percent result, not bank_rate's unit 1): with the same signature both names
+    // would share one descriptor hash, and the 503 on bank_rate's /descriptor/<hash> would hit a_rate too.
+    let a_rate = format!("{SRC}/a_rate");
+    let sig = r#"{"args":{"date":{"type":"date","valid":true}},"order":["date"],"returns":{"type":"number","unit":"percent"}}"#;
+    let more = vec![
+        common::pub031::function_line(&a_rate, sig, None),
+        crworld::catalog_line_of(
+            &a_rate,
+            "function",
+            serde_json::json!({"facets": gb_facets(), "label": "A rate", "description": "A rate of the source."}),
+        ),
+    ];
     let src = source("r060-s7", &more).await;
     let lite = listing_lite("r060-s7");
     run_at(&lite, &src.proxy.base, Limits::default(), RUN1).await;
     assert_eq!(listed(&lite).len(), 2);
     let h = src_hash(&src, &bank_rate());
+    assert_ne!(h, src_hash(&src, &a_rate), "two descriptors");
     src.proxy.override_path(&format!("/descriptor/{h}"), 503, br#"{"error":"down"}"#.to_vec());
     let f = fetch_at(&src.proxy.base, Limits::default(), RUN2).await;
     assert!(fetched_names(&f).contains(&format!("{SRC}/a_rate")), "{f:?}");

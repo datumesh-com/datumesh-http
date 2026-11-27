@@ -204,7 +204,8 @@ async fn c6_a_failed_run_is_recorded_and_reads_fail_closed() {
     let err = format!("datumesh_listing_outcome{{host=\"{SRC}\",outcome=\"error\"}}");
     let t = until_metric(&m, &err, 1.0, 30).await;
     assert_eq!(metric(&t, &err), 1.0, "a failed run is recorded: {t}");
-    assert!(!(metric(&t, &ok) > 0.0), "only the last outcome: {t}");
+    let v = metric(&t, &ok);
+    assert!(v.is_nan() || v <= 0.0, "only the last outcome: {t}");
     assert!(metric(&t, &format!("datumesh_listing_last_run_seconds{{host=\"{SRC}\"}}")) >= at0, "{t}");
     assert!(!t.lines().any(|l| l.starts_with("datumesh_listed_names_total ")), "no total on a store error: {t}");
     src.proxy.clear_log();
@@ -319,7 +320,7 @@ async fn c4_rank_1_of_another_subject_is_not_announced() {
     put_listing(&lite, SRC, &name, vec![SubjectKeys::new("finance", "rate", "interest_rate", "ea")], RUN1);
     build(&lite, T3);
     let m = serve(lite, &kept(SRC)).await;
-    assert_eq!(sources_at(&m, ("finance", "rate", "interest_rate", "ea")).await, [name.clone()]);
+    assert_eq!(sources_at(&m, ("finance", "rate", "interest_rate", "ea")).await, std::slice::from_ref(&name));
     let _ = until_built(&m, "/catalog").await;
     let p = page(&m, &format!("/fn/{}", relay())).await;
     assert!(!links_to(&p.text(), &name), "the relay page: {:?}", hrefs(&p.text()));
