@@ -425,11 +425,23 @@ fn subclass_order(base: &[(u8, &str, &str, usize)], entries: &[Entry]) -> Vec<us
 fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Result<Model, PublishError> {
     let mut g = Graph { store, host, now, reads: BTreeMap::new(), reach: BTreeMap::new(), visiting: BTreeSet::new() };
     let listed = store.catalog_entries_with_facets().map_err(err)?;
+    // The listed names (L4): a listed name joins the subjects of its own listing, and is bound here "or listed"; its first
+    // time is the instant it was listed.
+    let mut listings: BTreeMap<String, datumesh_store::Listing> = BTreeMap::new();
+    for h in store.listed_hosts().map_err(err)? {
+        for l in store.listings_of(&h.host).map_err(err)? {
+            listings.insert(l.name.clone(), l);
+        }
+    }
     let mut entries: Vec<Entry> = Vec::new();
     let mut facets: BTreeMap<(String, String), BTreeSet<SubjectKey>> = BTreeMap::new();
     let mut members: BTreeMap<SubjectKey, Vec<usize>> = BTreeMap::new();
     for e in &listed {
-        let keys = subject_keys(&e.facets);
+        let listing = listings.get(&e.name);
+        let keys: Vec<SubjectKey> = match listing {
+            Some(l) => l.subjects.iter().map(|s| (s.domain.clone(), s.thing.clone(), s.measure.clone(), s.region.clone())).collect(),
+            None => subject_keys(&e.facets),
+        };
         let relay = relay_domain(host, &e.name).is_some();
         let reach = if e.first_bound.is_some() { g.reach(&e.name)? } else { BTreeSet::new() };
         let view = !relay && !reach.is_empty();
@@ -441,14 +453,17 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
         let idx = entries.len();
         entries.push(Entry {
             name: e.name.clone(),
-            first: e.first_bound.clone().unwrap_or_default(),
+            first: match listing {
+                Some(l) => l.listed_at.clone(),
+                None => e.first_bound.clone().unwrap_or_default(),
+            },
             relay,
             view,
             reach,
             class,
             ancestors,
         });
-        let bound = e.first_bound.is_some();
+        let bound = e.first_bound.is_some() || listing.is_some();
         // A facet value's subjects: those of the entry that have the value under its facet (a frequency is no key, so every
         // subject of an entry that carries it).
         for (facet, values) in &e.facets {
