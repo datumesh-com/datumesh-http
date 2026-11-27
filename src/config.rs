@@ -543,6 +543,11 @@ impl Config {
                 c.peers.insert(h.trim().to_string(), o.trim().trim_end_matches('/').to_string());
             }
         }
+        if let Some(v) = get("DATUMESH_LISTED_MESHES") {
+            c.listed_meshes = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        c.listing_interval = secs("DATUMESH_LISTING_INTERVAL_SECS", c.listing_interval)?;
+        c.listing_first_delay = secs("DATUMESH_LISTING_FIRST_DELAY_SECS", c.listing_first_delay)?;
         if let Some(p) = get("DATUMESH_ALIASES_FILE") {
             c.aliases = string_map(&read_file(&p)?, "DATUMESH_ALIASES_FILE")?;
         }
@@ -613,6 +618,18 @@ impl Config {
         }
         if self.budget.is_zero() {
             return Err(ConfigError::new("budget", "must be positive"));
+        }
+        if self.listing_interval < Duration::from_secs(1) {
+            return Err(ConfigError::new("DATUMESH_LISTING_INTERVAL_SECS", "at least 1 second"));
+        }
+        if self.listed_meshes.len() > crate::listing::MAX_HOSTS {
+            return Err(ConfigError::new("DATUMESH_LISTED_MESHES", format!("at most {} hosts", crate::listing::MAX_HOSTS)));
+        }
+        for h in &self.listed_meshes {
+            lexical::check_dns_name(h, "$").map_err(|e| ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h}: {e}")))?;
+            if self.namespaces.contains(h) {
+                return Err(ConfigError::new("DATUMESH_LISTED_MESHES", format!("{h} is hosted here (a namespace)")));
+            }
         }
         Ok(())
     }
