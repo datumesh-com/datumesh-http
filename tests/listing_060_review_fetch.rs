@@ -153,19 +153,22 @@ async fn b4_a_host_creates_at_most_64_subjects_here() {
 // ---- C1 ------------------------------------------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn c1_a_slow_catalogue_is_a_time_cut() {
+async fn c1_a_catalogue_with_no_first_page_is_the_host_unreachable() {
+    // Re-review N1 (decided 27 Nov): a catalogue whose FIRST page gives no answer cannot be read, so the run is the host
+    // unreachable (no last_seen, the 7-day clock runs), not a cut. A time cut on a later page stays a cut (not testable with
+    // a one-page catalogue).
     let src = source("r060-c1-time", &[]).await;
     let lite = listing_lite("r060-c1-time");
     run_at(&lite, &src.proxy.base, Limits::default(), RUN1).await;
     src.proxy.delay("/slice/", 3_000);
     let lim = Limits { time: Duration::from_millis(1_000), ..Limits::default() };
     let f = fetch_at(&src.proxy.base, lim.clone(), RUN2).await;
-    assert!(matches!(f, Fetch::Fetched { cut: Some(Cut::Time), .. }), "{f:?}");
+    assert!(matches!(f, Fetch::Unreachable { .. }), "{f:?}");
     let a = run_at(&lite, &src.proxy.base, lim, RUN2).await;
-    assert_eq!((a.outcome, a.cut), (Outcome::Cut, Some(Cut::Time)));
-    assert_eq!(listed(&lite), [bank_rate()], "nothing drops on a cut");
+    assert_eq!(a.outcome, Outcome::Unreachable);
+    assert_eq!(listed(&lite), [bank_rate()], "nothing drops on one unreachable run");
     let h = lite.store.listed_host(SRC).unwrap().unwrap();
-    assert_eq!((h.last_seen.as_deref(), h.unreachable_since.as_deref()), (Some(DAY2), None), "the host answered");
+    assert_eq!((h.last_seen.as_deref(), h.unreachable_since.as_deref()), (Some(DAY1), Some(RUN2)), "not seen");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -215,7 +218,8 @@ async fn c2_a_missing_catalogue_is_not_an_empty_one() {
     let src = source("r060-c2-cat404", &[]).await;
     src.proxy.override_path(&slice_path(), 404, br#"{"outcome":"not_covered"}"#.to_vec());
     let f = fetch_at(&src.proxy.base, Limits::default(), RUN1).await;
-    assert!(!matches!(f, Fetch::Fetched { cut: None, .. }), "a 404 catalogue read as complete and empty: {f:?}");
+    // Re-review N1 (decided 27 Nov): a catalogue that cannot be read is the host unreachable.
+    assert!(matches!(f, Fetch::Unreachable { .. }), "a 404 catalogue: {f:?}");
 }
 
 // ---- smaller issues --------------------------------------------------------------------------------------------------------

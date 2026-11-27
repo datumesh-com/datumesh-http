@@ -389,7 +389,9 @@ async fn s1_an_empty_list_looks_nothing_up() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn s9_the_takeover_page_does_not_invite_a_listed_domain() {
     let w = listed_world("r060-s9").await;
-    let (m, _src) = serve_listed(w, &[("DATUMESH_PUBLISH_DOMAINS", SRC)]).await;
+    // since the re-review's C3 (decided 27 Nov) a listed host that DATUMESH_PUBLISH_DOMAINS allows is refused at start, so
+    // the page is read with the default publish domains
+    let (m, _src) = serve_listed(w, &[]).await;
     let t = page(&m, &format!("/takeover/{SRC}")).await;
     assert_eq!(t.status, 200);
     assert!(!plain(&t.text()).contains("POST /bundles is open to"), "{}", plain(&t.text()));

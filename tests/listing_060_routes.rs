@@ -212,13 +212,15 @@ async fn l11_the_rule_text_names_listed_names() {
     assert!(text.contains("described here, not served here"), "{text}");
 }
 
-/// L9: production's rule is unchanged: `POST /bundles` admits no listed host, even one `DATUMESH_PUBLISH_DOMAINS` allows.
+/// L9: production's rule is unchanged: `POST /bundles` admits no listed host. (Since the re-review's C3, decided 27 Nov, a
+/// listed host that `DATUMESH_PUBLISH_DOMAINS` allows is refused at start, `listing_060_rereview::c3_*`; so the listing mesh
+/// here keeps the default publish domains.)
 /// Control: the same bundle on a mesh that does not list the host is admitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn l9_a_listed_hosts_bundle_is_refused() {
     let w = listed_world("l060-bundle").await;
     let bundle = foreign_bundle(SRC, &format!("{SRC}/data"), &format!("{SRC}/data/series_x"), None);
-    let (m, src) = serve_listed(w, &[("DATUMESH_PUBLISH_DOMAINS", SRC)]).await;
+    let (m, src) = serve_listed(w, &[]).await;
     src.proxy.clear_log();
     let (status, v, text) = post_json(&m, "/bundles", bundle.clone()).await;
     assert_eq!((status, v["error"].as_str()), (403, Some("E_DOMAIN_NOT_ALLOWED")), "{text}");
