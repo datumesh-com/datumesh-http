@@ -104,11 +104,14 @@ async fn l4_a_listed_name_joins_each_subject_of_its_listing_and_no_other() {
     let us_cpi = SubjectKeys::new("finance", "price", "cpi", "us");
     // facets would be domain finance, thing price+rate, measure cpi+interest_rate, region gb+us: four subjects; the
     // listing names two.
-    put_listing(&lite, SRC, &format!("{SRC}/both"), vec![gb(), us_cpi], L_A);
+    // The store takes a listing's subjects ascending and unique: (finance, price, …) sorts before (finance, rate, …).
+    put_listing(&lite, SRC, &format!("{SRC}/both"), vec![us_cpi, gb()], L_A);
     build(&lite, BUILD);
     let m = serve(lite, &[]).await;
     assert_eq!(sources_at(&m, GB).await, [format!("{SRC}/both"), relay()]);
     assert_eq!(sources_at(&m, ("finance", "price", "cpi", "us")).await, [format!("{SRC}/both")]);
-    let cross = ask(&m, &path(&sc("finance", "price", "interest_rate", "gb", "exists()"), Some(common::readpath::MESH_NOW))).await;
+    let cross =
+        ask(&m, &path(&sc("finance", "price", "interest_rate", "gb", "exists()"), Some(common::readpath::MESH_NOW)))
+            .await;
     assert_ne!(cross.outcome(), "ok", "no subject from the cross product of the facets: {}", cross.text);
 }

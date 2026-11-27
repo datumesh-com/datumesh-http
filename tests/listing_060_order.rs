@@ -11,8 +11,10 @@ use std::cmp::Ordering;
 
 use datumesh_http::find_order::{cmp_sort_keys, order, sort_keys, today_cmp, FindKey, SubjectRank};
 
-const S: &str = r#"mesh-test.datumesh.com/catalog/subject(domain:"finance",measure:"interest_rate",region:"gb",thing:"rate")"#;
-const T: &str = r#"mesh-test.datumesh.com/catalog/subject(domain:"finance",measure:"interest_rate",region:"ea",thing:"rate")"#;
+const S: &str =
+    r#"mesh-test.datumesh.com/catalog/subject(domain:"finance",measure:"interest_rate",region:"gb",thing:"rate")"#;
+const T: &str =
+    r#"mesh-test.datumesh.com/catalog/subject(domain:"finance",measure:"interest_rate",region:"ea",thing:"rate")"#;
 
 fn key(name: &str, match_type: u8, score: f64, subject: Option<(&str, u32)>) -> FindKey {
     FindKey {
@@ -48,7 +50,7 @@ fn permutations(n: usize) -> Vec<Vec<usize>> {
 /// 1, score 0.5), C in no subject (0.7). The group {A, B} takes A's place: B, A, C. From every input order.
 #[test]
 fn l5_the_three_results_that_loop_under_the_draft_give_b_a_c() {
-    let base = vec![key("A", 1, 0.9, Some((S, 2))), key("B", 1, 0.5, Some((S, 1))), key("C", 1, 0.7, None)];
+    let base = [key("A", 1, 0.9, Some((S, 2))), key("B", 1, 0.5, Some((S, 1))), key("C", 1, 0.7, None)];
     for p in permutations(3) {
         let input: Vec<FindKey> = p.iter().map(|&i| base[i].clone()).collect();
         assert_eq!(names(&input, &order(&input)), ["B", "A", "C"], "input order {p:?}");
@@ -60,7 +62,7 @@ fn l5_the_three_results_that_loop_under_the_draft_give_b_a_c() {
 /// C by today's key.
 #[test]
 fn l5_a_group_spanning_two_match_types_takes_its_best_members_place() {
-    let base = vec![
+    let base = [
         key("A", 0, 0.3, Some((S, 2))),
         key("B", 2, 0.99, Some((S, 1))),
         key("C", 1, 1.0, None),
@@ -179,7 +181,7 @@ fn reference(input: &[FindKey]) -> Vec<usize> {
 
 fn random_key(rng: &mut Rng, i: usize, subjects: bool) -> FindKey {
     let scores = [0.25, 0.5, 0.5, 0.75, 0.9, 1.0];
-    let subject = if subjects && rng.next() % 3 != 0 {
+    let subject = if subjects && !rng.next().is_multiple_of(3) {
         let s = ["S1", "S2", "S3"][(rng.next() % 3) as usize];
         Some((s, 1 + (rng.next() % 3) as u32))
     } else {

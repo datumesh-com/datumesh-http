@@ -6,7 +6,6 @@
 //! `DATUMESH_LISTED_MESHES`: a host that is also in `DATUMESH_NAMESPACES` (the mesh's own host is one by default), a host
 //! that is not a valid domain name, more than 64 hosts. `DATUMESH_LISTING_INTERVAL_SECS` (default 21,600) at least 1.
 
-
 use std::time::Duration;
 
 use datumesh_http::listing::{self, DEFAULT_INTERVAL, MAX_HOSTS};
@@ -62,7 +61,10 @@ fn l1_the_list_is_comma_separated_hosts() {
 fn l1_a_hosted_namespace_is_refused() {
     refused(&[("DATUMESH_LISTED_MESHES", HOST)], "the mesh's own host (a namespace by default)");
     refused(
-        &[("DATUMESH_NAMESPACES", &format!("{HOST},bankofengland.co.uk")), ("DATUMESH_LISTED_MESHES", "bankofengland.co.uk")],
+        &[
+            ("DATUMESH_NAMESPACES", &format!("{HOST},bankofengland.co.uk")),
+            ("DATUMESH_LISTED_MESHES", "bankofengland.co.uk"),
+        ],
         "a host of DATUMESH_NAMESPACES",
     );
     refused(
@@ -76,7 +78,9 @@ fn l1_a_hosted_namespace_is_refused() {
 
 #[test]
 fn l1_an_invalid_host_is_refused() {
-    for bad in ["Not A Host", "bad_host!.example", "https://source.example", "source.example/path", "-x.example", ".example"] {
+    for bad in
+        ["Not A Host", "bad_host!.example", "https://source.example", "source.example/path", "-x.example", ".example"]
+    {
         refused(&[("DATUMESH_LISTED_MESHES", bad)], bad);
     }
 }
@@ -113,8 +117,11 @@ fn l1_check_refuses_the_same_in_code() {
 /// How a host is reached: `https://<host>/`, unless `DATUMESH_PEERS` maps it to another origin.
 #[test]
 fn l1_a_host_is_reached_at_its_origin_or_its_peer() {
-    let c = from(&[("DATUMESH_LISTED_MESHES", "source.example,other.example"), ("DATUMESH_PEERS", "source.example=http://127.0.0.1:9")])
-        .unwrap();
+    let c = from(&[
+        ("DATUMESH_LISTED_MESHES", "source.example,other.example"),
+        ("DATUMESH_PEERS", "source.example=http://127.0.0.1:9"),
+    ])
+    .unwrap();
     assert_eq!(listing::origin_of(&c, "source.example"), "http://127.0.0.1:9");
     assert_eq!(listing::origin_of(&c, "other.example"), "https://other.example");
 }

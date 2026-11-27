@@ -283,7 +283,8 @@ async fn l2_a_cut_run_keeps_the_names_past_the_cut() {
     let names: Vec<String> = ["a_rate", "b_rate", "c_rate"].iter().map(|n| format!("{SRC}/{n}")).collect();
     let all: Vec<_> = names.iter().map(|n| name_of(n, n, vec![gb()])).collect();
     apply(&lite, &fetched(all.clone()), RUN1);
-    let cut = Fetch::Fetched { key_id: src_key_id(), names: vec![all[0].clone()], refused: vec![], cut: Some(Cut::Names) };
+    let cut =
+        Fetch::Fetched { key_id: src_key_id(), names: vec![all[0].clone()], refused: vec![], cut: Some(Cut::Names) };
     let a = apply(&lite, &cut, RUN1B);
     assert_eq!(a.outcome, Outcome::Cut);
     assert_eq!(a.cut, Some(Cut::Names));
@@ -305,7 +306,10 @@ async fn l2_a_cut_run_keeps_the_names_past_the_cut() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn l2_only_names_under_the_host_are_listed() {
     let lite = listing_lite("l060-under");
-    let f = fetched(vec![name_of(&bank_rate(), "a", vec![gb()]), name_of(&format!("{THIRD}/rates/bank_rate"), "t", vec![gb()])]);
+    let f = fetched(vec![
+        name_of(&bank_rate(), "a", vec![gb()]),
+        name_of(&format!("{THIRD}/rates/bank_rate"), "t", vec![gb()]),
+    ]);
     let a = apply(&lite, &f, RUN1);
     assert_eq!(a.added, [bank_rate()]);
     assert_eq!(lite.store.listing(&format!("{THIRD}/rates/bank_rate")).unwrap(), None);

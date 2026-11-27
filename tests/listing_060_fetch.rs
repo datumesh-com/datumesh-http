@@ -59,7 +59,10 @@ async fn l2_a_valid_host_is_fetched_from_its_own_catalogue() {
     assert!(log.iter().any(|p| p == "/.well-known/datumesh-mesh.json"), "the mesh document: {log:?}");
     assert!(log.iter().any(|p| p.starts_with("/describe/") && p.contains("bank_rate")), "describe: {log:?}");
     assert!(log.iter().any(|p| *p == format!("/descriptor/{}", n.fn_hash)), "the descriptor by hash: {log:?}");
-    assert!(reads_of_the_name(&log, &bank_rate()).is_empty(), "no cell, slice or receipt of the listed function: {log:?}");
+    assert!(
+        reads_of_the_name(&log, &bank_rate()).is_empty(),
+        "no cell, slice or receipt of the listed function: {log:?}"
+    );
     assert!(!log.iter().any(|p| p.contains(THIRD)), "a name listed from elsewhere is not followed: {log:?}");
 }
 
@@ -76,7 +79,11 @@ async fn l3_a_run_stores_no_cell_receipt_version_or_binding_of_the_other_mesh() 
     assert_eq!(untouched(&lite), before, "cells, receipts, versions, name_bindings, class_bindings, namespaces");
     assert_eq!(hosted_rows(&lite, SRC), 0);
     let l = lite.store.listing(&bank_rate()).unwrap().expect("listed");
-    assert_eq!(lite.store.descriptor(&l.fn_hash).as_deref(), Some(l.descriptor.as_slice()), "the descriptor is served by hash");
+    assert_eq!(
+        lite.store.descriptor(&l.fn_hash).as_deref(),
+        Some(l.descriptor.as_slice()),
+        "the descriptor is served by hash"
+    );
     assert_eq!(lite.store.resolve_name(&bank_rate(), END).unwrap(), None, "a listing is not a binding");
 }
 
@@ -213,7 +220,12 @@ async fn l2_a_descriptor_hash_mismatch_refuses_the_name() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn l2_a_forged_catalogue_cell_is_refused() {
     let zzq = datumesh_store::SubjectKeys::new("finance", "rate", "interest_rate", "zzq");
-    let more = src_fn_lines(&format!("{SRC}/forged_rate"), "Forged rate", "A rate in a subject of its own.", subject_facets(&zzq));
+    let more = src_fn_lines(
+        &format!("{SRC}/forged_rate"),
+        "Forged rate",
+        "A rate in a subject of its own.",
+        subject_facets(&zzq),
+    );
     let src = source("l060-forged", &more).await;
     // control: unforged, both are listed
     let f = fetch_at(&src.proxy.base, Limits::default(), RUN1).await;
@@ -240,7 +252,8 @@ fn five() -> Vec<String> {
 }
 
 fn all_six() -> Vec<String> {
-    let mut v: Vec<String> = ["a_rate", "b_rate", "bank_rate", "c_rate", "d_rate", "e_rate"].iter().map(|n| format!("{SRC}/{n}")).collect();
+    let mut v: Vec<String> =
+        ["a_rate", "b_rate", "bank_rate", "c_rate", "d_rate", "e_rate"].iter().map(|n| format!("{SRC}/{n}")).collect();
     v.sort();
     v
 }

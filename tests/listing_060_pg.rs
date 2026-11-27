@@ -48,7 +48,11 @@ impl Drop for Db {
 }
 
 fn db(admin: &str) -> Db {
-    let name = format!("dm_l060_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+    let name = format!(
+        "dm_l060_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+    );
     let (path, query) = admin.split_once('?').map(|(p, q)| (p, Some(q))).unwrap_or((admin, None));
     let base = path.rsplit_once('/').unwrap().0;
     let url = match query {
@@ -110,9 +114,15 @@ async fn l3_a_quiet_run_makes_no_embedding_on_postgres() {
     let build_at = |clock: &'static str| {
         let s = store.clone();
         on_thread(move || {
-            datumesh_http::catalog_build::catalog_build_with(&*s, &key_for(HOST), HOST, LICENCE, &common::pub031::opts(clock))
-                .unwrap()
-                .cells
+            datumesh_http::catalog_build::catalog_build_with(
+                &*s,
+                &key_for(HOST),
+                HOST,
+                LICENCE,
+                &common::pub031::opts(clock),
+            )
+            .unwrap()
+            .cells
         })
     };
     let pending = || {
@@ -129,7 +139,8 @@ async fn l3_a_quiet_run_makes_no_embedding_on_postgres() {
     // The embedding job embeds it (here: a fixed unit vector).
     let mut v = vec![0.0f32; 384];
     v[0] = 1.0;
-    let items: Vec<Embedding> = p.iter().map(|x| Embedding { ref_kind: x.ref_kind, ref_id: x.ref_id, vec: v.clone() }).collect();
+    let items: Vec<Embedding> =
+        p.iter().map(|x| Embedding { ref_kind: x.ref_kind, ref_id: x.ref_id, vec: v.clone() }).collect();
     assert!(items.iter().all(|e| e.ref_kind == EmbedRef::Entry));
     let s = store.clone();
     on_thread(move || s.put_embeddings(MODEL, &items).unwrap());
@@ -142,7 +153,9 @@ async fn l3_a_quiet_run_makes_no_embedding_on_postgres() {
         "the listed name has its embedding: {hits:?}"
     );
 
-    // A quiet run: nothing written, nothing pending, no catalogue cell.
+    // A quiet run: nothing written, no new pending embedding, no catalogue cell. The catalogue build above leaves the
+    // listed subject's facet values pending for the embedding job; the quiet run must add nothing to them.
+    let pending_before = pending();
     let before = (
         count(&d.url, "SELECT count(*) FROM listings"),
         count(&d.url, "SELECT count(*) FROM listed_hosts"),
@@ -154,7 +167,7 @@ async fn l3_a_quiet_run_makes_no_embedding_on_postgres() {
     let a = run(RUN1B);
     assert!(!a.changed_any(), "{a:?}");
     assert_eq!(a.writes, 0, "{a:?}");
-    assert_eq!(pending(), vec![], "no embedding to make");
+    assert_eq!(pending(), pending_before, "the quiet run adds no embedding to make");
     let after = (
         count(&d.url, "SELECT count(*) FROM listings"),
         count(&d.url, "SELECT count(*) FROM listed_hosts"),

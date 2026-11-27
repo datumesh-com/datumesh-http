@@ -52,7 +52,14 @@ async fn get_json(m: &Served, path: &str) -> (u16, Value, String) {
 }
 
 async fn post_json(m: &Served, path: &str, body: Vec<u8>) -> (u16, Value, String) {
-    let r = m.http.post(format!("{}{path}", m.base)).header("content-type", "application/json").body(body).send().await.unwrap();
+    let r = m
+        .http
+        .post(format!("{}{path}", m.base))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
     let status = r.status().as_u16();
     let b = r.bytes().await.unwrap().to_vec();
     let text = String::from_utf8_lossy(&b).into_owned();
@@ -82,7 +89,11 @@ async fn l6_e_listed_elsewhere_on_every_read_route_and_on_calc() {
         let (status, v, text) = get_json(&m, p).await;
         assert_listed_elsewhere(status, &v, &text, p);
     }
-    for f in [format!("{l}(date: {D}) * 2"), format!("sum({l}(date: *))"), format!("{}(date: {D}) + {l}(date: {D})", relay())] {
+    for f in [
+        format!("{l}(date: {D}) * 2"),
+        format!("sum({l}(date: *))"),
+        format!("{}(date: {D}) + {l}(date: {D})", relay()),
+    ] {
         let (status, v, text) = post_json(&m, "/x/calc", serde_json::to_vec(&json!({ "formula": f })).unwrap()).await;
         assert_listed_elsewhere(status, &v, &text, &format!("/x/calc {f}"));
     }
@@ -134,7 +145,11 @@ async fn l6_the_function_page_of_a_listed_name() {
     assert!(!html.contains("<script"), "no script");
     let (status, v, t) = get_json(&m, &format!("/fn/{}?format=json", bank_rate())).await;
     assert_eq!(status, 200, "{t}");
-    assert_eq!((v["listed"].clone(), v["mesh"].clone(), v["last_seen"].clone()), (json!(true), json!(SRC_ORIGIN), json!(DAY1)), "{t}");
+    assert_eq!(
+        (v["listed"].clone(), v["mesh"].clone(), v["last_seen"].clone()),
+        (json!(true), json!(SRC_ORIGIN), json!(DAY1)),
+        "{t}"
+    );
     assert_eq!(v["address"], there, "{t}");
 }
 
@@ -253,10 +268,15 @@ async fn l10_the_listing_thread_runs_and_metrics_report_it() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_eq!(metric(&metrics, &names_line), 1.0, "{metrics}");
-    assert_eq!(metric(&metrics, &format!("datumesh_listing_outcome{{host=\"{SRC}\",outcome=\"ok\"}}")), 1.0, "{metrics}");
+    assert_eq!(
+        metric(&metrics, &format!("datumesh_listing_outcome{{host=\"{SRC}\",outcome=\"ok\"}}")),
+        1.0,
+        "{metrics}"
+    );
     for o in ["key_document_failed", "mesh_document_failed", "cut", "unreachable"] {
         let line = format!("datumesh_listing_outcome{{host=\"{SRC}\",outcome=\"{o}\"}}");
-        assert!(!(metric(&metrics, &line) > 0.0), "only the last outcome is 1: {line} in {metrics}");
+        let v = metric(&metrics, &line);
+        assert!(v.is_nan() || v <= 0.0, "only the last outcome is 1: {line} in {metrics}");
     }
     let at = metric(&metrics, &format!("datumesh_listing_last_run_seconds{{host=\"{SRC}\"}}"));
     assert!(at > 1.7e9, "the run's time in unix seconds: {at} in {metrics}");

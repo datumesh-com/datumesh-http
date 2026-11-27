@@ -150,7 +150,11 @@ pub fn put_listing(lite: &Lite, host: &str, name: &str, subjects: Vec<SubjectKey
         })
         .unwrap_or_else(|e| panic!("put_listing {name}: {e}"));
     lite.store
-        .put_listed_host(&ListedHost { host: host.into(), last_seen: Some(listed_at[..10].to_string()), unreachable_since: None })
+        .put_listed_host(&ListedHost {
+            host: host.into(),
+            last_seen: Some(listed_at[..10].to_string()),
+            unreachable_since: None,
+        })
         .unwrap();
 }
 
@@ -162,7 +166,11 @@ pub fn relay_lines(name: &str, facets: Value, label: &str) -> Vec<String> {
     vec![
         fn_line(name),
         relay_cell(name),
-        catalog_line_of(name, "function", json!({"facets": facets, "label": label, "description": "A relay of the bank rate."})),
+        catalog_line_of(
+            name,
+            "function",
+            json!({"facets": facets, "label": label, "description": "A relay of the bank rate."}),
+        ),
     ]
 }
 
@@ -199,7 +207,8 @@ pub fn hosted_rows(lite: &Lite, host: &str) -> i64 {
 /// `updated_at` of every catalogue entry, in order: a run that writes no catalogue row leaves it equal.
 pub fn catalogue_stamps(lite: &Lite) -> Vec<String> {
     let c = rusqlite::Connection::open(lite.path("store.db")).unwrap();
-    let mut st = c.prepare("SELECT kind || ' ' || name || ' ' || updated_at FROM catalog_entries ORDER BY kind, name").unwrap();
+    let mut st =
+        c.prepare("SELECT kind || ' ' || name || ' ' || updated_at FROM catalog_entries ORDER BY kind, name").unwrap();
     st.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect()
 }
 
@@ -278,7 +287,8 @@ pub fn source_lite(label: &str, more: &[String]) -> Lite {
     lines.extend(more.iter().cloned());
     publish_as(&lite, SRC, "source.jsonl", &lines, T1);
     lite.store.put_namespace(THIRD, &key_doc(THIRD, &key_for(THIRD)), K_FROM).unwrap();
-    let third = foreign_bundle(THIRD, &format!("{THIRD}/rates"), &format!("{THIRD}/rates/bank_rate"), Some(gb_facets()));
+    let third =
+        foreign_bundle(THIRD, &format!("{THIRD}/rates"), &format!("{THIRD}/rates/bank_rate"), Some(gb_facets()));
     datumesh_http::bundle::import_signed(&*lite.store, SRC, &[THIRD.to_string()], &FixedClock(T2), &third)
         .unwrap_or_else(|e| panic!("third: {e}"));
     let n = build_as(&lite, SRC, T3);
@@ -311,7 +321,13 @@ pub async fn source(label: &str, more: &[String]) -> Source {
 
 /// The source's function hash of `name`.
 pub fn src_hash(s: &Source, name: &str) -> String {
-    s.mesh.lite.store.resolve_binding(name, END).unwrap().unwrap_or_else(|| panic!("{name} unbound on the source")).fn_hash
+    s.mesh
+        .lite
+        .store
+        .resolve_binding(name, END)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{name} unbound on the source"))
+        .fn_hash
 }
 
 /// `listing::fetch` on the blocking pool.
@@ -527,8 +543,7 @@ pub async fn listed_world(label: &str) -> World {
 
 /// The listing mesh serving `w.lite` with `vars`, peers to the proxy, the listing thread held off for an hour.
 pub async fn serve_listed(w: World, vars: &[(&str, &str)]) -> (Served, Source) {
-    let mut v: Vec<(&str, &str)> =
-        vec![("DATUMESH_LISTED_MESHES", SRC), ("DATUMESH_LISTING_FIRST_DELAY_SECS", "3600")];
+    let mut v: Vec<(&str, &str)> = vec![("DATUMESH_LISTED_MESHES", SRC), ("DATUMESH_LISTING_FIRST_DELAY_SECS", "3600")];
     v.extend_from_slice(vars);
     let c = listing_cfg(Some(&w.src.proxy.base), &v);
     let m = build_served(w.lite, Some(c), |_| {}).await;
