@@ -436,6 +436,8 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
     let mut entries: Vec<Entry> = Vec::new();
     let mut facets: BTreeMap<(String, String), BTreeSet<SubjectKey>> = BTreeMap::new();
     let mut members: BTreeMap<SubjectKey, Vec<usize>> = BTreeMap::new();
+    // The subjects some name bound here is a member of (a listed-only subject is not).
+    let mut own: BTreeSet<SubjectKey> = BTreeSet::new();
     for e in &listed {
         let listing = listings.get(&e.name);
         let keys: Vec<SubjectKey> = match listing {
@@ -468,6 +470,9 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
             ancestors,
         });
         let bound = e.first_bound.is_some() || listing.is_some();
+        if e.first_bound.is_some() {
+            own.extend(keys.iter().cloned());
+        }
         // A facet value's subjects: those of the entry that have the value under its facet (a frequency is no key, so every
         // subject of an entry that carries it).
         for (facet, values) in &e.facets {
@@ -513,12 +518,16 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
         let names: Vec<String> = order.iter().take(SOURCES_PER_SUBJECT).map(|&i| entries[i].name.clone()).collect();
         subjects.insert(k.clone(), names);
     }
-    // The catalogue lists at most `cap` subjects, the first in key order (H2); the rest are not written.
+    // The catalogue lists at most `cap` subjects; the rest are not written. The subjects that hold a member bound here come
+    // first, in key order; the subjects that hold only listed names (B4) go after them, so they never push out this mesh's
+    // own.
     if subjects.len() > cap {
         tracing::warn!(target: "datumesh_http", subjects = subjects.len(), cap,
             "catalogue job: the subjects are cut at DATUMESH_CATALOG_MAX");
-        let kept = subjects.split_off(&subjects.keys().nth(cap).cloned().unwrap_or_default());
-        drop(kept);
+        let mut order: Vec<SubjectKey> = subjects.keys().cloned().collect();
+        order.sort_by(|a, b| (!own.contains(a)).cmp(&!own.contains(b)).then(a.cmp(b)));
+        let keep: BTreeSet<SubjectKey> = order.into_iter().take(cap).collect();
+        subjects.retain(|k, _| keep.contains(k));
     }
     // Facet objects count only the subjects that exist (every subject of an entry is one of `members` when it is bound).
     facets.retain(|_, set| {
@@ -526,6 +535,23 @@ fn model<S: Store + ?Sized>(store: &S, host: &str, now: &str, cap: usize) -> Res
         true
     });
     Ok(Model { subjects, facets })
+}
+
+/// The subjects a name bound here is a member of (its first binding is known): a listing creates the others (B4).
+pub(crate) fn bound_subjects<S: Store + ?Sized>(
+    store: &S,
+) -> Result<BTreeSet<datumesh_store::SubjectKeys>, datumesh_store::Error> {
+    let mut out = BTreeSet::new();
+    for e in store.catalog_entries_with_facets()? {
+        if e.first_bound.is_some() {
+            out.extend(
+                subject_keys(&e.facets)
+                    .into_iter()
+                    .map(|(d, t, m, r)| datumesh_store::SubjectKeys::new(&d, &t, &m, &r)),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a subject has the value `v` under the facet `facet`: its domain, thing, measure or region is `v`. A frequency is no

@@ -191,6 +191,9 @@ pub struct Foreign {
     client: Client,
     clock: Arc<dyn Clock>,
     owned: Vec<String>,
+    /// The listed hosts (`DATUMESH_LISTED_MESHES`): their names are described from their listings, never resolved across
+    /// meshes (CONTRACT-http-listing L6, B1).
+    listed: Vec<String>,
     enabled: bool,
     ttl_binding: Duration,
     ttl_current: Duration,
@@ -248,6 +251,7 @@ impl Foreign {
             client: Client::with_keys(cc, keys),
             clock,
             owned: config.namespaces.clone(),
+            listed: config.listed_meshes.clone(),
             enabled: config.cross_mesh,
             ttl_binding: config.ttl.binding,
             ttl_current: config.ttl.current,
@@ -273,7 +277,27 @@ impl Foreign {
     /// cross-mesh resolution is on (and allows that host).
     pub fn is_foreign(&self, name: &str) -> bool {
         let host = host_of(name);
-        self.enabled && !self.owned.iter().any(|h| h == host) && self.client.allowed(host) && !self.is_hosted(host)
+        self.enabled
+            && !self.owned.iter().any(|h| h == host)
+            && !self.is_listed(host)
+            && self.client.allowed(host)
+            && !self.is_hosted(host)
+    }
+
+    /// Whether `host` is a listed mesh (its names are described from their listings here, never resolved; CONTRACT-http-listing
+    /// L6, B1).
+    fn is_listed(&self, host: &str) -> bool {
+        self.listed.iter().any(|h| h == host)
+    }
+
+    /// The refusal of a resolution across meshes that names a listed host.
+    fn refuse_listed(&self, host: &str) -> Result<(), ForeignError> {
+        if self.is_listed(host) {
+            return Err(ForeignError::unavailable(format!(
+                "{host} is a listed mesh: its names are not resolved across meshes"
+            )));
+        }
+        Ok(())
     }
 
     /// The store's record that `host` is hosted here (Build 2 Part 4, P1): a blob whose content is
@@ -332,6 +356,7 @@ impl Foreign {
 
     /// Brings the bindings of a foreign `name` up to date (when not confirmed within the TTL).
     pub fn ensure_name(&self, name: &str) -> Result<(), ForeignError> {
+        self.refuse_listed(host_of(name))?;
         if !self.is_foreign(name) {
             return Ok(());
         }
@@ -472,6 +497,7 @@ impl Foreign {
     /// Brings the versions of a foreign stored cell up to date (when not confirmed within the
     /// TTL). `Ok(true)` when versions were added.
     pub fn ensure_cell(&self, cell: &Cell) -> Result<bool, ForeignError> {
+        self.refuse_listed(host_of(&cell.function_name()))?;
         let id = cell.id();
         if let Some(c) = self.cells.lock().unwrap_or_else(|p| p.into_inner()).get(&id) {
             if c.at.elapsed() < self.ttl_current {
@@ -552,6 +578,7 @@ impl Foreign {
     /// Puts the signer host's key document (as cached, fetched from that host) in the store,
     /// unless the store's is the same. Never for a host this mesh owns.
     fn ensure_namespace(&self, host: &str) -> Result<(), ForeignError> {
+        self.refuse_listed(host)?;
         if self.owned.iter().any(|h| h == host) {
             return Ok(());
         }
@@ -566,6 +593,7 @@ impl Foreign {
     /// first in the error's `detail` ([`ForeignError::foreign_detail`]). Nothing for a
     /// namespace this mesh owns, or with cross-mesh resolution off. Since 0.2.1.
     pub fn ensure_publisher(&self, ns: &str) -> Result<(), ForeignError> {
+        self.refuse_listed(host_of(ns))?;
         if !self.is_foreign(ns) {
             return Ok(());
         }

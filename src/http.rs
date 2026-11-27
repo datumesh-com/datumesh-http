@@ -1328,8 +1328,13 @@ async fn health(State(mesh): State<Mesh>) -> Response {
 #[utoipa::path(get, path = "/metrics", responses((status = 200, description = "Prometheus text", content_type = "text/plain")))]
 async fn metrics(State(mesh): State<Mesh>) -> Response {
     // The store is synchronous: its count is read on the pool, never on this thread (CONTRACT-http-listing L10).
-    let store = mesh.inner.store.clone();
-    let listed = mesh.inner.pool.clone().run(move || store.listing_count().unwrap_or(0)).await.unwrap_or(0);
+    // With no listed host there is nothing to count (no pool hop); a store failure leaves the total out (smaller 9).
+    let listed = if mesh.inner.config.listed_meshes.is_empty() {
+        Some(0)
+    } else {
+        let store = mesh.inner.store.clone();
+        mesh.inner.pool.clone().run(move || store.listing_count().ok()).await.flatten()
+    };
     let mut r = Reply::json(200, metrics_text(&mesh.inner, listed).into_bytes(), Cache::NoStore);
     r.content_type = "text/plain; version=0.0.4";
     to_response(r)
@@ -1343,15 +1348,21 @@ async fn openapi_json() -> Response {
     to_response(r)
 }
 
-pub(crate) fn metrics_text(inner: &Inner, listed_names: u64) -> String {
+pub(crate) fn metrics_text(inner: &Inner, listed_names: Option<u64>) -> String {
     use std::fmt::Write;
     use std::sync::atomic::Ordering::Relaxed;
     let mut out = String::new();
     inner.metrics.write(&mut out);
-    // The names listed from other meshes, all hosts (CONTRACT-http-listing L10): check.sh reads it.
-    let _ = writeln!(out, "# HELP datumesh_listed_names_total Names listed from other meshes, all hosts.");
-    let _ = writeln!(out, "# TYPE datumesh_listed_names_total gauge");
-    let _ = writeln!(out, "datumesh_listed_names_total {listed_names}");
+    // The names listed from other meshes, all hosts (CONTRACT-http-listing L10): check.sh reads it. Absent when the store
+    // cannot count them, so check.sh tells a store error from an empty list (smaller 9).
+    if let Some(n) = listed_names {
+        let _ = writeln!(out, "# HELP datumesh_listed_names_total Names listed from other meshes, all hosts.");
+        let _ = writeln!(out, "# TYPE datumesh_listed_names_total gauge");
+        let _ = writeln!(out, "datumesh_listed_names_total {n}");
+    }
+    let _ = writeln!(out, "# HELP datumesh_listing_lookups_total Store lookups of listings made for requests.");
+    let _ = writeln!(out, "# TYPE datumesh_listing_lookups_total counter");
+    let _ = writeln!(out, "datumesh_listing_lookups_total {}", inner.listing_lookups.load(Relaxed));
     let p = &inner.pool;
     let g = |out: &mut String, name: &str, help: &str, kind: &str, v: String| {
         let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {v}");
@@ -1418,6 +1429,16 @@ pub(crate) fn metrics_text(inner: &Inner, listed_names: u64) -> String {
     out
 }
 
+/// The refusal of a read whose path text names a listed name (B1): `None` when it names none; a store failure is `503`.
+fn refuse_text(inner: &Inner, text: &str) -> Option<Reply> {
+    let alias = |a: &str| inner.config.aliases.get(a).cloned();
+    match crate::listing::checked_in(inner, &alias, text) {
+        Ok(Some(l)) => Some(crate::listing::refusal(&l)),
+        Ok(None) => None,
+        Err(_) => Some(crate::listing::unavailable()),
+    }
+}
+
 /// Request ids, the access log, metrics and `Accept`.
 async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response {
     let start = Instant::now();
@@ -1458,29 +1479,27 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/series/{page}" | "/series/sitemap.xml" | "/x/interval/{function}" | "/catalog" | "/catalog/{page}"
     ) || (route == "/slice/{cell}"
         && crate::series::negotiation_free(&mesh.inner, &rest_of(req.uri(), "/slice/"), req.headers()));
-    // A read of a listed name is refused here, before anything else (CONTRACT-http-listing L6).
-    let listed_refusal = if method == axum::http::Method::GET
-        && matches!(
-            route.as_str(),
-            "/cell/{cell}" | "/slice/{cell}" | "/series/{page}" | "/versions/{cell}" | "/explain/{cell}"
-        ) {
-        let prefix = match route.as_str() {
-            "/cell/{cell}" => "/cell/",
-            "/slice/{cell}" => "/slice/",
-            "/series/{page}" => "/series/",
-            "/versions/{cell}" => "/versions/",
-            _ => "/explain/",
-        };
-        let text = rest_of(req.uri(), prefix);
-        let store = mesh.inner.store.clone();
-        mesh.inner
-            .pool
-            .clone()
-            .run(move || crate::listing::listed_in(&*store, &text).map(|l| crate::listing::refusal(&l)))
-            .await
-            .flatten()
-    } else {
-        None
+    // A read of a listed name is refused here, before anything else (CONTRACT-http-listing L6): every method, and every read
+    // route that names a function (B1). A store failure answers 503 (fail closed).
+    let listed_prefix = match route.as_str() {
+        "/cell/{cell}" => Some("/cell/"),
+        "/slice/{cell}" => Some("/slice/"),
+        "/series/{page}" => Some("/series/"),
+        "/versions/{cell}" => Some("/versions/"),
+        "/explain/{cell}" => Some("/explain/"),
+        "/x/versions/{cell}" => Some("/x/versions/"),
+        _ => None,
+    };
+    let listed_refusal = match listed_prefix {
+        Some(prefix) if !mesh.inner.config.listed_meshes.is_empty() => {
+            let text = rest_of(req.uri(), prefix);
+            let inner = mesh.inner.clone();
+            match mesh.inner.pool.clone().run(move || refuse_text(&inner, &text)).await {
+                Some(r) => r,
+                None => Some(crate::listing::unavailable()),
+            }
+        }
+        _ => None,
     };
     let mut resp = if let Some(r) = listed_refusal {
         to_response(r)
@@ -1536,6 +1555,16 @@ async fn whatif(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> R
         Ok(b) => b,
         Err(_) => return to_response(envelope::bad_request_reply(ErrorCode::CanonLimit)),
     };
+    if !inner.config.listed_meshes.is_empty() {
+        // A scenario that names a listed function is refused as a read is (B1): any word of the body that is one.
+        let (inner2, body2) = (inner.clone(), body.clone());
+        let text = String::from_utf8_lossy(&body2).into_owned();
+        match inner.pool.clone().run(move || crate::listing::checked_words(&inner2, &text)).await {
+            Some(Ok(Some(l))) => return to_response(crate::listing::refusal(&l)),
+            Some(Ok(None)) => {}
+            _ => return to_response(crate::listing::unavailable()),
+        }
+    }
     let mesh2 = mesh.clone();
     match inner.pool.clone().run(move || mesh2.whatif(&body, principal.as_ref())).await {
         Some(r) => to_response(r),
@@ -1576,11 +1605,13 @@ async fn x_calc(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> R
         Err(_) => return to_response(crate::calc::too_large_reply()),
     };
     // A formula that reads a listed name is refused as a read is (CONTRACT-http-listing L6), before any resolution.
-    let store = inner.store.clone();
-    let body2 = body.clone();
-    let listed = inner.pool.clone().run(move || crate::listing::listed_in_formula(&*store, &body2)).await.flatten();
-    if let Some(l) = listed {
-        return to_response(crate::listing::refusal(&l));
+    if !inner.config.listed_meshes.is_empty() {
+        let (inner2, body2) = (inner.clone(), body.clone());
+        match inner.pool.clone().run(move || crate::listing::checked_formula(&inner2, &body2)).await {
+            Some(Ok(Some(l))) => return to_response(crate::listing::refusal(&l)),
+            Some(Ok(None)) => {}
+            _ => return to_response(crate::listing::unavailable()),
+        }
     }
     let mesh2 = mesh.clone();
     match inner.pool.clone().run(move || mesh2.calc(&body, principal.as_ref())).await {

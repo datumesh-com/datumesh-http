@@ -673,6 +673,7 @@ pub enum datumesh_http::listing::Cut
 pub datumesh_http::listing::Cut::Bytes
 pub datumesh_http::listing::Cut::Names
 pub datumesh_http::listing::Cut::Time
+pub datumesh_http::listing::Cut::Unreached
 impl core::clone::Clone for datumesh_http::listing::Cut
 pub fn datumesh_http::listing::Cut::clone(&self) -> Self
 impl core::cmp::Eq for datumesh_http::listing::Cut

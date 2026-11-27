@@ -200,6 +200,7 @@ impl MeshBuilder {
             jobs: Jobs::new(config.ttl.job, config.max_jobs),
             limiter: Limiter::new(config.rate.clone()),
             metrics: Metrics::default(),
+            listing_lookups: std::sync::atomic::AtomicU64::new(0),
             engine,
             store: self.store,
             clock: self.clock,
@@ -356,6 +357,21 @@ impl MeshBuilder {
                 tracing::warn!(error = %e, "the series thread is not started; the series overview is never built");
             }
         }
+        // C5 (CONTRACT-http-listing L1, decided 27 Nov): the rows of a host the setting does not name are dropped at start,
+        // so a removed or emptied list withdraws its listings (logged as unlisted).
+        if let Ok(rows) = mesh.inner.store.listed_hosts() {
+            for h in rows {
+                if mesh.inner.config.listed_meshes.contains(&h.host) {
+                    continue;
+                }
+                match mesh.inner.store.delete_listed_host(&h.host) {
+                    Ok(_) => tracing::warn!(target: "datumesh_http", host = %h.host, cause = "unlisted",
+                        "listing: the host is not in DATUMESH_LISTED_MESHES; its listings are withdrawn"),
+                    Err(e) => tracing::warn!(target: "datumesh_http", host = %h.host, error = %e,
+                        "listing: the unlisted host's rows are not dropped"),
+                }
+            }
+        }
         // The listing thread (CONTRACT-http-listing L2): only when DATUMESH_LISTED_MESHES names a host. Each listed host is
         // run after the first delay, then every interval. With the list empty nothing runs and no request leaves the mesh.
         if !mesh.inner.config.listed_meshes.is_empty() {
@@ -369,19 +385,24 @@ impl MeshBuilder {
                         let origin = crate::listing::origin_of(&inner.config, &host);
                         let now = inner.now();
                         let limits = crate::listing::Limits::default();
+                        let at = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
                         match crate::listing::run_host(&*inner.store, &host, &origin, &limits, &now) {
                             Ok(a) => {
-                                let at = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0);
                                 let run = crate::metrics::ListingRun { outcome: a.outcome.as_str(), listed: a.listed, at };
                                 inner.metrics.record_listing(&host, run);
                                 if a.changed_any() {
                                     tracing::info!(target: "datumesh_http", host = %host, added = a.added.len(), changed = a.changed.len(), dropped = a.dropped.len(), "listing: the listed names changed");
                                 }
                             }
-                            Err(e) => tracing::warn!(target: "datumesh_http", host = %host, error = %e, "listing: the run failed"),
+                            Err(e) => {
+                                // C6: a run that fails is recorded too, as `error`, with its time.
+                                tracing::warn!(target: "datumesh_http", host = %host, error = %e, "listing: the run failed");
+                                let listed = inner.store.listings_of(&host).map(|l| l.len()).unwrap_or(0);
+                                inner.metrics.record_listing(&host, crate::metrics::ListingRun { outcome: "error", listed, at });
+                            }
                         }
                     }
                     drop(inner);
@@ -435,6 +456,8 @@ pub(crate) struct Inner {
     pub(crate) jobs: Jobs,
     pub(crate) limiter: Limiter,
     pub(crate) metrics: Metrics,
+    /// The store lookups of listings made for requests (`datumesh_listing_lookups_total`; none with no listed host).
+    pub(crate) listing_lookups: std::sync::atomic::AtomicU64,
     pub(crate) keys: Arc<KeyCache>,
     pub(crate) foreign: Arc<Foreign>,
     descriptors: Mutex<HashMap<String, Arc<FunctionDescriptor>>>,
@@ -1149,6 +1172,13 @@ impl Inner {
         on_target: &mut dyn FnMut(&Target),
         link: bool,
     ) -> Reply {
+        // A listed name is refused as a read is (CONTRACT-http-listing L6, B1): in a batch too, and through an alias.
+        let alias = |a: &str| bindings.alias(a);
+        match crate::listing::checked_in(self, &alias, rest) {
+            Ok(Some(l)) => return crate::listing::refusal(&l),
+            Ok(None) => {}
+            Err(_) => return crate::listing::unavailable(),
+        }
         let target = match call::resolve(rest, now, &self.config.aliases, bindings, false) {
             Ok(t) => t,
             // `N[label]` with no method is the object's describe (K8, the classes round). A raw `[`/`]` is not
@@ -1684,7 +1714,7 @@ impl Mesh {
 
     /// The Prometheus text of `/metrics`.
     pub fn metrics(&self) -> String {
-        crate::http::metrics_text(&self.inner, self.inner.store.listing_count().unwrap_or(0))
+        crate::http::metrics_text(&self.inner, self.inner.store.listing_count().ok())
     }
 
     /// The number of requests counted for a route template (e.g. `/cell/{cell}`).

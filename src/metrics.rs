@@ -39,8 +39,8 @@ pub(crate) struct Metrics {
 }
 
 /// The outcomes a listing run reports (`datumesh_listing_outcome`).
-pub(crate) const LISTING_OUTCOMES: [&str; 5] =
-    ["ok", "key_document_failed", "mesh_document_failed", "cut", "unreachable"];
+pub(crate) const LISTING_OUTCOMES: [&str; 6] =
+    ["ok", "key_document_failed", "mesh_document_failed", "cut", "unreachable", "error"];
 
 /// The last run of one listed host: its outcome, the names listed after it and the unix time it ran.
 #[derive(Clone, Copy, Debug, Default)]

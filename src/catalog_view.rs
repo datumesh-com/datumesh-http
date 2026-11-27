@@ -86,6 +86,9 @@ pub(crate) struct Built {
     /// Each name's place among the subjects, for find's order and the relay pages (CONTRACT-http-listing L5), taken from the
     /// same read as the pages: no read of its own.
     pub(crate) places: BTreeMap<String, crate::find_order::SubjectRank>,
+    /// The rank-one name of each subject, by the subject's key text (CONTRACT-http-listing L7: a relay's page names the
+    /// listed name that ranks first in the relay's subject).
+    pub(crate) firsts: BTreeMap<String, String>,
     /// The class pages, by class name: HTML and JSON.
     classes: BTreeMap<String, ClassPage>,
     /// The generation the build read (see the module documentation).
@@ -853,7 +856,8 @@ fn build_from(inner: &Inner, read: Read) -> Built {
         .map(|d| (d.name.clone(), d.subjects.iter().map(|&i| read.subjects[i].text.clone()).collect()))
         .collect();
     let classes = class_pages(inner, &host, &now, &read);
-    Built { root, held, pages, domain_order, classes, generation: read.generation, places }
+    let firsts = read.subjects.iter().filter_map(|s| s.sources.first().map(|f| (s.text.clone(), f.clone()))).collect();
+    Built { root, held, pages, domain_order, classes, generation: read.generation, places, firsts }
 }
 
 /// Runs one build when the catalogue changed since the last one (or none is built yet), and makes it the one requests read;

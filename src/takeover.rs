@@ -104,7 +104,10 @@ pub(crate) fn data(inner: &Inner, domain: &str, found: &[(String, String)]) -> O
         return None;
     }
     let host = &inner.config.host;
-    let hosting = if inner.config.publish_domains.allows(domain) {
+    // A listed domain is not hosted here: its functions are described from its own mesh (CONTRACT-http-listing L9, smaller 9).
+    let hosting = if inner.config.listed_meshes.iter().any(|h| h.as_str() == domain) {
+        format!("{domain} is a listed mesh here ({host}): its functions are described from its own mesh, and POST /bundles does not admit it.")
+    } else if inner.config.publish_domains.allows(domain) {
         format!("POST /bundles is open to {domain} on this mesh ({host}): a bundle signed by a key in its key document is accepted.")
     } else {
         format!(
@@ -162,10 +165,8 @@ pub(crate) fn respond(inner: &Inner, domain: &str, json_form: bool) -> Reply {
         };
     };
     // The listed names of this domain that rank first in their subject (CONTRACT-http-listing L7), linked here.
-    let note: String = match inner.store.listings_of(domain) {
-        Ok(ls) => ls.iter().filter_map(|l| crate::listing::rank_one_note(inner, &l.name)).collect(),
-        Err(_) => String::new(),
-    };
+    let relays: Vec<String> = found.iter().map(|(n, _)| n.clone()).collect();
+    let note = crate::listing::takeover_note(inner, &relays);
     if json_form {
         return Reply::json(200, d.to_jcs(), Cache::Public(max_age));
     }

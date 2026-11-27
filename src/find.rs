@@ -132,13 +132,14 @@ pub(crate) fn entry_by_name<S: Store + ?Sized>(store: &S, name: &str) -> Option<
 /// What a query is read against: the store, the mesh's now and the generic words.
 pub(crate) struct Ctx<'a> {
     store: &'a dyn Store,
+    inner: &'a Inner,
     now: String,
     generic: Arc<HashSet<String>>,
 }
 
 pub(crate) fn ctx_of(inner: &Inner) -> Ctx<'_> {
     let generic = inner.generic.read().map(|g| g.clone()).unwrap_or_default();
-    Ctx { store: &*inner.store, now: inner.now(), generic }
+    Ctx { store: &*inner.store, inner, now: inner.now(), generic }
 }
 
 /// The arguments of a function as `(name, type)`, in signature order.
@@ -426,15 +427,10 @@ fn function_value(
 
 /// A function's result: a listed name is described from its listing (CONTRACT-http-listing L5), any other from its binding.
 fn result_value(ctx: &Ctx, lk: &mut Lookup, name: &str, mt: &str, score: f64) -> Option<Value> {
-    match crate::listing::listed(ctx.store, name) {
+    match crate::listing::listed(ctx.inner, name) {
         Some(l) => Some(listed_value(ctx.store, &l, mt, score)),
         None => function_value(ctx, lk, name, None, mt, score),
     }
-}
-
-/// Whether `name` has the first rank in its subject, by the last find build (CONTRACT-http-listing L7).
-pub(crate) fn rank_one(inner: &Inner, name: &str) -> bool {
-    crate::catalog_view::built(inner).is_some_and(|b| b.places.get(name).is_some_and(|p| p.rank == 1))
 }
 
 /// The result of a listed function: its description and where it is served, with no cell and no slice of this mesh.
@@ -969,6 +965,13 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
     let empty = BTreeMap::new();
     let places = catalogue.as_ref().map(|b| &b.places).unwrap_or(&empty);
     let all: Vec<Scored> = board.best.into_values().collect();
+    // A result keeps its subject for the order only when its group holds a listed result (B5, decided 27 Nov): with the list
+    // empty, or no listed result among these, the order is 0.5.x's.
+    let listed_subjects: BTreeSet<String> = all
+        .iter()
+        .filter(|s| crate::listing::listed(inner, &s.name).is_some())
+        .filter_map(|s| places.get(&s.name).map(|p| p.subject.clone()))
+        .collect();
     let keys: Vec<crate::find_order::FindKey> = all
         .iter()
         .map(|s| crate::find_order::FindKey {
@@ -976,7 +979,7 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
             score: s.score,
             kind: s.kind,
             name: s.name.clone(),
-            subject: places.get(&s.name).cloned(),
+            subject: places.get(&s.name).filter(|p| listed_subjects.contains(&p.subject)).cloned(),
         })
         .collect();
     let mut slots: Vec<Option<Scored>> = all.into_iter().map(Some).collect();

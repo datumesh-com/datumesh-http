@@ -544,7 +544,12 @@ impl Config {
             }
         }
         if let Some(v) = get("DATUMESH_LISTED_MESHES") {
-            c.listed_meshes = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            // A host named twice counts once (smaller 4), in the order it is first named.
+            for h in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if !c.listed_meshes.iter().any(|x| x == h) {
+                    c.listed_meshes.push(h.to_string());
+                }
+            }
         }
         c.listing_interval = secs("DATUMESH_LISTING_INTERVAL_SECS", c.listing_interval)?;
         c.listing_first_delay = secs("DATUMESH_LISTING_FIRST_DELAY_SECS", c.listing_first_delay)?;

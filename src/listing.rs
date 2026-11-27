@@ -1,10 +1,6 @@
 //! Listing another mesh (CONTRACT-http-listing, http 0.6.0): the functions of a mesh this mesh does not host, as
 //! descriptions only, with no cells stored.
 //!
-//! **Stub of the test commit.** The types and signatures are the API the tests pin; every function body is `todo!()`.
-//! The implementer writes the bodies (see `BRIEF-listing-060-implement.md`), and changes neither the signatures nor
-//! the tests.
-//!
 //! A run for one listed host is two steps, so that the store side is tested without a network:
 //!
 //! * [`fetch`]: read-only HTTP against the host's origin (L2): the key document (SPEC 9: host, keys, validity), the mesh
@@ -19,9 +15,11 @@
 //! [`Config::listed_meshes`](crate::Config::listed_meshes) every [`Config::listing_interval`](crate::Config::listing_interval).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
+use datumesh_core::lexical;
 use datumesh_core::{KeyDocument, Keys};
 use datumesh_store::{ListedHost, Listing, ListingWrite, Store, SubjectKeys};
 
@@ -63,6 +61,9 @@ pub enum Cut {
     Bytes,
     /// [`Limits::time`].
     Time,
+    /// A request for a name did not answer with a result (a 429, a 5xx, no answer, or a page that is not one), or the
+    /// catalogue could not be read on: that name, and the names past it, keep their listings (C1, C2, smaller 7).
+    Unreached,
 }
 
 /// One verified name of a listed host.
@@ -254,36 +255,67 @@ impl Run {
     }
 }
 
-/// The key of `doc` valid at `now` (`valid_from <= now < valid_to`), if any.
+/// An instant as a string that compares in time order: `YYYY-MM-DDTHH:MM:SS` and the fraction to nine digits (smaller 6).
+fn instant_key(s: &str) -> String {
+    let s = s.strip_suffix('Z').unwrap_or(s);
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    let frac = &frac[..frac.len().min(9)];
+    format!("{whole}.{frac:0<9}")
+}
+
+/// The key of `doc` valid at `now` (`valid_from <= now < valid_to`), if any; instants compare as instants.
 fn key_valid_at(doc: &KeyDocument, now: &str) -> Option<String> {
+    let now = instant_key(now);
     doc.keys
         .keys
         .iter()
-        .find(|k| k.valid_from.as_str() <= now && k.valid_to.as_deref().is_none_or(|t| now < t))
+        .find(|k| instant_key(&k.valid_from) <= now && k.valid_to.as_deref().is_none_or(|t| now < instant_key(t)))
         .map(|k| k.id.clone())
 }
 
+/// The next page of the catalogue, when this run follows it (B2): a path under the host's own slice, relative, or an
+/// `https://<host>` link re-rooted on `origin`. Anything else (another origin, `http://`) is not fetched.
+fn next_page(host: &str, origin: &str, next: &str) -> Option<String> {
+    let slice = format!("/slice/{host}/");
+    if next.starts_with(&slice) {
+        return Some(format!("{origin}{next}"));
+    }
+    let rest = next.strip_prefix(&format!("https://{host}"))?;
+    rest.starts_with(&slice).then(|| format!("{origin}{rest}"))
+}
+
+/// The subjects of each name of a catalogue, by name.
+type Members = BTreeMap<String, BTreeSet<SubjectKeys>>;
+
 /// The function name's subjects and source names, from the host's signed catalogue cells (L2.3): each member's receipt
-/// is verified against the host's key document; a member that does not verify is skipped. Pages are followed.
-fn catalogue(
-    run: &mut Run,
-    host: &str,
-    origin: &str,
-    doc: &KeyDocument,
-) -> Result<BTreeMap<String, BTreeSet<SubjectKeys>>, Stop> {
+/// is verified against the host's key document; a member that does not verify is skipped. Pages are followed. A page
+/// that cannot be read ends the catalogue as a cut (C1, C2), keeping the members read so far; only a request that
+/// fails (no answer, a 5xx) is a hard failure of the run.
+fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Result<(Members, Option<Cut>), Stop> {
     let mut keys = Keys::new();
     keys.insert_document(doc.clone());
     let mut out: BTreeMap<String, BTreeSet<SubjectKeys>> = BTreeMap::new();
     let mut url = format!("{origin}/slice/{host}/catalog/subject/source?domain=*&measure=*&rank=*&region=*&thing=*");
+    // The cell of a subject's source: the method `source` of the class `<host>/catalog/subject` (receipt `ns` and `fn`).
+    let source_ns = format!("{host}/catalog/subject");
     loop {
-        let (status, body) = run.get(&url)?;
-        if status == 404 {
-            break;
-        }
-        if status != 200 {
+        let (status, body) = match run.get(&url) {
+            Ok(x) => x,
+            Err(Stop::Bytes) => return Ok((out, Some(Cut::Bytes))),
+            Err(Stop::Unreachable(detail)) => {
+                if run.left().is_none() {
+                    return Ok((out, Some(Cut::Time)));
+                }
+                return Err(Stop::Unreachable(detail));
+            }
+        };
+        if status == 408 || status == 429 {
             return Err(Stop::Unreachable(format!("{url}: status {status}")));
         }
-        let page = json::parse(&body).map_err(|_| Stop::Unreachable(format!("{url}: not JSON")))?;
+        if status != 200 {
+            return Ok((out, Some(Cut::Unreached)));
+        }
+        let Ok(page) = json::parse(&body) else { return Ok((out, Some(Cut::Unreached))) };
         if let Some(Value::Array(members)) = page.get("members") {
             for m in members {
                 let Some(receipt) = m.get("receipt") else { continue };
@@ -292,6 +324,12 @@ fn catalogue(
                     continue;
                 }
                 let Some(cell) = receipt.get("cell") else { continue };
+                // Only the host's own source cells name sources (smaller 3): their `ns` and `fn`, a rank and the four keys.
+                let is_source = cell.get("fn").and_then(Value::as_str) == Some("source")
+                    && cell.get("ns").and_then(Value::as_str) == Some(source_ns.as_str());
+                if !is_source {
+                    continue;
+                }
                 let arg = |k: &str| -> Option<String> {
                     cell.get("args")?.get(k)?.get("value")?.as_str().map(str::to_string)
                 };
@@ -300,26 +338,78 @@ fn catalogue(
                 else {
                     continue;
                 };
+                if cell.get("args").and_then(|a| a.get("rank")).is_none() {
+                    continue;
+                }
                 let value = receipt.get("value");
                 let name = value.and_then(|v| v.as_str().or_else(|| v.get("value").and_then(Value::as_str)));
                 let Some(name) = name else { continue };
-                if name.starts_with(&format!("{host}/")) {
+                let under = name.starts_with(&format!("{host}/"));
+                if under && lexical::check_function_name(name, "name").is_ok() {
                     out.entry(name.to_string()).or_default().insert(SubjectKeys::new(&d, &t, &me, &rg));
                 }
             }
         }
-        match page.get("next").and_then(Value::as_str) {
-            Some(next) => {
-                url = match next.strip_prefix("https://") {
-                    Some(r) => format!("{origin}{}", &r[r.find('/').unwrap_or(r.len())..]),
-                    None if next.starts_with('/') => format!("{origin}{next}"),
-                    None => next.to_string(),
-                };
-            }
-            None => break,
+        match page.get("next") {
+            None | Some(Value::Null) => break,
+            Some(Value::String(next)) => match next_page(host, origin, next) {
+                Some(u) => url = u,
+                None => return Ok((out, Some(Cut::Unreached))),
+            },
+            Some(_) => return Ok((out, Some(Cut::Unreached))),
         }
     }
-    Ok(out)
+    Ok((out, None))
+}
+
+/// What one name's requests made of it.
+enum NameStep {
+    /// Verified: describe, descriptor and function page (its label and description).
+    Got(FetchedName),
+    /// Reached, and the answer does not verify or the name is gone (describe 404, a hash that does not match): refused.
+    Refused,
+    /// Not reached: a 429, a 5xx or a page that is not an answer (C2, smaller 7). The stored listing stays as it is.
+    NotReached,
+}
+
+/// One name's requests (see [`NameStep`]); a request that stops the run is `Err`.
+fn name_step(run: &mut Run, origin: &str, name: &str, subjects: Vec<SubjectKeys>) -> Result<NameStep, Stop> {
+    let base = format!("{origin}/");
+    let (status, d) = run.get(&format!("{base}describe/{name}"))?;
+    if status == 404 {
+        return Ok(NameStep::Refused);
+    }
+    if status != 200 {
+        return Ok(NameStep::NotReached);
+    }
+    let fn_hash = json::parse(&d)
+        .ok()
+        .and_then(|v| v.get("fn_hash").and_then(Value::as_str).map(str::to_string))
+        .filter(|h| lexical::check_hex(h, 64, "fn_hash").is_ok());
+    let Some(fn_hash) = fn_hash else { return Ok(NameStep::Refused) };
+    let (status, bytes) = run.get(&format!("{base}descriptor/{fn_hash}"))?;
+    if status != 200 {
+        return Ok(NameStep::NotReached);
+    }
+    if datumesh_core::function_hash(&bytes).ok().as_deref() != Some(fn_hash.as_str()) {
+        return Ok(NameStep::Refused);
+    }
+    let (status, f) = run.get(&format!("{base}fn/{name}?format=json"))?;
+    let page = if status == 200 { json::parse(&f).ok() } else { None };
+    let Some(v) = page else { return Ok(NameStep::NotReached) };
+    let label = v.get("label").and_then(Value::as_str).unwrap_or_default().to_string();
+    let description = v.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+    if description.is_empty() {
+        return Ok(NameStep::NotReached);
+    }
+    Ok(NameStep::Got(FetchedName { name: name.to_string(), fn_hash, subjects, descriptor: bytes, label, description }))
+}
+
+/// Records the first cut of a run (the first limit reached is the one reported).
+fn first_cut(cut: &mut Option<Cut>, c: Cut) {
+    if cut.is_none() {
+        *cut = Some(c);
+    }
 }
 
 /// Fetches `host` at `origin` (L2), read-only, within `limits`; `now` (an instant) is the time the key document's keys
@@ -357,80 +447,56 @@ pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
     {
         return Fetch::MeshDocFailed { detail: "disagrees with the key document on host or proto".into() };
     }
-    // 3. the host's own catalogue, verified and not stored
-    let subjects = match catalogue(&mut run, host, origin, &doc) {
+    // 3. the host's own catalogue, verified and not stored (a cut keeps the members read)
+    let (subjects, mut cut) = match catalogue(&mut run, host, origin, &doc) {
         Ok(x) => x,
         Err(s) => return unreachable(s),
     };
-    let mut cut = None;
     let mut all: Vec<(String, Vec<SubjectKeys>)> =
         subjects.into_iter().map(|(n, s)| (n, s.into_iter().collect())).collect();
     if all.len() > limits.names {
         all.truncate(limits.names);
-        cut = Some(Cut::Names);
+        first_cut(&mut cut, Cut::Names);
     }
     // 4. each name: describe, descriptor, and its label and description
     let mut names = Vec::new();
     let mut refused = Vec::new();
     for (name, subjects) in all {
         if run.left().is_none() {
-            cut = Some(Cut::Time);
+            first_cut(&mut cut, Cut::Time);
             break;
         }
-        let base = format!("{origin}/");
-        let step = (|| -> Result<Option<FetchedName>, Stop> {
-            let (status, d) = run.get(&format!("{base}describe/{name}"))?;
-            let fn_hash = match (status, json::parse(&d)) {
-                (200, Ok(v)) => v.get("fn_hash").and_then(Value::as_str).map(str::to_string),
-                _ => None,
-            };
-            let Some(fn_hash) = fn_hash else { return Ok(None) };
-            let (status, bytes) = run.get(&format!("{base}descriptor/{fn_hash}"))?;
-            if status != 200 || datumesh_core::function_hash(&bytes).ok().as_deref() != Some(fn_hash.as_str()) {
-                return Ok(None);
-            }
-            let (mut label, mut description) = (String::new(), String::new());
-            let (status, f) = run.get(&format!("{base}fn/{name}?format=json"))?;
-            if status == 200 {
-                if let Ok(v) = json::parse(&f) {
-                    label = v.get("label").and_then(Value::as_str).unwrap_or_default().to_string();
-                    description = v.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
-                }
-            }
-            Ok(Some(FetchedName {
-                name: name.clone(),
-                fn_hash,
-                subjects: subjects.clone(),
-                descriptor: bytes,
-                label,
-                description,
-            }))
-        })();
-        match step {
-            Ok(Some(n)) => names.push(n),
-            Ok(None) => refused.push(name),
+        match name_step(&mut run, origin, &name, subjects) {
+            Ok(NameStep::Got(n)) => names.push(n),
+            Ok(NameStep::Refused) => refused.push(name),
+            Ok(NameStep::NotReached) => first_cut(&mut cut, Cut::Unreached),
             Err(Stop::Bytes) => {
-                cut = Some(Cut::Bytes);
+                first_cut(&mut cut, Cut::Bytes);
                 break;
             }
-            Err(Stop::Unreachable(detail)) => {
+            Err(Stop::Unreachable(_)) => {
                 if run.left().is_none() {
-                    cut = Some(Cut::Time);
+                    first_cut(&mut cut, Cut::Time);
                     break;
                 }
-                return Fetch::Unreachable { detail };
+                first_cut(&mut cut, Cut::Unreached);
             }
         }
     }
     Fetch::Fetched { key_id, names, refused, cut }
 }
 
+/// The most subjects a listed host may create in this mesh's catalogue (B4): a subject no member bound here holds. A name
+/// whose subjects would pass it is cut, in name order.
+const MAX_CREATED_SUBJECTS: usize = 64;
+
 /// Applies a fetch of `host` at `now` (an instant) to the store (L3, L8):
 ///
-/// * [`Fetch::Fetched`]: each name of `names` whose descriptor hashes to its `fn_hash` is put (a name whose descriptor
-///   does not is dropped like a refused one); without a cut, every listing of the host not among the verified names drops
-///   out; with a cut, only the `refused` ones do (the names past the cut were not checked). The host's row: `last_seen` the
-///   day of `now`, `unreachable_since` none, written only when that changes it.
+/// * [`Fetch::Fetched`]: each name of `names` whose descriptor hashes to its `fn_hash` is put; a name the store refuses
+///   (its bounds, or another source's entry of the name, `Invalid`) is refused, and the run goes on. A name whose subjects
+///   would create more than 64 subjects here (`MAX_CREATED_SUBJECTS`) is cut, and the run is a cut (`Cut::Names`). Without a
+///   cut, every listing of the host not among the verified names drops out; with a cut, only the `refused` ones do. The
+///   host's row: `last_seen` the day of `now`, `unreachable_since` none, written only when that changes it.
 /// * [`Fetch::KeyDocFailed`], [`Fetch::MeshDocFailed`]: every listing of the host drops out at once; the host's row is
 ///   left as it was.
 /// * [`Fetch::Unreachable`]: the listings stay; the host's `unreachable_since` is written once, at the first failed run;
@@ -455,7 +521,13 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
         Fetch::Fetched { key_id, names, refused, cut } => {
             let mut verified = BTreeSet::new();
             let mut refuse: BTreeSet<String> = refused.iter().cloned().collect();
-            for n in names {
+            // The subjects no member bound here holds: a listing creates these (B4), at most MAX_CREATED_SUBJECTS.
+            let bound = crate::catalog_build::bound_subjects(store).map_err(|e| se(&e))?;
+            let mut created: BTreeSet<SubjectKeys> = BTreeSet::new();
+            let mut cap_cut = false;
+            let mut ordered: Vec<&FetchedName> = names.iter().collect();
+            ordered.sort_by(|a, b| a.name.cmp(&b.name));
+            for n in ordered {
                 let under = n.name.starts_with(&format!("{host}/"));
                 let ok =
                     under && datumesh_core::function_hash(&n.descriptor).ok().as_deref() == Some(n.fn_hash.as_str());
@@ -466,6 +538,12 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                 let mut subjects = n.subjects.clone();
                 subjects.sort();
                 subjects.dedup();
+                let new: Vec<SubjectKeys> =
+                    subjects.iter().filter(|s| !bound.contains(*s) && !created.contains(*s)).cloned().collect();
+                if created.len() + new.len() > MAX_CREATED_SUBJECTS {
+                    cap_cut = true;
+                    continue;
+                }
                 let l = Listing {
                     host: host.to_string(),
                     name: n.name.clone(),
@@ -478,25 +556,35 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                     fetched_at: now.to_string(),
                     listed_at: now.to_string(),
                 };
-                match store.put_listing(&l).map_err(|e| se(&e))? {
-                    ListingWrite::Unchanged => {}
-                    ListingWrite::Inserted => {
+                match store.put_listing(&l) {
+                    Ok(ListingWrite::Unchanged) => {}
+                    Ok(ListingWrite::Inserted) => {
                         applied.added.push(n.name.clone());
                         applied.writes += 1;
                     }
-                    ListingWrite::Changed => {
+                    Ok(ListingWrite::Changed) => {
                         applied.changed.push(n.name.clone());
                         applied.writes += 1;
                     }
+                    // A name the store refuses (its bounds, or another source's catalogue entry of it) is refused, and the
+                    // run goes on with the others (B3, C3); nothing of it was written.
+                    Err(datumesh_store::Error::Invalid(_)) => {
+                        refuse.insert(n.name.clone());
+                        continue;
+                    }
+                    Err(e) => return Err(se(&e)),
                 }
+                created.extend(new);
                 verified.insert(n.name.clone());
             }
-            if cut.is_none() {
-                drop_set.extend(existing.iter().filter(|e| !verified.contains(*e)).cloned());
-            } else {
-                drop_set.extend(existing.iter().filter(|e| refuse.contains(*e)).cloned());
-                applied.cut = *cut;
-                applied.outcome = Outcome::Cut;
+            let cut = cut.or(cap_cut.then_some(Cut::Names));
+            match cut {
+                None => drop_set.extend(existing.iter().filter(|e| !verified.contains(*e)).cloned()),
+                Some(c) => {
+                    drop_set.extend(existing.iter().filter(|e| refuse.contains(*e)).cloned());
+                    applied.cut = Some(c);
+                    applied.outcome = Outcome::Cut;
+                }
             }
             let day = &now[..10];
             let row = ListedHost { host: host.to_string(), last_seen: Some(day.to_string()), unreachable_since: None };
@@ -569,32 +657,95 @@ pub fn run_host<S: Store + ?Sized>(
 // ---------------------------------------------------------------------------------------------------------------------
 // What this mesh says about a listed name (L6): refused for every read, described and shown as a page
 
-/// The listing of `name`, when it is a listed name here.
-pub(crate) fn listed(store: &dyn Store, name: &str) -> Option<Listing> {
-    store.listing(name).ok().flatten()
+/// Whether listings are looked up at all: only with `DATUMESH_LISTED_MESHES` naming a host (smaller 1). With the list empty
+/// no request reads the listings table.
+fn active(inner: &crate::mesh::Inner) -> bool {
+    !inner.config.listed_meshes.is_empty()
 }
 
-/// The listed name a read names: the first prefix of `text` (a path rest, `name`, `name(args)` or `name?query`, a series
-/// page below a name) that is a listed name.
-pub(crate) fn listed_in(store: &dyn Store, text: &str) -> Option<Listing> {
+/// One counted store lookup of a listing (`datumesh_listing_lookups_total`).
+fn lookup(inner: &crate::mesh::Inner, name: &str) -> Result<Option<Listing>, ListingError> {
+    inner.listing_lookups.fetch_add(1, Ordering::Relaxed);
+    inner.store.listing(name).map_err(|e| ListingError { detail: e.to_string() })
+}
+
+/// The listing of `name` when it is a listed name here. With no listed host nothing is looked up. A store failure is an
+/// error (a read that depends on it fails closed, L6).
+pub(crate) fn checked(inner: &crate::mesh::Inner, name: &str) -> Result<Option<Listing>, ListingError> {
+    if !active(inner) {
+        return Ok(None);
+    }
+    lookup(inner, name)
+}
+
+/// The listing of `name`, or `None` when it is not one (a store failure reads as not listed: for the pages, not for the
+/// refusals, which use [`checked`]).
+pub(crate) fn listed(inner: &crate::mesh::Inner, name: &str) -> Option<Listing> {
+    checked(inner, name).ok().flatten()
+}
+
+/// `text` with a leading alias (`@a` of `@a(...)`, `@a/...`) replaced by its target, when `alias` knows it (B1).
+fn resolve_alias(text: &str, alias: &dyn Fn(&str) -> Option<String>) -> String {
+    let Some(rest) = text.strip_prefix('@') else { return text.to_string() };
+    let end = rest.find(['(', '/', '?', ' ']).unwrap_or(rest.len());
+    match alias(&rest[..end]) {
+        Some(target) => format!("{target}{}", &rest[end..]),
+        None => text.to_string(),
+    }
+}
+
+/// The listed name a read names (B1): `text` is a read's path rest, a call or a name, `name`, `name(args)` or `name?query`,
+/// a series page below a name or an alias of one. Each prefix that is a listed name is looked up, the first one returned.
+pub(crate) fn checked_in(
+    inner: &crate::mesh::Inner,
+    alias: &dyn Fn(&str) -> Option<String>,
+    text: &str,
+) -> Result<Option<Listing>, ListingError> {
+    if !active(inner) {
+        return Ok(None);
+    }
+    let text = resolve_alias(text.strip_prefix("cell://").unwrap_or(text), alias);
     let mut ends: Vec<usize> =
         text.char_indices().filter(|(_, c)| matches!(c, '/' | '(' | '?' | ' ')).map(|(i, _)| i).collect();
     ends.push(text.len());
-    ends.into_iter().filter(|&e| text[..e].contains('/')).find_map(|e| listed(store, &text[..e]))
+    for e in ends {
+        if text[..e].contains('/') {
+            if let Some(l) = lookup(inner, &text[..e])? {
+                return Ok(Some(l));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The listed name a text names among its words (a formula's, or a scenario's body): any word with a `/` that is one.
+pub(crate) fn checked_words(inner: &crate::mesh::Inner, text: &str) -> Result<Option<Listing>, ListingError> {
+    if !active(inner) {
+        return Ok(None);
+    }
+    for w in text.split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c))).filter(|w| w.contains('/')) {
+        if let Some(l) = lookup(inner, w)? {
+            return Ok(Some(l));
+        }
+    }
+    Ok(None)
 }
 
 /// The listed name a formula (the body of `POST /x/calc`) reads: one of its words is a listed name.
-pub(crate) fn listed_in_formula(store: &dyn Store, body: &[u8]) -> Option<Listing> {
-    let formula = json::parse(body).ok()?.get("formula").and_then(Value::as_str)?.to_string();
-    formula
-        .split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
-        .filter(|w| w.contains('/'))
-        .find_map(|w| listed(store, w))
+pub(crate) fn checked_formula(inner: &crate::mesh::Inner, body: &[u8]) -> Result<Option<Listing>, ListingError> {
+    if !active(inner) {
+        return Ok(None);
+    }
+    let formula = json::parse(body).ok().and_then(|v| v.get("formula").and_then(Value::as_str).map(str::to_string));
+    match formula {
+        Some(f) => checked_words(inner, &f),
+        None => Ok(None),
+    }
 }
 
-/// The host's own origin as a listed answer names it (`https://<host>`, never the peers origin).
-fn mesh_of(host: &str) -> String {
-    format!("https://{host}")
+/// The reply of a read that depends on the listings when the store fails (fail closed, L6): `503`.
+pub(crate) fn unavailable() -> Reply {
+    crate::envelope::error_reply(datumesh_core::ErrorCode::EvalUnavailable)
 }
 
 /// `E_LISTED_ELSEWHERE` (CONTRACT-http-listing L6): a read of a listed name is `not_covered`, with the mesh that holds it.
@@ -609,13 +760,22 @@ pub(crate) fn refusal(l: &Listing) -> Reply {
     Reply::json(404, body.to_jcs(), Cache::NoStore)
 }
 
-/// The note a page of this mesh carries about a listed name that ranks first in its subject (CONTRACT-http-listing L7): the
-/// relay's page and its takeover page link to it, with the day it was last seen. `None` when `name` is not such a name.
-pub(crate) fn rank_one_note(inner: &crate::mesh::Inner, name: &str) -> Option<String> {
-    let l = listed(&*inner.store, name)?;
-    if !crate::find::rank_one(inner, name) {
+/// The host's own origin as a listed answer names it (`https://<host>`, never the peers origin).
+fn mesh_of(host: &str) -> String {
+    format!("https://{host}")
+}
+
+/// The note a page carries about the listed name that ranks first in the subject where `name` (a relay of a source) has its
+/// place (CONTRACT-http-listing L7): the page links to it, with the day it was last seen. `None` when that first name is not
+/// a listed one (or is `name` itself).
+fn first_note(inner: &crate::mesh::Inner, name: &str) -> Option<String> {
+    let built = crate::catalog_view::built(inner)?;
+    let subject = &built.places.get(name)?.subject;
+    let first = built.firsts.get(subject)?;
+    if first == name {
         return None;
     }
+    let l = listed(inner, first)?;
     let last_seen = inner.store.listed_host(&l.host).ok().flatten().and_then(|r| r.last_seen).unwrap_or_default();
     Some(format!(
         "<p>The source&#39;s own function is listed here and ranks first in its subject (last seen {}): \
@@ -624,6 +784,26 @@ pub(crate) fn rank_one_note(inner: &crate::mesh::Inner, name: &str) -> Option<St
         escape(&crate::fnpage::page_url(inner, &l.name)),
         escape(&l.name)
     ))
+}
+
+/// The note of a relay's function page about its source (CONTRACT-http-listing L7): the listed name that ranks first in the
+/// relay's subject. `d` is the function page's data; `None` when there is none.
+pub(crate) fn relay_note(inner: &crate::mesh::Inner, d: &Value) -> Option<String> {
+    first_note(inner, d.get("name").or_else(|| d.get("fn"))?.as_str()?)
+}
+
+/// The note of a takeover page about its domain (CONTRACT-http-listing L7): [`first_note`] of each of the domain's relays,
+/// each note once.
+pub(crate) fn takeover_note(inner: &crate::mesh::Inner, relays: &[String]) -> String {
+    let mut notes: Vec<String> = Vec::new();
+    for r in relays {
+        if let Some(n) = first_note(inner, r) {
+            if !notes.contains(&n) {
+                notes.push(n);
+            }
+        }
+    }
+    notes.concat()
 }
 
 /// The members a listed name's description carries (describe and the function page as JSON).
@@ -685,13 +865,4 @@ pub(crate) fn fn_reply(store: &dyn Store, l: &Listing, json_form: bool) -> Reply
         canonical: None,
         retry_after: None,
     }
-}
-
-/// The note of a relay's page about its source (CONTRACT-http-listing L7): the listed names of the source's domain that rank
-/// first in their subject, linked here. `d` is the function page's data; `None` when there are none.
-pub(crate) fn relay_note(inner: &crate::mesh::Inner, d: &Value) -> Option<String> {
-    let domain = d.get("lineage")?.get("source")?.get("name")?.as_str()?;
-    let notes: String =
-        inner.store.listings_of(domain).ok()?.iter().filter_map(|l| rank_one_note(inner, &l.name)).collect();
-    (!notes.is_empty()).then_some(notes)
 }
