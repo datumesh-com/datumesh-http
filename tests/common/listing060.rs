@@ -183,6 +183,14 @@ pub fn listing_lite(label: &str) -> Lite {
     lite
 }
 
+/// The serving variables that keep the listings of `hosts` (comma-separated) in the store: since the review round (C5) a mesh
+/// drops at start the rows of a host its `DATUMESH_LISTED_MESHES` does not name. The listing thread waits an hour, so no run
+/// happens in a test.
+pub fn kept(hosts: &str) -> [(&'static str, &'static str); 2] {
+    let hosts: &'static str = Box::leak(hosts.to_string().into_boxed_str());
+    [("DATUMESH_LISTED_MESHES", hosts), ("DATUMESH_LISTING_FIRST_DELAY_SECS", "3600")]
+}
+
 /// The rows of a SQL count on a test store's SQLite file.
 pub fn rows(lite: &Lite, sql: &str) -> i64 {
     let c = rusqlite::Connection::open(lite.path("store.db")).unwrap();

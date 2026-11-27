@@ -186,6 +186,8 @@ async fn l7_the_relay_page_and_the_takeover_page_point_to_rank_1() {
     let w = listed_world("l060-relaypage").await;
     let (m, _src) = serve_listed(w, &[]).await;
     let links_to_listed = |html: &str| hrefs(html).iter().any(|h| h.ends_with(&format!("/fn/{}", bank_rate())));
+    // the note reads the catalogue pages' build (the subjects' places): wait for its first run
+    assert_eq!(until_built(&m, "/catalog").await.status, 200);
     let p = page(&m, &format!("/fn/{}", relay())).await;
     assert_eq!(p.status, 200, "{}", p.text());
     let html = p.text();

@@ -47,7 +47,7 @@ async fn listed_once(label: &str) -> Served {
     assert_eq!(a.writes, 2, "the listing and the host's row");
     assert!(a.changed_any());
     build(&lite, T3);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(SRC)).await;
     assert_eq!(sources_at(&m, GB).await, [bank_rate(), relay()], "listed: rank 1 is the source's own function");
     m
 }
@@ -118,7 +118,7 @@ async fn l8_withdrawal_when_the_key_document_is_invalid() {
     let two = fetched(vec![name_of(&bank_rate(), "a", vec![gb()]), name_of(&format!("{SRC}/other"), "b", vec![gb()])]);
     apply(&lite, &two, RUN1);
     build(&lite, T3);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(SRC)).await;
     assert_eq!(sources_at(&m, GB).await.len(), 3);
     let a = apply(&m.lite, &Fetch::KeyDocFailed { detail: "the document names another host".into() }, RUN2);
     assert_eq!(a.outcome, Outcome::KeyDocFailed);

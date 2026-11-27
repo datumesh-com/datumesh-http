@@ -58,7 +58,7 @@ async fn l4_listed_names_rank_by_the_rule_in_a_subject_with_a_relay() {
     let lite = world("l060-rank");
     let built = build(&lite, BUILD);
     assert!(built.cells > 0);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(&format!("{DOMAIN},stats.{DOMAIN},source.example,other.example"))).await;
     assert_eq!(
         sources_at(&m, GB).await,
         [
@@ -78,7 +78,7 @@ async fn l4_the_sources_own_function_ranks_above_the_relay() {
     let lite = listing_lite("l060-rank-example");
     put_listing(&lite, SRC, &bank_rate(), vec![gb()], L_A);
     build(&lite, BUILD);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(SRC)).await;
     assert_eq!(sources_at(&m, GB).await, [bank_rate(), relay()]);
     let one = source_at(&m, GB, 1).await;
     assert_eq!(one.value(), Some(bank_rate().as_str()), "{}", one.text);
@@ -92,7 +92,7 @@ async fn l4_a_listed_name_joins_only_its_own_subjects() {
     let ea = SubjectKeys::new("finance", "rate", "interest_rate", "ea");
     put_listing(&lite, SRC, &format!("{SRC}/euro_rate"), vec![ea], L_A);
     build(&lite, BUILD);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(SRC)).await;
     assert_eq!(sources_at(&m, GB).await, [relay()], "GB is the relay's alone");
     assert_eq!(sources_at(&m, ("finance", "rate", "interest_rate", "ea")).await, [format!("{SRC}/euro_rate")]);
 }
@@ -107,7 +107,7 @@ async fn l4_a_listed_name_joins_each_subject_of_its_listing_and_no_other() {
     // The store takes a listing's subjects ascending and unique: (finance, price, …) sorts before (finance, rate, …).
     put_listing(&lite, SRC, &format!("{SRC}/both"), vec![us_cpi, gb()], L_A);
     build(&lite, BUILD);
-    let m = serve(lite, &[]).await;
+    let m = serve(lite, &kept(SRC)).await;
     assert_eq!(sources_at(&m, GB).await, [format!("{SRC}/both"), relay()]);
     assert_eq!(sources_at(&m, ("finance", "price", "cpi", "us")).await, [format!("{SRC}/both")]);
     let cross =
