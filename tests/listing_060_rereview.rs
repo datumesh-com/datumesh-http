@@ -11,6 +11,7 @@
 //! * N6: `/x/interval` refuses a listed name with `E_LISTED_ELSEWHERE`.
 //! * C3 (config): a listed host that `DATUMESH_PUBLISH_DOMAINS` allows, or `DATUMESH_CROSS_MESH_HOSTS` names, is refused
 //!   at start.
+//!
 //! (N5, the start-up drop's log line, is in `listing_060_rereview_log.rs`: it installs a global subscriber.)
 
 #[path = "common/catjob.rs"]
