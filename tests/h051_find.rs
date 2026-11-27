@@ -74,6 +74,11 @@ async fn h3_a_query_of_one_letter_words_is_the_empty_query() {
     fx.probe().arm();
     // the find thread builds the listing the empty query is answered from; the others are held
     let w = fx.serve(config(&held(&["find"]), &[])).await;
+    // the catalogue's own thread is not held: its first build's reads must not fall inside the windows compared below
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while w.get("/catalog").await.status == 503 && std::time::Instant::now() < end {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     let empty = find(&w, "").await;
     assert!(!empty["results"].as_array().unwrap().is_empty(), "the empty query lists the entries: {empty}");
     let p = w.fx.probe();

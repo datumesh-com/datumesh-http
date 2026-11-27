@@ -161,6 +161,8 @@ async fn l6_the_function_page_of_a_listed_name() {
 async fn l5_find_puts_the_listed_source_first_in_its_subject() {
     let w = listed_world("l060-find").await;
     let (m, src) = serve_listed(w, &[]).await;
+    // find's order reads the subjects' places from the catalogue's last build: wait for its first run
+    assert_eq!(until_built(&m, "/catalog").await.status, 200);
     src.proxy.clear_log();
     let v = m.find("bank rate").await;
     let n = names(&v);
