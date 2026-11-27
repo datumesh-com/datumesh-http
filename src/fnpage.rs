@@ -302,6 +302,9 @@ pub(crate) fn data(inner: &Inner, name: &str) -> Option<Value> {
 /// `GET /fn/<name>`: the JSON form when asked for it, else the HTML page; `not_covered` when no
 /// function of that name is bound on this mesh.
 pub(crate) fn respond(inner: &Inner, name: &str, json_form: bool) -> Reply {
+    if let Some(l) = crate::listing::listed(&*inner.store, name) {
+        return crate::listing::fn_reply(&*inner.store, &l, json_form);
+    }
     // A class's name is its class page (R9), from the catalogue's last build; a function's is the function page.
     let store: &dyn Store = &*inner.store;
     if store.resolve_class(name, &inner.now()).ok().flatten().is_some() {
@@ -329,7 +332,8 @@ pub(crate) fn respond(inner: &Inner, name: &str, json_form: bool) -> Reply {
         return Reply::json(200, d.to_jcs(), Cache::Public(inner.config.ttl.latest_max_age.as_secs()));
     }
     let unnamed = d.get("fn_hash").and_then(Value::as_str).is_some_and(|h| inner.is_unnamed(h));
-    let body = render(&d, unnamed);
+    let note = crate::listing::relay_note(inner, &d).unwrap_or_default();
+    let body = render(&d, unnamed, &note);
     Reply {
         status: 200,
         body: body.into_bytes().into(),
@@ -392,7 +396,7 @@ fn text_of(v: &Value) -> String {
 /// The HTML page of the data `d` (no script; every publisher string escaped). `unnamed`: the function's hash
 /// still has tests no one has named, so its counts may include tests of other functions of the same signature
 /// (CONTRACT-0.4.9 H1).
-fn render(d: &Value, unnamed: bool) -> String {
+fn render(d: &Value, unnamed: bool, listed_note: &str) -> String {
     let name = get(d, "name").as_str().unwrap_or("");
     let label = get(d, "label").as_str().unwrap_or(name);
     let mut h = String::new();
@@ -565,6 +569,8 @@ fn render(d: &Value, unnamed: bool) -> String {
     }
     h.push_str("</section>\n");
 
+    // a listed source ranked first in its subject (CONTRACT-http-listing L7), escaped where it was built
+    h.push_str(listed_note);
     // examples
     h.push_str("<section id=\"examples\">\n<h2>Examples</h2>\n");
     match get(d, "examples") {

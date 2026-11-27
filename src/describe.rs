@@ -278,6 +278,10 @@ impl Inner {
 
     /// The describe reply for `id` (see the module documentation).
     pub(crate) fn describe(&self, id: &str) -> Reply {
+        // A listed name is described from its listing (CONTRACT-http-listing L6), before any binding.
+        if let Some(l) = crate::listing::listed(&*self.store, id) {
+            return crate::listing::describe_reply(&*self.store, &l);
+        }
         let now = self.now();
         // The catalogue's root (CONTRACT-classes-round C7): one call, from the catalogue's last build.
         if id == format!("{}/catalog", self.config.host) {

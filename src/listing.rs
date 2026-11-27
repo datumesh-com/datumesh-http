@@ -22,8 +22,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use datumesh_core::json::{self, Value};
-use datumesh_core::{Keys, KeyDocument};
-use datumesh_store::{Listing, ListedHost, ListingWrite, Store, SubjectKeys};
+use datumesh_core::{KeyDocument, Keys};
+use datumesh_store::{ListedHost, Listing, ListingWrite, Store, SubjectKeys};
+
+use crate::envelope::{Cache, Reply};
 
 /// The default interval between two runs of one host (`DATUMESH_LISTING_INTERVAL_SECS`, six hours).
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(21_600);
@@ -240,15 +242,10 @@ impl Run {
             return Err(Stop::Unreachable(format!("{url}: status {status}")));
         }
         let room = self.limits.bytes.saturating_sub(self.bytes);
-        let body = resp
-            .into_body()
-            .with_config()
-            .limit(room.saturating_add(1))
-            .read_to_vec()
-            .map_err(|e| match e {
-                ureq::Error::BodyExceedsLimit(_) => Stop::Bytes,
-                e => Stop::Unreachable(format!("{url}: {e}")),
-            })?;
+        let body = resp.into_body().with_config().limit(room.saturating_add(1)).read_to_vec().map_err(|e| match e {
+            ureq::Error::BodyExceedsLimit(_) => Stop::Bytes,
+            e => Stop::Unreachable(format!("{url}: {e}")),
+        })?;
         self.bytes += body.len() as u64;
         if self.bytes > self.limits.bytes {
             return Err(Stop::Bytes);
@@ -262,13 +259,18 @@ fn key_valid_at(doc: &KeyDocument, now: &str) -> Option<String> {
     doc.keys
         .keys
         .iter()
-        .find(|k| k.valid_from.as_str() <= now && k.valid_to.as_deref().map_or(true, |t| now < t))
+        .find(|k| k.valid_from.as_str() <= now && k.valid_to.as_deref().is_none_or(|t| now < t))
         .map(|k| k.id.clone())
 }
 
 /// The function name's subjects and source names, from the host's signed catalogue cells (L2.3): each member's receipt
 /// is verified against the host's key document; a member that does not verify is skipped. Pages are followed.
-fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Result<BTreeMap<String, BTreeSet<SubjectKeys>>, Stop> {
+fn catalogue(
+    run: &mut Run,
+    host: &str,
+    origin: &str,
+    doc: &KeyDocument,
+) -> Result<BTreeMap<String, BTreeSet<SubjectKeys>>, Stop> {
     let mut keys = Keys::new();
     keys.insert_document(doc.clone());
     let mut out: BTreeMap<String, BTreeSet<SubjectKeys>> = BTreeMap::new();
@@ -293,13 +295,13 @@ fn catalogue(run: &mut Run, host: &str, origin: &str, doc: &KeyDocument) -> Resu
                 let arg = |k: &str| -> Option<String> {
                     cell.get("args")?.get(k)?.get("value")?.as_str().map(str::to_string)
                 };
-                let (Some(d), Some(t), Some(me), Some(rg)) = (arg("domain"), arg("thing"), arg("measure"), arg("region"))
+                let (Some(d), Some(t), Some(me), Some(rg)) =
+                    (arg("domain"), arg("thing"), arg("measure"), arg("region"))
                 else {
                     continue;
                 };
                 let value = receipt.get("value");
-                let name = value
-                    .and_then(|v| v.as_str().or_else(|| v.get("value").and_then(Value::as_str)));
+                let name = value.and_then(|v| v.as_str().or_else(|| v.get("value").and_then(Value::as_str)));
                 let Some(name) = name else { continue };
                 if name.starts_with(&format!("{host}/")) {
                     out.entry(name.to_string()).or_default().insert(SubjectKeys::new(&d, &t, &me, &rg));
@@ -351,7 +353,8 @@ pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
         return Fetch::MeshDocFailed { detail: format!("status {status}") };
     }
     let Ok(m) = json::parse(&mbody) else { return Fetch::MeshDocFailed { detail: "not JSON".into() } };
-    if m.get("host").and_then(Value::as_str) != Some(host) || m.get("proto").and_then(Value::as_str) != proto.as_deref() {
+    if m.get("host").and_then(Value::as_str) != Some(host) || m.get("proto").and_then(Value::as_str) != proto.as_deref()
+    {
         return Fetch::MeshDocFailed { detail: "disagrees with the key document on host or proto".into() };
     }
     // 3. the host's own catalogue, verified and not stored
@@ -394,7 +397,14 @@ pub fn fetch(host: &str, origin: &str, limits: &Limits, now: &str) -> Fetch {
                     description = v.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
                 }
             }
-            Ok(Some(FetchedName { name: name.clone(), fn_hash, subjects: subjects.clone(), descriptor: bytes, label, description }))
+            Ok(Some(FetchedName {
+                name: name.clone(),
+                fn_hash,
+                subjects: subjects.clone(),
+                descriptor: bytes,
+                label,
+                description,
+            }))
         })();
         match step {
             Ok(Some(n)) => names.push(n),
@@ -447,7 +457,8 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
             let mut refuse: BTreeSet<String> = refused.iter().cloned().collect();
             for n in names {
                 let under = n.name.starts_with(&format!("{host}/"));
-                let ok = under && datumesh_core::function_hash(&n.descriptor).ok().as_deref() == Some(n.fn_hash.as_str());
+                let ok =
+                    under && datumesh_core::function_hash(&n.descriptor).ok().as_deref() == Some(n.fn_hash.as_str());
                 if !ok {
                     refuse.insert(n.name.clone());
                     continue;
@@ -506,7 +517,11 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
             let row = store.listed_host(host).map_err(|e| se(&e))?;
             match row {
                 None => {
-                    let r = ListedHost { host: host.to_string(), last_seen: None, unreachable_since: Some(now.to_string()) };
+                    let r = ListedHost {
+                        host: host.to_string(),
+                        last_seen: None,
+                        unreachable_since: Some(now.to_string()),
+                    };
                     store.put_listed_host(&r).map_err(|e| se(&e))?;
                     applied.writes += 1;
                 }
@@ -549,4 +564,134 @@ pub fn run_host<S: Store + ?Sized>(
 ) -> Result<Applied, ListingError> {
     let f = fetch(host, origin, limits, now);
     apply(store, host, &f, now)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// What this mesh says about a listed name (L6): refused for every read, described and shown as a page
+
+/// The listing of `name`, when it is a listed name here.
+pub(crate) fn listed(store: &dyn Store, name: &str) -> Option<Listing> {
+    store.listing(name).ok().flatten()
+}
+
+/// The listed name a read names: the first prefix of `text` (a path rest, `name`, `name(args)` or `name?query`, a series
+/// page below a name) that is a listed name.
+pub(crate) fn listed_in(store: &dyn Store, text: &str) -> Option<Listing> {
+    let mut ends: Vec<usize> =
+        text.char_indices().filter(|(_, c)| matches!(c, '/' | '(' | '?' | ' ')).map(|(i, _)| i).collect();
+    ends.push(text.len());
+    ends.into_iter().filter(|&e| text[..e].contains('/')).find_map(|e| listed(store, &text[..e]))
+}
+
+/// The listed name a formula (the body of `POST /x/calc`) reads: one of its words is a listed name.
+pub(crate) fn listed_in_formula(store: &dyn Store, body: &[u8]) -> Option<Listing> {
+    let formula = json::parse(body).ok()?.get("formula").and_then(Value::as_str)?.to_string();
+    formula
+        .split(|c: char| !(c.is_alphanumeric() || "._/-".contains(c)))
+        .filter(|w| w.contains('/'))
+        .find_map(|w| listed(store, w))
+}
+
+/// The host's own origin as a listed answer names it (`https://<host>`, never the peers origin).
+fn mesh_of(host: &str) -> String {
+    format!("https://{host}")
+}
+
+/// `E_LISTED_ELSEWHERE` (CONTRACT-http-listing L6): a read of a listed name is `not_covered`, with the mesh that holds it.
+/// Spec 0.7 adds the code; until then this mesh writes it itself.
+pub(crate) fn refusal(l: &Listing) -> Reply {
+    let body = Value::Object(vec![
+        ("outcome".into(), Value::String("not_covered".into())),
+        ("error".into(), Value::String("E_LISTED_ELSEWHERE".into())),
+        ("mesh".into(), Value::String(mesh_of(&l.host))),
+        ("name".into(), Value::String(l.name.clone())),
+    ]);
+    Reply::json(404, body.to_jcs(), Cache::NoStore)
+}
+
+/// The note a page of this mesh carries about a listed name that ranks first in its subject (CONTRACT-http-listing L7): the
+/// relay's page and its takeover page link to it, with the day it was last seen. `None` when `name` is not such a name.
+pub(crate) fn rank_one_note(inner: &crate::mesh::Inner, name: &str) -> Option<String> {
+    let l = listed(&*inner.store, name)?;
+    if !crate::find::rank_one(inner, name) {
+        return None;
+    }
+    let last_seen = inner.store.listed_host(&l.host).ok().flatten().and_then(|r| r.last_seen).unwrap_or_default();
+    Some(format!(
+        "<p>The source&#39;s own function is listed here and ranks first in its subject (last seen {}): \
+         <a href=\"{}\"><code>{}</code></a>.</p>\n",
+        escape(&last_seen),
+        escape(&crate::fnpage::page_url(inner, &l.name)),
+        escape(&l.name)
+    ))
+}
+
+/// The members a listed name's description carries (describe and the function page as JSON).
+fn listed_members(store: &dyn Store, l: &Listing) -> Vec<(String, Value)> {
+    let last_seen = store.listed_host(&l.host).ok().flatten().and_then(|r| r.last_seen).unwrap_or_default();
+    let descriptor = json::parse(&l.descriptor).unwrap_or(Value::Null);
+    let s = |v: &str| Value::String(v.to_string());
+    vec![
+        ("outcome".into(), s("ok")),
+        ("kind".into(), s("function")),
+        ("fn".into(), s(&l.name)),
+        ("listed".into(), Value::Bool(true)),
+        ("mesh".into(), s(&mesh_of(&l.host))),
+        ("publisher".into(), s(&l.host)),
+        ("address".into(), s(&format!("{}/fn/{}", mesh_of(&l.host), l.name))),
+        ("last_seen".into(), s(&last_seen)),
+        ("fn_hash".into(), s(&l.fn_hash)),
+        ("label".into(), s(&l.label)),
+        ("description".into(), s(&l.description)),
+        ("descriptor".into(), descriptor),
+    ]
+}
+
+/// `describe` of a listed name: its listed descriptor, with `listed: true`, the mesh and the day last seen.
+pub(crate) fn describe_reply(store: &dyn Store, l: &Listing) -> Reply {
+    Reply::json(200, Value::Object(listed_members(store, l)).to_jcs(), Cache::Public(300))
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// `/fn/<name>` of a listed name: a short page (no script) with the description, the mesh, a link to the name's page there
+/// and the day last seen; as JSON, the members of describe.
+pub(crate) fn fn_reply(store: &dyn Store, l: &Listing, json_form: bool) -> Reply {
+    if json_form {
+        return describe_reply(store, l);
+    }
+    let members = listed_members(store, l);
+    let last_seen = members.iter().find(|(k, _)| k == "last_seen").and_then(|(_, v)| v.as_str()).unwrap_or_default();
+    let address = mesh_of(&l.host) + "/fn/" + &l.name;
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{name}</title></head>\
+         <body><h1>{name}</h1><p>{description}</p>\
+         <p>Listed from <a href=\"{address}\">{mesh}</a>, last seen {last_seen}. This mesh describes the function; \
+         it does not serve its values.</p></body></html>",
+        name = escape(&l.name),
+        description = escape(&l.description),
+        address = escape(&address),
+        mesh = escape(&mesh_of(&l.host)),
+        last_seen = escape(last_seen),
+    );
+    Reply {
+        status: 200,
+        body: html.into_bytes().into(),
+        content_type: "text/html; charset=utf-8",
+        cache: Cache::Public(300),
+        canonical: None,
+        retry_after: None,
+    }
+}
+
+/// The note of a relay's page about its source (CONTRACT-http-listing L7): the listed names of the source's domain that rank
+/// first in their subject, linked here. `d` is the function page's data; `None` when there are none.
+pub(crate) fn relay_note(inner: &crate::mesh::Inner, d: &Value) -> Option<String> {
+    let domain = d.get("lineage")?.get("source")?.get("name")?.as_str()?;
+    let notes: String =
+        inner.store.listings_of(domain).ok()?.iter().filter_map(|l| rank_one_note(inner, &l.name)).collect();
+    (!notes.is_empty()).then_some(notes)
 }

@@ -115,6 +115,27 @@ struct Read {
     generation: u64,
 }
 
+/// Each name's place among the subjects of the catalogue (CONTRACT-http-listing L5): the subject where it has its lowest
+/// rank (on a tie, the subject whose key encoding is first), by name. Read once per find build.
+pub(crate) fn subject_places(inner: &Inner) -> BTreeMap<String, crate::find_order::SubjectRank> {
+    let mut out: BTreeMap<String, crate::find_order::SubjectRank> = BTreeMap::new();
+    let host = inner.config.host.clone();
+    let Some(read) = read(inner, &host, &inner.now()) else { return out };
+    for s in &read.subjects {
+        for (i, src) in s.sources.iter().enumerate() {
+            let cand = crate::find_order::SubjectRank { subject: s.text.clone(), rank: (i + 1) as u32 };
+            let better = match out.get(src) {
+                Some(old) => (cand.rank, &cand.subject) < (old.rank, &old.subject),
+                None => true,
+            };
+            if better {
+                out.insert(src.clone(), cand);
+            }
+        }
+    }
+    out
+}
+
 fn read(inner: &Inner, host: &str, now: &str) -> Option<Read> {
     let store: &dyn Store = &*inner.store;
     let class = subject_class(host);

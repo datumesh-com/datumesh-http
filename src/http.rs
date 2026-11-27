@@ -1327,7 +1327,10 @@ async fn health(State(mesh): State<Mesh>) -> Response {
 /// Prometheus metrics.
 #[utoipa::path(get, path = "/metrics", responses((status = 200, description = "Prometheus text", content_type = "text/plain")))]
 async fn metrics(State(mesh): State<Mesh>) -> Response {
-    let mut r = Reply::json(200, metrics_text(&mesh.inner).into_bytes(), Cache::NoStore);
+    // The store is synchronous: its count is read on the pool, never on this thread (CONTRACT-http-listing L10).
+    let store = mesh.inner.store.clone();
+    let listed = mesh.inner.pool.clone().run(move || store.listing_count().unwrap_or(0)).await.unwrap_or(0);
+    let mut r = Reply::json(200, metrics_text(&mesh.inner, listed).into_bytes(), Cache::NoStore);
     r.content_type = "text/plain; version=0.0.4";
     to_response(r)
 }
@@ -1340,11 +1343,15 @@ async fn openapi_json() -> Response {
     to_response(r)
 }
 
-pub(crate) fn metrics_text(inner: &Inner) -> String {
+pub(crate) fn metrics_text(inner: &Inner, listed_names: u64) -> String {
     use std::fmt::Write;
     use std::sync::atomic::Ordering::Relaxed;
     let mut out = String::new();
     inner.metrics.write(&mut out);
+    // The names listed from other meshes, all hosts (CONTRACT-http-listing L10): check.sh reads it.
+    let _ = writeln!(out, "# HELP datumesh_listed_names_total Names listed from other meshes, all hosts.");
+    let _ = writeln!(out, "# TYPE datumesh_listed_names_total gauge");
+    let _ = writeln!(out, "datumesh_listed_names_total {listed_names}");
     let p = &inner.pool;
     let g = |out: &mut String, name: &str, help: &str, kind: &str, v: String| {
         let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {v}");
@@ -1451,7 +1458,33 @@ async fn around(State(mesh): State<Mesh>, req: Request, next: Next) -> Response 
         "/series/{page}" | "/series/sitemap.xml" | "/x/interval/{function}" | "/catalog" | "/catalog/{page}"
     ) || (route == "/slice/{cell}"
         && crate::series::negotiation_free(&mesh.inner, &rest_of(req.uri(), "/slice/"), req.headers()));
-    let mut resp = if route != "/blob/{sha256}"
+    // A read of a listed name is refused here, before anything else (CONTRACT-http-listing L6).
+    let listed_refusal = if method == axum::http::Method::GET
+        && matches!(
+            route.as_str(),
+            "/cell/{cell}" | "/slice/{cell}" | "/series/{page}" | "/versions/{cell}" | "/explain/{cell}"
+        ) {
+        let prefix = match route.as_str() {
+            "/cell/{cell}" => "/cell/",
+            "/slice/{cell}" => "/slice/",
+            "/series/{page}" => "/series/",
+            "/versions/{cell}" => "/versions/",
+            _ => "/explain/",
+        };
+        let text = rest_of(req.uri(), prefix);
+        let store = mesh.inner.store.clone();
+        mesh.inner
+            .pool
+            .clone()
+            .run(move || crate::listing::listed_in(&*store, &text).map(|l| crate::listing::refusal(&l)))
+            .await
+            .flatten()
+    } else {
+        None
+    };
+    let mut resp = if let Some(r) = listed_refusal {
+        to_response(r)
+    } else if route != "/blob/{sha256}"
         && route != "/metrics"
         && !html_ok
         && !own_form
@@ -1542,6 +1575,13 @@ async fn x_calc(State(mesh): State<Mesh>, headers: HeaderMap, req: Request) -> R
         Ok(b) => b,
         Err(_) => return to_response(crate::calc::too_large_reply()),
     };
+    // A formula that reads a listed name is refused as a read is (CONTRACT-http-listing L6), before any resolution.
+    let store = inner.store.clone();
+    let body2 = body.clone();
+    let listed = inner.pool.clone().run(move || crate::listing::listed_in_formula(&*store, &body2)).await.flatten();
+    if let Some(l) = listed {
+        return to_response(crate::listing::refusal(&l));
+    }
     let mesh2 = mesh.clone();
     match inner.pool.clone().run(move || mesh2.calc(&body, principal.as_ref())).await {
         Some(r) => to_response(r),

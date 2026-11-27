@@ -424,6 +424,44 @@ fn function_value(
     ]))
 }
 
+/// A function's result: a listed name is described from its listing (CONTRACT-http-listing L5), any other from its binding.
+fn result_value(ctx: &Ctx, lk: &mut Lookup, name: &str, mt: &str, score: f64) -> Option<Value> {
+    match crate::listing::listed(ctx.store, name) {
+        Some(l) => Some(listed_value(ctx.store, &l, mt, score)),
+        None => function_value(ctx, lk, name, None, mt, score),
+    }
+}
+
+/// Whether `name` has the first rank in its subject, by the last find build (CONTRACT-http-listing L7).
+pub(crate) fn rank_one(inner: &Inner, name: &str) -> bool {
+    built(inner).is_some_and(|b| b.places.get(name).is_some_and(|p| p.rank == 1))
+}
+
+/// The result of a listed function: its description and where it is served, with no cell and no slice of this mesh.
+fn listed_value(store: &dyn Store, l: &datumesh_store::Listing, mt: &str, score: f64) -> Value {
+    let last_seen = store.listed_host(&l.host).ok().flatten().and_then(|r| r.last_seen).unwrap_or_default();
+    let args =
+        FunctionDescriptor::from_json(&l.descriptor).map(|d| arg_list(&d.signature.to_value())).unwrap_or_default();
+    let mesh = format!("https://{}", l.host);
+    let label =
+        if l.label.is_empty() { l.name.rsplit('/').next().unwrap_or(&l.name).to_string() } else { l.label.clone() };
+    Value::Object(vec![
+        ("kind".into(), Value::String("function".into())),
+        ("name".into(), Value::String(l.name.clone())),
+        ("label".into(), Value::String(label)),
+        ("description".into(), Value::String(l.description.clone())),
+        ("call".into(), Value::String(template(&l.name, &args))),
+        ("match".into(), Value::String(mt.into())),
+        ("score".into(), json_number(score)),
+        ("descriptor".into(), json::parse(&l.descriptor).unwrap_or(Value::Null)),
+        ("fn_hash".into(), Value::String(l.fn_hash.clone())),
+        ("listed".into(), Value::Bool(true)),
+        ("mesh".into(), Value::String(mesh.clone())),
+        ("last_seen".into(), Value::String(last_seen)),
+        ("address".into(), Value::String(format!("{mesh}/fn/{}", l.name))),
+    ])
+}
+
 fn method_value(ctx: &Ctx, lk: &mut Lookup, name: &str, mt: &str, score: f64) -> Option<Value> {
     let (class, _) = name.rsplit_once('/')?;
     ctx.store.resolve_class_binding(class, &ctx.now).ok()??;
@@ -849,7 +887,7 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
                     let exact = exact_for(&qn, &toks, &[entry.name.as_str(), entry.label.as_str()]);
                     let (rank, mt) = if exact { (0, "exact") } else { (1, "text") };
                     let v = match entry.kind {
-                        CatalogKind::Function => function_value(&ctx, &mut lk, &entry.name, None, mt, score),
+                        CatalogKind::Function => result_value(&ctx, &mut lk, &entry.name, mt, score),
                         CatalogKind::Method => method_value(&ctx, &mut lk, &entry.name, mt, score),
                         CatalogKind::Class => continue,
                     };
@@ -884,9 +922,7 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
                         match h {
                             Hit::Entry { entry, score, .. } => {
                                 let v = match entry.kind {
-                                    CatalogKind::Function => {
-                                        function_value(&ctx, &mut lk, &entry.name, None, "vector", score)
-                                    }
+                                    CatalogKind::Function => result_value(&ctx, &mut lk, &entry.name, "vector", score),
                                     CatalogKind::Method => method_value(&ctx, &mut lk, &entry.name, "vector", score),
                                     CatalogKind::Class => class_value(&ctx, &mut lk, &entry.name, "vector", score),
                                 };
@@ -927,17 +963,31 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
         board.offer(scored(0, 1.0, 2, &c.name, v));
     }
 
-    // 6. Ranked: exact, text, vector; then by score, kind and name. At most `limit`.
-    let mut all: Vec<Scored> = board.best.into_values().collect();
-    all.sort_by(|a, b| {
-        a.rank
-            .cmp(&b.rank)
-            .then(b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal))
-            .then(a.kind.cmp(&b.kind))
-            .then(a.name.cmp(&b.name))
-    });
-    all.truncate(limit);
-    let mut results: Vec<Value> = all.into_iter().map(|s| s.value).collect();
+    // 6. Ranked: exact, text, vector; then by score, kind and name, the groups of a subject together and in its rank order
+    // (find_order, CONTRACT-http-listing L5). At most `limit`.
+    let built_now = built(inner);
+    let empty = BTreeMap::new();
+    let places = built_now.as_ref().map(|b| &b.places).unwrap_or(&empty);
+    let all: Vec<Scored> = board.best.into_values().collect();
+    let keys: Vec<crate::find_order::FindKey> = all
+        .iter()
+        .map(|s| crate::find_order::FindKey {
+            match_type: s.rank,
+            score: s.score,
+            kind: s.kind,
+            name: s.name.clone(),
+            subject: places.get(&s.name).cloned(),
+        })
+        .collect();
+    let mut slots: Vec<Option<Scored>> = all.into_iter().map(Some).collect();
+    let mut ordered: Vec<Scored> = Vec::with_capacity(slots.len());
+    for i in crate::find_order::order(&keys) {
+        if let Some(s) = slots[i].take() {
+            ordered.push(s);
+        }
+    }
+    ordered.truncate(limit);
+    let mut results: Vec<Value> = ordered.into_iter().map(|s| s.value).collect();
     annotate(inner, &mut results);
 
     // 7. The demand record: no result and no resolution.
@@ -962,6 +1012,8 @@ pub(crate) fn answer(inner: &Inner, query: &str, limit: usize) -> Value {
 pub(crate) struct Built {
     summary: Value,
     listing: Vec<Value>,
+    /// Each name's place among the catalogue's subjects, for the order of results (CONTRACT-http-listing L5).
+    places: BTreeMap<String, crate::find_order::SubjectRank>,
 }
 
 /// Builds the summary and the listing now (the find thread's work; never a request's).
@@ -971,7 +1023,8 @@ pub(crate) fn build(inner: &Inner) -> Built {
     let mut lk = Lookup::default();
     let mut listing = listing(&ctx, &mut lk, MAX_LIMIT);
     annotate(inner, &mut listing);
-    Built { summary, listing }
+    let places = crate::catalog_view::subject_places(inner);
+    Built { summary, listing, places }
 }
 
 /// The last build of the find thread's answers, or `None` before its first build.

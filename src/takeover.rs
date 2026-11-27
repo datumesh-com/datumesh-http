@@ -161,12 +161,17 @@ pub(crate) fn respond(inner: &Inner, domain: &str, json_form: bool) -> Reply {
             retry_after: None,
         };
     };
+    // The listed names of this domain that rank first in their subject (CONTRACT-http-listing L7), linked here.
+    let note: String = match inner.store.listings_of(domain) {
+        Ok(ls) => ls.iter().filter_map(|l| crate::listing::rank_one_note(inner, &l.name)).collect(),
+        Err(_) => String::new(),
+    };
     if json_form {
         return Reply::json(200, d.to_jcs(), Cache::Public(max_age));
     }
     Reply {
         status: 200,
-        body: render(&d).into_bytes().into(),
+        body: render(&d, &note).into_bytes().into(),
         content_type: "text/html; charset=utf-8",
         cache: Cache::Public(max_age),
         canonical: None,
@@ -209,7 +214,7 @@ fn linked(t: &str, phrase: &str, href: &str) -> String {
 }
 
 /// The HTML page of the data `d` (no script; every string escaped).
-pub(crate) fn render(d: &Value) -> String {
+pub(crate) fn render(d: &Value, listed_note: &str) -> String {
     let (domain, host) = (text(d, "domain"), text(d, "host"));
     let title = format!("{domain}'s values under its own name");
     let mut h = String::new();
@@ -223,6 +228,7 @@ pub(crate) fn render(d: &Value) -> String {
         text_esc(domain),
         text_esc(domain)
     ));
+    h.push_str(listed_note);
     h.push_str("<section id=\"functions\">\n<h2>Functions relayed from this domain</h2>\n<ul>\n");
     if let Some(Value::Array(fs)) = d.get("functions") {
         for f in fs {
