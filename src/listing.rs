@@ -500,11 +500,12 @@ const MAX_CREATED_SUBJECTS: usize = 64;
 /// * [`Fetch::Fetched`]: each name of `names` whose descriptor hashes to its `fn_hash` is put, with the subjects it has
 ///   and, in a cut run, those it held (N4: a cut keeps what a name was in); a name the store refuses (its bounds, or
 ///   another source's entry of the name, `Invalid`) is refused, and the run goes on. The subjects this run may create here
-///   are at most `MAX_CREATED_SUBJECTS` (B4), counted across runs: the subjects the host's held listings create count, the
-///   kept ones too (N3); a name over it is cut, and the run is a cut (`Cut::Names`). Without a cut, every listing of the host
-///   not among the verified names drops out; with a cut, the `refused` ones drop, and so does a listing not reached by a run
-///   whose catalogue was read (`Cut::Unreached`) once it has been unreached for seven days (its own clock, N1). A verified
-///   name's clock is cleared. The host's row: `last_seen` the day of `now`, `unreachable_since` none, written only when that
+///   are at most `MAX_CREATED_SUBJECTS` (B4), counted across runs: the subjects of the held names a cut run keeps (not
+///   offered, not refused) count from the start, and an offered name counts with the subjects it is put with (N3); a name
+///   over the limit is cut, and the run is a cut (`Cut::Names`). Without a cut, every listing of the host not among the
+///   verified names drops out; with a cut, the `refused` ones drop, and so does a held name the run neither offered nor
+///   refused once it has been unreached for seven days, whatever the cut (its own clock, N1). A verified name's clock is
+///   cleared. The host's row: `last_seen` the day of `now`, `unreachable_since` none, written only when that
 ///   changes it.
 /// * [`Fetch::KeyDocFailed`], [`Fetch::MeshDocFailed`]: every listing of the host drops out at once; the host's row is
 ///   left as it was.
@@ -534,10 +535,11 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
             let mut refuse: BTreeSet<String> = refused.iter().cloned().collect();
             let stored: BTreeMap<&str, &Listing> = held.iter().map(|l| (l.name.as_str(), l)).collect();
             // The subjects no member bound here holds: a listing creates these (B4), at most MAX_CREATED_SUBJECTS. The
-            // held listings that stay (offered, or kept by a cut run) count from the start (N3).
+            // held names a cut run keeps (not offered, not refused) count from the start; an offered name counts with the
+            // subjects it is put with, in the loop below, so none is counted twice (N3).
             let bound = crate::catalog_build::bound_subjects(store).map_err(|e| se(&e))?;
             let staying =
-                |l: &Listing| offered.contains(l.name.as_str()) || (cut.is_some() && !refused.contains(&l.name));
+                |l: &Listing| cut.is_some() && !offered.contains(l.name.as_str()) && !refused.contains(&l.name);
             let mut created: BTreeSet<SubjectKeys> = held
                 .iter()
                 .filter(|l| staying(l))
@@ -612,22 +614,20 @@ pub fn apply<S: Store + ?Sized>(store: &S, host: &str, fetch: &Fetch, now: &str)
                 None => drop_set.extend(existing.iter().filter(|e| !verified.contains(*e)).cloned()),
                 Some(c) => {
                     drop_set.extend(existing.iter().filter(|e| refuse.contains(*e)).cloned());
-                    if c == Cut::Unreached {
-                        // N1: a held name the run did not reach (not offered, not refused) has a clock of its own: set at the
-                        // first such run, cleared when it answers, dropped seven days after it was set.
-                        for name in existing.iter().filter(|e| !offered.contains(e.as_str()) && !refuse.contains(*e)) {
-                            let since = match store.listing_unreached(name).map_err(|e| se(&e))? {
-                                Some(since) => since,
-                                None => {
-                                    store.set_listing_unreached(name, Some(now)).map_err(|e| se(&e))?;
-                                    applied.writes += 1;
-                                    now.to_string()
-                                }
-                            };
-                            let due = crate::keynames::add_seconds(&since, UNREACHABLE_DROP_AFTER.as_secs());
-                            if due.is_some_and(|d| d.as_str() <= now) {
-                                drop_set.insert(name.clone());
+                    // N1, in every cut: a held name the run did not reach (not offered, not refused) has a clock of its own:
+                    // set at the first such run, cleared when it answers, dropped seven days after it was set.
+                    for name in existing.iter().filter(|e| !offered.contains(e.as_str()) && !refuse.contains(*e)) {
+                        let since = match store.listing_unreached(name).map_err(|e| se(&e))? {
+                            Some(since) => since,
+                            None => {
+                                store.set_listing_unreached(name, Some(now)).map_err(|e| se(&e))?;
+                                applied.writes += 1;
+                                now.to_string()
                             }
+                        };
+                        let due = crate::keynames::add_seconds(&since, UNREACHABLE_DROP_AFTER.as_secs());
+                        if due.is_some_and(|d| d.as_str() <= now) {
+                            drop_set.insert(name.clone());
                         }
                     }
                     applied.cut = Some(c);
