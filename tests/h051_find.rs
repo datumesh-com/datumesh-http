@@ -82,20 +82,30 @@ async fn h3_a_query_of_one_letter_words_is_the_empty_query() {
     let empty = find(&w, "").await;
     assert!(!empty["results"].as_array().unwrap().is_empty(), "the empty query lists the entries: {empty}");
     let p = w.fx.probe();
-    let (c0, k0) = (p.reads(Group::Catalog), p.reads(Group::Cells));
-    let again = find(&w, "").await;
-    let (c1, k1) = (p.reads(Group::Catalog), p.reads(Group::Cells));
-    assert_eq!(again["results"], empty["results"]);
     let letters: Vec<String> = ('a'..='z').map(|c| c.to_string()).collect();
     let q = letters.join("%20");
-    let v = find(&w, &q).await;
-    let (c2, k2) = (p.reads(Group::Catalog), p.reads(Group::Cells));
-    assert_eq!(v["results"], empty["results"], "26 one-letter words are the empty query's listing");
-    assert_eq!(v["vector"], empty["vector"]);
+    // The index thread reads the catalogue's entries every 30 s (`generic_words`), and it is not held: a tick may fall in one
+    // of the two windows. They take about a second, so when the two costs differ they are measured once more, and no tick
+    // can fall in both measurements.
+    let mut costs = Vec::new();
+    for _ in 0..2 {
+        let (c0, k0) = (p.reads(Group::Catalog), p.reads(Group::Cells));
+        let again = find(&w, "").await;
+        let (c1, k1) = (p.reads(Group::Catalog), p.reads(Group::Cells));
+        assert_eq!(again["results"], empty["results"]);
+        let v = find(&w, &q).await;
+        let (c2, k2) = (p.reads(Group::Catalog), p.reads(Group::Cells));
+        assert_eq!(v["results"], empty["results"], "26 one-letter words are the empty query's listing");
+        assert_eq!(v["vector"], empty["vector"]);
+        costs.push(((c2 - c1, k2 - k1), (c1 - c0, k1 - k0)));
+        if c2 - c1 == c1 - c0 && k2 - k1 == k1 - k0 {
+            break;
+        }
+    }
+    let (letters_cost, empty_cost) = *costs.last().unwrap();
     assert_eq!(
-        (c2 - c1, k2 - k1),
-        (c1 - c0, k1 - k0),
-        "and cost what the empty query costs, as to catalogue and cell rows"
+        letters_cost, empty_cost,
+        "and cost what the empty query costs, as to catalogue and cell rows: {costs:?}"
     );
     // a long run of letters is the same
     let v = find(&w, &format!("{q}%20{q}")).await;
