@@ -460,9 +460,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-engine"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4be209609bc2e00b9473977601a8fbc5a9497f390b718d3e59727e352696fb"
+checksum = "3f1bdf344c6b365305662161608b5ff9cffd8f443606579de89c3cda898da05f"
 dependencies = [
  "datumesh-core",
  "datumesh-store",
@@ -471,9 +471,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-formula"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9915859f166a5eb5b4cfece101da4c587d7b8e8a525ef9a6192641ee91cb3d62"
+checksum = "410608a4ac34070ab3d6248167c396e09c233a26fb6b358b8b4f03c49a86ee55"
 dependencies = [
  "datumesh-core",
  "datumesh-engine",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "datumesh-http"
-version = "0.5.5"
+version = "0.6.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -498,6 +498,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
@@ -512,9 +513,9 @@ dependencies = [
 
 [[package]]
 name = "datumesh-store"
-version = "0.6.5"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42c12630e3805865a9ce01b3b06361e953b8d67cbc6fb1ee001b79350cce441f"
+checksum = "04753580eb988c37c19807a88cbeb64db30df29800cdad41b3cf152d2cccdfe6"
 dependencies = [
  "datumesh-core",
  "postgres",

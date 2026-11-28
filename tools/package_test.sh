@@ -41,7 +41,7 @@ fi
 mkdir -p "$work/app/src"
 # The README's first ```rust block is the example.
 awk '/^```rust$/{f=1;next} /^```$/{if(f){exit}} f' "$root/README.md" > "$work/app/src/main.rs"
-printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-http = { path = "../datumesh-http-%s" }\ndatumesh-store = "0.6.3"\ndatumesh-core = { version = "0.3.14", features = ["sign"] }\ndatumesh-engine = "0.6.0"\ndatumesh-formula = "0.6.1"\n' "$version" > "$work/app/Cargo.toml"
+printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ndatumesh-http = { path = "../datumesh-http-%s" }\ndatumesh-store = "0.7.2"\ndatumesh-core = { version = "0.3.14", features = ["sign"] }\ndatumesh-engine = "0.7.0"\ndatumesh-formula = "0.7.0"\n' "$version" > "$work/app/Cargo.toml"
 
 psql_admin "CREATE DATABASE $db"
 trap 'psql_admin "DROP DATABASE IF EXISTS $db WITH (FORCE)"; rm -rf "$work"' EXIT
